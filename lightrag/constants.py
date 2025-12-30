@@ -24,18 +24,20 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 # Maximum token size sent to LLM for summary
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
+# Optimized for legal contract documents
 DEFAULT_ENTITY_TYPES = [
-    "Person",
-    "Creature",
-    "Organization",
-    "Location",
-    "Event",
-    "Concept",
-    "Method",
-    "Content",
-    "Data",
-    "Artifact",
-    "NaturalObject",
+    "Party",           # Contracting parties (e.g., United Airlines, G2 Secure Staff)
+    "Agreement",       # Contract names and types (e.g., Airport Services Agreement, Amendment No. 1)
+    "Service",         # Services provided (e.g., Aircraft Appearance Services, Cabin Cleaning)
+    "Rate",            # Pricing and rates (e.g., $145 per event, $21.94 hourly rate)
+    "Term",            # Duration and time periods (e.g., 30-day payment term, 90-day notice)
+    "Obligation",      # Contractual duties and requirements
+    "Location",        # Geographic locations (e.g., SEA Airport, Chicago, Illinois)
+    "Date",            # Specific dates and effective dates (e.g., September 28, 2016)
+    "Payment",         # Payment terms and conditions
+    "Condition",       # Triggering events and conditions (e.g., Material Breach, Force Majeure)
+    "Provision",       # Exhibits, schedules, and specific clauses
+    "Personnel",       # Roles and staffing (e.g., Cleaning Agent, Supervisor)
 ]
 
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)

@@ -1,73 +1,74 @@
 from __future__ import annotations
-from functools import partial
-from pathlib import Path
 
 import asyncio
 import json
-import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+import time
 from collections import Counter, defaultdict
+from functools import partial
+from pathlib import Path
+from typing import Any, AsyncIterator, Literal, overload
 
-from lightrag.exceptions import (
-    PipelineCancelledException,
-    ChunkTokenLimitExceededError,
-)
-from lightrag.utils import (
-    logger,
-    compute_mdhash_id,
-    Tokenizer,
-    is_float_regex,
-    sanitize_and_normalize_extracted_text,
-    pack_user_ass_to_openai_messages,
-    split_string_by_multi_markers,
-    truncate_list_by_token_size,
-    compute_args_hash,
-    handle_cache,
-    save_to_cache,
-    CacheData,
-    use_llm_func_with_cache,
-    update_chunk_cache_list,
-    remove_think_tags,
-    pick_by_weighted_polling,
-    pick_by_vector_similarity,
-    process_chunks_unified,
-    safe_vdb_operation_with_exception,
-    create_prefixed_exception,
-    fix_tuple_delimiter_corruption,
-    convert_to_user_format,
-    generate_reference_list_from_chunks,
-    apply_source_ids_limit,
-    merge_source_ids,
-    make_relation_chunk_key,
-)
+import json_repair
+from dotenv import load_dotenv
+
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
-    TextChunkSchema,
+    QueryContextResult,
     QueryParam,
     QueryResult,
-    QueryContextResult,
+    TextChunkSchema,
 )
-from lightrag.prompt import PROMPTS
 from lightrag.constants import (
-    GRAPH_FIELD_SEP,
+    DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_FILE_PATHS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
-    SOURCE_IDS_LIMIT_METHOD_KEEP,
+    GRAPH_FIELD_SEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
-    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
-    DEFAULT_MAX_FILE_PATHS,
-    DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    SOURCE_IDS_LIMIT_METHOD_KEEP,
+)
+from lightrag.exceptions import (
+    ChunkTokenLimitExceededError,
+    PipelineCancelledException,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
-import time
-from dotenv import load_dotenv
+from lightrag.prompt import PROMPTS
+from lightrag.utils import (
+    CacheData,
+    Tokenizer,
+    apply_source_ids_limit,
+    compute_args_hash,
+    compute_mdhash_id,
+    convert_to_user_format,
+    create_prefixed_exception,
+    fix_tuple_delimiter_corruption,
+    generate_reference_list_from_chunks,
+    handle_cache,
+    is_float_regex,
+    logger,
+    make_relation_chunk_key,
+    merge_source_ids,
+    pack_user_ass_to_openai_messages,
+    pick_by_vector_similarity,
+    pick_by_weighted_polling,
+    process_chunks_unified,
+    remove_think_tags,
+    safe_vdb_operation_with_exception,
+    sanitize_and_normalize_extracted_text,
+    save_to_cache,
+    split_string_by_multi_markers,
+    truncate_list_by_token_size,
+    update_chunk_cache_list,
+    use_llm_func_with_cache,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -381,13 +382,24 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    insertion_order: int = None,
+    insertion_timestamp: int = None,
 ):
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 fields on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
+            # Return error info for potential retry instead of None
+            return {
+                "error": "format_error",
+                "error_type": "entity_field_count",
+                "expected_fields": 4,
+                "actual_fields": len(record_attributes),
+                "record_attributes": record_attributes,
+                "chunk_key": chunk_key,
+            }
         return None
 
     try:
@@ -427,7 +439,7 @@ async def _handle_single_entity_extraction(
             )
             return None
 
-        return dict(
+        result = dict(
             entity_name=entity_name,
             entity_type=entity_type,
             description=entity_description,
@@ -435,6 +447,14 @@ async def _handle_single_entity_extraction(
             file_path=file_path,
             timestamp=timestamp,
         )
+        
+        # Add temporal metadata if available
+        if insertion_order is not None:
+            result['insertion_order'] = insertion_order
+        if insertion_timestamp is not None:
+            result['insertion_timestamp'] = insertion_timestamp
+        
+        return result
 
     except ValueError as e:
         logger.error(
@@ -453,6 +473,8 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    insertion_order: int = None,
+    insertion_timestamp: int = None,
 ):
     if (
         len(record_attributes) != 5 or "relation" not in record_attributes[0]
@@ -462,6 +484,15 @@ async def _handle_single_relationship_extraction(
                 f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
+            # Return error info for potential retry instead of None
+            return {
+                "error": "format_error",
+                "error_type": "relation_field_count",
+                "expected_fields": 5,
+                "actual_fields": len(record_attributes),
+                "record_attributes": record_attributes,
+                "chunk_key": chunk_key,
+            }
         return None
 
     try:
@@ -507,7 +538,7 @@ async def _handle_single_relationship_extraction(
             else 1.0
         )
 
-        return dict(
+        result = dict(
             src_id=source,
             tgt_id=target,
             weight=weight,
@@ -517,6 +548,14 @@ async def _handle_single_relationship_extraction(
             file_path=file_path,
             timestamp=timestamp,
         )
+        
+        # Add temporal metadata if available
+        if insertion_order is not None:
+            result['insertion_order'] = insertion_order
+        if insertion_timestamp is not None:
+            result['insertion_timestamp'] = insertion_timestamp
+        
+        return result
 
     except ValueError as e:
         logger.warning(
@@ -914,7 +953,9 @@ async def _process_extraction_result(
     file_path: str = "unknown_source",
     tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
-) -> tuple[dict, dict]:
+    insertion_order: int = None,
+    insertion_timestamp: int = None,
+) -> tuple[dict, dict, list]:
     """Process a single extraction result (either initial or gleaning)
     Args:
         result (str): The extraction result to process
@@ -923,11 +964,14 @@ async def _process_extraction_result(
         tuple_delimiter (str): Delimiter for tuple fields
         record_delimiter (str): Delimiter for records
         completion_delimiter (str): Delimiter for completion
+        insertion_order (int): Sequential document insertion order
+        insertion_timestamp (int): Document insertion timestamp
     Returns:
-        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+        tuple: (nodes_dict, edges_dict, format_errors) containing the extracted entities, relationships, and format errors
     """
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
+    format_errors = []
 
     if completion_delimiter not in result:
         logger.warning(
@@ -995,9 +1039,14 @@ async def _process_extraction_result(
 
         # Try to parse as entity
         entity_data = await _handle_single_entity_extraction(
-            record_attributes, chunk_key, timestamp, file_path
+            record_attributes, chunk_key, timestamp, file_path, insertion_order, insertion_timestamp
         )
         if entity_data is not None:
+            # Check if it's a format error
+            if isinstance(entity_data, dict) and entity_data.get("error") == "format_error":
+                format_errors.append(entity_data)
+                continue
+                
             truncated_name = _truncate_entity_identifier(
                 entity_data["entity_name"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
@@ -1010,9 +1059,14 @@ async def _process_extraction_result(
 
         # Try to parse as relationship
         relationship_data = await _handle_single_relationship_extraction(
-            record_attributes, chunk_key, timestamp, file_path
+            record_attributes, chunk_key, timestamp, file_path, insertion_order, insertion_timestamp
         )
         if relationship_data is not None:
+            # Check if it's a format error
+            if isinstance(relationship_data, dict) and relationship_data.get("error") == "format_error":
+                format_errors.append(relationship_data)
+                continue
+                
             truncated_source = _truncate_entity_identifier(
                 relationship_data["src_id"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
@@ -1029,7 +1083,7 @@ async def _process_extraction_result(
             relationship_data["tgt_id"] = truncated_target
             maybe_edges[(truncated_source, truncated_target)].append(relationship_data)
 
-    return dict(maybe_nodes), dict(maybe_edges)
+    return dict(maybe_nodes), dict(maybe_edges), format_errors
 
 
 async def _rebuild_from_extraction_result(
@@ -1058,7 +1112,7 @@ async def _rebuild_from_extraction_result(
     )
 
     # Call the shared processing function
-    return await _process_extraction_result(
+    entities, relationships, format_errors = await _process_extraction_result(
         extraction_result,
         chunk_id,
         timestamp,
@@ -1066,6 +1120,12 @@ async def _rebuild_from_extraction_result(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
+    
+    # Log format errors but don't fail (rebuild uses cached data, no retry available)
+    if format_errors:
+        logger.warning(f"Rebuild found {len(format_errors)} format errors in cached extraction for chunk {chunk_id}")
+    
+    return entities, relationships
 
 
 async def _rebuild_single_entity(
@@ -1832,6 +1892,44 @@ async def _merge_nodes_then_upsert(
         logger.debug(status_message)
 
     # 11. Update both graph and vector db
+    # Extract temporal metadata - use MAXIMUM (most recent) values from all nodes
+    insertion_order = None
+    insertion_timestamp = None
+    if nodes_data:
+        # Get maximum insertion_order and insertion_timestamp from all nodes
+        for node in nodes_data:
+            node_order = node.get('insertion_order')
+            node_timestamp = node.get('insertion_timestamp')
+            
+            if node_order is not None:
+                if insertion_order is None:
+                    insertion_order = node_order
+                else:
+                    insertion_order = max(int(insertion_order), int(node_order))
+            
+            if node_timestamp is not None:
+                if insertion_timestamp is None:
+                    insertion_timestamp = node_timestamp
+                else:
+                    insertion_timestamp = max(int(insertion_timestamp), int(node_timestamp))
+    
+    # Also check already_node for existing temporal metadata
+    if already_node:
+        existing_order = already_node.get('insertion_order')
+        existing_timestamp = already_node.get('insertion_timestamp')
+        
+        if existing_order is not None:
+            if insertion_order is None:
+                insertion_order = existing_order
+            else:
+                insertion_order = max(int(insertion_order), int(existing_order))
+        
+        if existing_timestamp is not None:
+            if insertion_timestamp is None:
+                insertion_timestamp = existing_timestamp
+            else:
+                insertion_timestamp = max(int(insertion_timestamp), int(existing_timestamp))
+    
     node_data = dict(
         entity_id=entity_name,
         entity_type=entity_type,
@@ -1841,6 +1939,16 @@ async def _merge_nodes_then_upsert(
         created_at=int(time.time()),
         truncate=truncation_info,
     )
+    
+    # Add temporal metadata if available
+    if insertion_order is not None:
+        node_data['insertion_order'] = str(insertion_order)
+    if insertion_timestamp is not None:
+        node_data['insertion_timestamp'] = str(insertion_timestamp)
+    # Track update history with source_ids
+    if source_ids:
+        node_data['update_history'] = source_ids
+    
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
@@ -2331,19 +2439,69 @@ async def _merge_edges_then_upsert(
                         pipeline_status["latest_message"] = status_message
                         pipeline_status["history_messages"].append(status_message)
 
+    # Extract temporal metadata - use MAXIMUM (most recent) values from all edges
+    insertion_order = None
+    insertion_timestamp = None
+    if edges_data:
+        # Get maximum insertion_order and insertion_timestamp from all edges
+        for edge in edges_data:
+            edge_order = edge.get('insertion_order')
+            edge_timestamp = edge.get('insertion_timestamp')
+            
+            if edge_order is not None:
+                if insertion_order is None:
+                    insertion_order = edge_order
+                else:
+                    insertion_order = max(int(insertion_order), int(edge_order))
+            
+            if edge_timestamp is not None:
+                if insertion_timestamp is None:
+                    insertion_timestamp = edge_timestamp
+                else:
+                    insertion_timestamp = max(int(insertion_timestamp), int(edge_timestamp))
+    
+    # Also check already_edge for existing temporal metadata
+    if already_edge:
+        existing_order = already_edge.get('insertion_order')
+        existing_timestamp = already_edge.get('insertion_timestamp')
+        
+        if existing_order is not None:
+            if insertion_order is None:
+                insertion_order = existing_order
+            else:
+                insertion_order = max(int(insertion_order), int(existing_order))
+        
+        if existing_timestamp is not None:
+            if insertion_timestamp is None:
+                insertion_timestamp = existing_timestamp
+            else:
+                insertion_timestamp = max(int(insertion_timestamp), int(existing_timestamp))
+    
     edge_created_at = int(time.time())
+    
+    edge_upsert_data = dict(
+        weight=weight,
+        description=description,
+        keywords=keywords,
+        source_id=source_id,
+        file_path=file_path,
+        created_at=edge_created_at,
+        truncate=truncation_info,
+    )
+    
+    # Add temporal metadata if available
+    if insertion_order is not None:
+        edge_upsert_data['insertion_order'] = str(insertion_order)
+    if insertion_timestamp is not None:
+        edge_upsert_data['insertion_timestamp'] = str(insertion_timestamp)
+    # Track update history with source_ids
+    if source_ids:
+        edge_upsert_data['update_history'] = source_ids
+    
     await knowledge_graph_inst.upsert_edge(
         src_id,
         tgt_id,
-        edge_data=dict(
-            weight=weight,
-            description=description,
-            keywords=keywords,
-            source_id=source_id,
-            file_path=file_path,
-            created_at=edge_created_at,
-            truncate=truncation_info,
-        ),
+        edge_data=edge_upsert_data,
     )
 
     edge_data = dict(
@@ -2357,6 +2515,14 @@ async def _merge_edges_then_upsert(
         truncate=truncation_info,
         weight=weight,
     )
+    
+    # Add temporal metadata to edge_data as well for return value
+    if insertion_order is not None:
+        edge_data['insertion_order'] = insertion_order
+    if insertion_timestamp is not None:
+        edge_data['insertion_timestamp'] = insertion_timestamp
+    if source_ids:
+        edge_data['update_history'] = source_ids
 
     # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
     if src_id > tgt_id:
@@ -2827,6 +2993,9 @@ async def extract_entities(
         content = chunk_dp["content"]
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
+        # Extract temporal metadata from chunk
+        insertion_order = chunk_dp.get("insertion_order")
+        insertion_timestamp = chunk_dp.get("insertion_timestamp")
 
         # Create cache keys collector for batch processing
         cache_keys_collector = []
@@ -2858,14 +3027,16 @@ async def extract_entities(
             entity_extraction_user_prompt, final_result
         )
 
-        # Process initial extraction with file path
-        maybe_nodes, maybe_edges = await _process_extraction_result(
+        # Process initial extraction with file path and temporal metadata
+        maybe_nodes, maybe_edges, format_errors = await _process_extraction_result(
             final_result,
             chunk_key,
             timestamp,
             file_path,
             tuple_delimiter=context_base["tuple_delimiter"],
             completion_delimiter=context_base["completion_delimiter"],
+            insertion_order=insertion_order,
+            insertion_timestamp=insertion_timestamp,
         )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
@@ -2881,15 +3052,20 @@ async def extract_entities(
                 cache_keys_collector=cache_keys_collector,
             )
 
-            # Process gleaning result separately with file path
-            glean_nodes, glean_edges = await _process_extraction_result(
+            # Process gleaning result separately with file path and temporal metadata
+            glean_nodes, glean_edges, glean_errors = await _process_extraction_result(
                 glean_result,
                 chunk_key,
                 timestamp,
                 file_path,
                 tuple_delimiter=context_base["tuple_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
+                insertion_order=insertion_order,
+                insertion_timestamp=insertion_timestamp,
             )
+            
+            # Combine format errors from gleaning
+            format_errors.extend(glean_errors)
 
             # Merge results - compare description lengths to choose better version
             for entity_name, glean_entities in glean_nodes.items():
@@ -2907,20 +3083,90 @@ async def extract_entities(
                     # New entity from gleaning stage
                     maybe_nodes[entity_name] = list(glean_entities)
 
-            for edge_key, glean_edges in glean_edges.items():
+            for edge_key, glean_edges_list in glean_edges.items():
                 if edge_key in maybe_edges:
                     # Compare description lengths and keep the better one
                     original_desc_len = len(
                         maybe_edges[edge_key][0].get("description", "") or ""
                     )
-                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+                    glean_desc_len = len(glean_edges_list[0].get("description", "") or "")
 
                     if glean_desc_len > original_desc_len:
-                        maybe_edges[edge_key] = list(glean_edges)
+                        maybe_edges[edge_key] = list(glean_edges_list)
                     # Otherwise keep original version
                 else:
                     # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edges)
+                    maybe_edges[edge_key] = list(glean_edges_list)
+
+        # Retry logic for format errors (max 2 retries)
+        max_retries = 2
+        retry_count = 0
+        while format_errors and retry_count < max_retries:
+            retry_count += 1
+            logger.info(f"{chunk_key}: Retrying {len(format_errors)} format errors (attempt {retry_count}/{max_retries})")
+            
+            # Build retry prompt with specific error feedback
+            error_descriptions = []
+            for error in format_errors:
+                if error.get("error_type") == "entity_field_count":
+                    attrs = error.get("record_attributes", [])
+                    error_descriptions.append(
+                        f"Entity '{attrs[1] if len(attrs) > 1 else 'UNKNOWN'}' has {error['actual_fields']} fields instead of {error['expected_fields']}. "
+                        f"Please provide exactly 4 fields: entity<|#|>NAME<|#|>TYPE<|#|>DESCRIPTION"
+                    )
+                elif error.get("error_type") == "relation_field_count":
+                    attrs = error.get("record_attributes", [])
+                    error_descriptions.append(
+                        f"Relation '{attrs[1] if len(attrs) > 1 else 'UNKNOWN'}'~'{attrs[2] if len(attrs) > 2 else 'UNKNOWN'}' has {error['actual_fields']} fields instead of {error['expected_fields']}. "
+                        f"Please provide exactly 5 fields: relation<|#|>SOURCE<|#|>TARGET<|#|>KEYWORDS<|#|>DESCRIPTION"
+                    )
+            
+            retry_prompt = (
+                "The previous extraction had format errors:\n"
+                + "\n".join(f"- {desc}" for desc in error_descriptions)
+                + "\n\nPlease re-extract ONLY these entities/relations with the correct format."
+            )
+            
+            retry_result, retry_timestamp = await use_llm_func_with_cache(
+                retry_prompt,
+                use_llm_func,
+                system_prompt=entity_extraction_system_prompt,
+                llm_response_cache=llm_response_cache,
+                history_messages=history,
+                cache_type="extract",
+                chunk_id=chunk_key,
+                cache_keys_collector=cache_keys_collector,
+            )
+            
+            # Update history with retry
+            history = pack_user_ass_to_openai_messages(retry_prompt, retry_result)
+            
+            # Process retry result
+            retry_nodes, retry_edges, new_format_errors = await _process_extraction_result(
+                retry_result,
+                chunk_key,
+                retry_timestamp,
+                file_path,
+                tuple_delimiter=context_base["tuple_delimiter"],
+                completion_delimiter=context_base["completion_delimiter"],
+                insertion_order=insertion_order,
+                insertion_timestamp=insertion_timestamp,
+            )
+            
+            # Merge successful retry results
+            maybe_nodes.update(retry_nodes)
+            maybe_edges.update(retry_edges)
+            
+            # Update format errors for next iteration (only keep new errors)
+            format_errors = new_format_errors
+            
+            if not format_errors:
+                logger.info(f"{chunk_key}: All format errors resolved after {retry_count} retry attempt(s)")
+                break
+        
+        # Log remaining format errors after max retries
+        if format_errors:
+            logger.warning(f"{chunk_key}: {len(format_errors)} format errors remain after {max_retries} retry attempts")
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
@@ -3408,8 +3654,43 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    "insertion_order": result.get("insertion_order"),  # Preserve temporal metadata
                 }
                 valid_chunks.append(chunk_with_metadata)
+
+        # Filter chunks to keep only the most recent versions (highest insertion_order)
+        # Group chunks by file_path to find the maximum insertion_order per document series
+        if valid_chunks:
+            max_insertion_order = 0
+            for chunk in valid_chunks:
+                order = chunk.get("insertion_order")
+                if order is not None:
+                    try:
+                        order_int = int(order)
+                        if order_int > max_insertion_order:
+                            max_insertion_order = order_int
+                    except (ValueError, TypeError):
+                        pass
+            
+            # If we found temporal metadata, filter to keep only chunks with the highest order
+            if max_insertion_order > 0:
+                filtered_chunks = []
+                for chunk in valid_chunks:
+                    order = chunk.get("insertion_order")
+                    if order is None:
+                        # Keep chunks without temporal metadata (backward compatibility)
+                        filtered_chunks.append(chunk)
+                    else:
+                        try:
+                            if int(order) == max_insertion_order:
+                                filtered_chunks.append(chunk)
+                        except (ValueError, TypeError):
+                            filtered_chunks.append(chunk)
+                
+                logger.info(
+                    f"Naive query: {len(filtered_chunks)}/{len(valid_chunks)} chunks after temporal filtering (max_order:{max_insertion_order}, chunk_top_k:{search_top_k})"
+                )
+                return filtered_chunks
 
         logger.info(
             f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"

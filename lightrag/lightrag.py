@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import traceback
 import asyncio
 import configparser
 import inspect
 import os
 import time
+import traceback
 import warnings
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -15,105 +15,103 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Dict,
     Iterator,
-    cast,
-    final,
+    List,
     Literal,
     Optional,
-    List,
-    Dict,
     Union,
-)
-from lightrag.prompt import PROMPTS
-from lightrag.exceptions import PipelineCancelledException
-from lightrag.constants import (
-    DEFAULT_MAX_GLEANING,
-    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
-    DEFAULT_TOP_K,
-    DEFAULT_CHUNK_TOP_K,
-    DEFAULT_MAX_ENTITY_TOKENS,
-    DEFAULT_MAX_RELATION_TOKENS,
-    DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_COSINE_THRESHOLD,
-    DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_MIN_RERANK_SCORE,
-    DEFAULT_SUMMARY_MAX_TOKENS,
-    DEFAULT_SUMMARY_CONTEXT_SIZE,
-    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
-    DEFAULT_MAX_ASYNC,
-    DEFAULT_MAX_PARALLEL_INSERT,
-    DEFAULT_MAX_GRAPH_NODES,
-    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
-    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
-    DEFAULT_SUMMARY_LANGUAGE,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
-    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-    DEFAULT_MAX_FILE_PATHS,
-    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
-)
-from lightrag.utils import get_env_value
-
-from lightrag.kg import (
-    STORAGES,
-    verify_storage_implementation,
+    cast,
+    final,
 )
 
-
-from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_data_init_lock,
-    get_default_workspace,
-    set_default_workspace,
-    get_namespace_lock,
-)
+from dotenv import load_dotenv
 
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DeletionResult,
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
+    OllamaServerInfos,
     QueryParam,
+    QueryResult,
     StorageNameSpace,
     StoragesStatus,
-    DeletionResult,
-    OllamaServerInfos,
-    QueryResult,
+)
+from lightrag.constants import (
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_MAX_GLEANING,
+    DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
+    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_TOP_K,
+    GRAPH_FIELD_SEP,
+)
+from lightrag.exceptions import PipelineCancelledException
+from lightrag.kg import (
+    STORAGES,
+    verify_storage_implementation,
+)
+from lightrag.kg.shared_storage import (
+    get_data_init_lock,
+    get_default_workspace,
+    get_namespace_data,
+    get_namespace_lock,
+    set_default_workspace,
 )
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_token_size,
     extract_entities,
-    merge_nodes_and_edges,
     kg_query,
+    merge_nodes_and_edges,
     naive_query,
     rebuild_knowledge_from_chunks,
 )
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.prompt import PROMPTS
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
-    Tokenizer,
-    TiktokenTokenizer,
     EmbeddingFunc,
+    TiktokenTokenizer,
+    Tokenizer,
     always_get_an_event_loop,
-    compute_mdhash_id,
-    lazy_external_import,
-    priority_limit_async_func_call,
-    get_content_summary,
-    sanitize_text_for_encoding,
     check_storage_env_vars,
-    generate_track_id,
+    compute_mdhash_id,
     convert_to_user_format,
+    generate_track_id,
+    get_content_summary,
+    get_env_value,
+    lazy_external_import,
     logger,
-    subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    priority_limit_async_func_call,
+    sanitize_text_for_encoding,
+    subtract_source_ids,
 )
-from lightrag.types import KnowledgeGraph
-from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -638,7 +636,7 @@ class LightRAG:
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
+            meta_fields={"full_doc_id", "content", "file_path", "insertion_order", "insertion_timestamp"},
         )
 
         # Initialize document status storage
@@ -666,6 +664,104 @@ class LightRAG:
         )
 
         self._storages_status = StoragesStatus.CREATED
+        
+        # Initialize document insertion counter for chronological tracking
+        self._document_insertion_counter = 0
+    
+    def _infer_document_type(self, file_path: str, content: str = None) -> str:
+        """
+        Infer document type from first page content and/or file path.
+        
+        This method analyzes the beginning of the document content (first ~1000 characters)
+        to identify document type based on common contract patterns. Falls back to filename
+        analysis if content is not provided.
+        
+        Args:
+            file_path: Path or name of the document file
+            content: Full document content (optional, recommended for accurate detection)
+        
+        Returns:
+            Document type string: 'base_agreement', 'amendment', 'addendum', 
+            'exhibit', 'schedule', or 'unknown'
+        """
+        # Analyze content first (more reliable than filename)
+        if content:
+            # Extract first page (approximately first 1000-1500 characters)
+            first_page = content[:1500].lower()
+            
+            # Pattern matching for common contract document types
+            # Order matters - check more specific patterns first
+            
+            # Amendment patterns (very specific)
+            amendment_patterns = [
+                'amendment no.',
+                'amendment #',
+                'first amendment',
+                'second amendment',
+                'third amendment',
+                'this amendment',
+                'amendment to',
+                'amending agreement',
+            ]
+            if any(pattern in first_page for pattern in amendment_patterns):
+                return 'amendment'
+            
+            # Addendum patterns
+            addendum_patterns = [
+                'addendum no.',
+                'addendum #',
+                'this addendum',
+                'addendum to',
+                'supplemental agreement',
+                'supplement to',
+            ]
+            if any(pattern in first_page for pattern in addendum_patterns):
+                return 'addendum'
+            
+            # Exhibit/Schedule patterns
+            exhibit_patterns = [
+                'exhibit a',
+                'exhibit b', 
+                'exhibit c',
+                'exhibit ',
+                'schedule a',
+                'schedule b',
+                'schedule ',
+                'attachment ',
+            ]
+            if any(pattern in first_page for pattern in exhibit_patterns):
+                return 'exhibit'
+            
+            # Base agreement patterns (broader, check last)
+            base_patterns = [
+                'master agreement',
+                'master service agreement',
+                'base agreement',
+                'service agreement',
+                'this agreement',
+                'whereas',  # Common in base contracts
+                'parties agree',
+            ]
+            if any(pattern in first_page for pattern in base_patterns):
+                # Additional check: if "amendment" or "addendum" appears later, it's not base
+                if 'amendment' not in first_page and 'addendum' not in first_page:
+                    return 'base_agreement'
+        
+        # Fallback to filename analysis
+        if file_path:
+            file_path_lower = file_path.lower()
+            
+            # Check for common filename patterns
+            if 'amendment' in file_path_lower or 'amend' in file_path_lower or 'amd' in file_path_lower:
+                return 'amendment'
+            elif 'addendum' in file_path_lower or 'add' in file_path_lower or 'supplement' in file_path_lower:
+                return 'addendum'
+            elif 'exhibit' in file_path_lower or 'schedule' in file_path_lower:
+                return 'exhibit'
+            elif 'base' in file_path_lower or 'master' in file_path_lower:
+                return 'base_agreement'
+        
+        return 'unknown'
 
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
@@ -685,6 +781,16 @@ class LightRAG:
             from lightrag.kg.shared_storage import initialize_pipeline_status
 
             await initialize_pipeline_status(workspace=self.workspace)
+            
+            # Restore insertion counter from graph metadata if using NetworkX
+            if isinstance(self.chunk_entity_relation_graph, type) and self.chunk_entity_relation_graph.__name__ == 'NetworkXStorage':
+                try:
+                    graph = await self.chunk_entity_relation_graph._get_graph()
+                    if hasattr(graph, 'graph') and 'insertion_counter' in graph.graph:
+                        self._document_insertion_counter = graph.graph['insertion_counter']
+                        logger.info(f"Restored insertion counter: {self._document_insertion_counter}")
+                except Exception as e:
+                    logger.debug(f"Could not restore insertion counter: {e}")
 
             for storage in (
                 self.full_docs,
@@ -1828,12 +1934,23 @@ class LightRAG:
                                     f"got {type(chunking_result)}"
                                 )
 
-                            # Build chunks dictionary
+                            # Increment insertion counter for this document
+                            self._document_insertion_counter += 1
+                            current_insertion_order = self._document_insertion_counter
+                            current_insertion_timestamp = int(time.time())
+                            
+                            # Infer document type from content (first page) and file path
+                            doc_type = self._infer_document_type(file_path, content)
+                            
+                            # Build chunks dictionary with temporal metadata
                             chunks: dict[str, Any] = {
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
+                                    "insertion_order": current_insertion_order,  # Add chronological order
+                                    "insertion_timestamp": current_insertion_timestamp,  # Add timestamp
+                                    "doc_type": doc_type,  # Add inferred document type
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
                                 }
                                 for dp in chunking_result
@@ -2189,6 +2306,12 @@ class LightRAG:
     async def _insert_done(
         self, pipeline_status=None, pipeline_status_lock=None
     ) -> None:
+        # Save insertion counter to NetworkX graph metadata before persisting
+        if hasattr(self.chunk_entity_relation_graph, 'save_insertion_counter'):
+            await self.chunk_entity_relation_graph.save_insertion_counter(
+                self._document_insertion_counter
+            )
+        
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore

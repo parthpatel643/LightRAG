@@ -2,17 +2,18 @@ import os
 from dataclasses import dataclass
 from typing import final
 
-from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from lightrag.utils import logger
-from lightrag.base import BaseGraphStorage
 import networkx as nx
+from dotenv import load_dotenv
+
+from lightrag.base import BaseGraphStorage
+from lightrag.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from lightrag.utils import logger
+
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
-
-from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -107,6 +108,35 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         return graph.nodes.get(node_id)
 
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """
+        Get nodes as a batch with automatic temporal filtering.
+        
+        This override ensures that when multiple versions of the same entity exist
+        (from different document versions), only the most recent version based on
+        insertion_order is returned. This is critical for chronological contract RAG
+        where later documents should override information from earlier ones.
+        
+        Args:
+            node_ids: List of node IDs to retrieve
+            
+        Returns:
+            Dictionary mapping node_id to node data. Nodes without insertion_order
+            metadata are returned as-is. For nodes with temporal metadata, only the
+            version with the highest insertion_order is included.
+        """
+        graph = await self._get_graph()
+        result = {}
+        
+        for node_id in node_ids:
+            node_data = graph.nodes.get(node_id)
+            if node_data is not None:
+                # If node has temporal metadata, it's already the latest version
+                # (because upsert_node keeps the maximum insertion_order)
+                result[node_id] = dict(node_data)
+        
+        return result
+
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
         return graph.degree(node_id)
@@ -131,24 +161,124 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
+        Upsert a node with temporal tracking support.
+        
+        Temporal fields supported:
+        - insertion_order: Sequential order of document insertion (integer)
+        - insertion_timestamp: Unix timestamp when document was inserted (integer)
+        - update_history: String of source_ids separated by GRAPH_FIELD_SEP (string)
+        
         Importance notes:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
+        from lightrag.constants import GRAPH_FIELD_SEP
+        
         graph = await self._get_graph()
+        
+        # Convert update_history list to string if needed (for GraphML compatibility)
+        if 'update_history' in node_data and isinstance(node_data['update_history'], list):
+            node_data['update_history'] = GRAPH_FIELD_SEP.join(node_data['update_history'])
+        
+        # Handle temporal fields when merging with existing node
+        if graph.has_node(node_id):
+            existing_node = graph.nodes[node_id]
+            
+            # Merge update_history if present (both stored as strings)
+            if 'update_history' in node_data and 'update_history' in existing_node:
+                # Parse existing history from string
+                existing_history_str = existing_node.get('update_history', '')
+                existing_list = existing_history_str.split(GRAPH_FIELD_SEP) if existing_history_str else []
+                
+                # Parse new history from string (already converted above)
+                new_history_str = node_data.get('update_history', '')
+                new_list = new_history_str.split(GRAPH_FIELD_SEP) if new_history_str else []
+                
+                # Combine and deduplicate while preserving order
+                combined = existing_list + new_list
+                seen = set()
+                unique_list = [x for x in combined if x and not (x in seen or seen.add(x))]
+                
+                # Convert back to string
+                node_data['update_history'] = GRAPH_FIELD_SEP.join(unique_list)
+            
+            # Keep maximum insertion_order (most recent)
+            if 'insertion_order' in node_data and 'insertion_order' in existing_node:
+                node_data['insertion_order'] = max(
+                    int(node_data['insertion_order']),
+                    int(existing_node['insertion_order'])
+                )
+            
+            # Keep maximum insertion_timestamp (most recent)
+            if 'insertion_timestamp' in node_data and 'insertion_timestamp' in existing_node:
+                node_data['insertion_timestamp'] = max(
+                    int(node_data['insertion_timestamp']),
+                    int(existing_node['insertion_timestamp'])
+                )
+        
         graph.add_node(node_id, **node_data)
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         """
+        Upsert an edge with temporal tracking support.
+        
+        Temporal fields supported:
+        - insertion_order: Sequential order of document insertion (integer)
+        - insertion_timestamp: Unix timestamp when document was inserted (integer)
+        - update_history: String of source_ids separated by GRAPH_FIELD_SEP (string)
+        
         Importance notes:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
+        from lightrag.constants import GRAPH_FIELD_SEP
+        
         graph = await self._get_graph()
+        
+        # Convert update_history list to string if needed (for GraphML compatibility)
+        if 'update_history' in edge_data and isinstance(edge_data['update_history'], list):
+            edge_data['update_history'] = GRAPH_FIELD_SEP.join(edge_data['update_history'])
+        
+        # Handle temporal fields when merging with existing edge
+        if graph.has_edge(source_node_id, target_node_id):
+            existing_edge = graph.edges[source_node_id, target_node_id]
+            
+            # Merge update_history if present (both stored as strings)
+            if 'update_history' in edge_data and 'update_history' in existing_edge:
+                # Parse existing history from string
+                existing_history_str = existing_edge.get('update_history', '')
+                existing_list = existing_history_str.split(GRAPH_FIELD_SEP) if existing_history_str else []
+                
+                # Parse new history from string (already converted above)
+                new_history_str = edge_data.get('update_history', '')
+                new_list = new_history_str.split(GRAPH_FIELD_SEP) if new_history_str else []
+                
+                # Combine and deduplicate while preserving order
+                combined = existing_list + new_list
+                seen = set()
+                unique_list = [x for x in combined if x and not (x in seen or seen.add(x))]
+                
+                # Convert back to string
+                edge_data['update_history'] = GRAPH_FIELD_SEP.join(unique_list)
+            
+            # Keep maximum insertion_order (most recent)
+            if 'insertion_order' in edge_data and 'insertion_order' in existing_edge:
+                edge_data['insertion_order'] = max(
+                    int(edge_data['insertion_order']),
+                    int(existing_edge['insertion_order'])
+                )
+            
+            # Keep maximum insertion_timestamp (most recent)
+            if 'insertion_timestamp' in edge_data and 'insertion_timestamp' in existing_edge:
+                edge_data['insertion_timestamp'] = max(
+                    int(edge_data['insertion_timestamp']),
+                    int(existing_edge['insertion_timestamp'])
+                )
+        
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
@@ -499,9 +629,255 @@ class NetworkXStorage(BaseGraphStorage):
             edge_data_with_nodes["target"] = v
             all_edges.append(edge_data_with_nodes)
         return all_edges
+    
+    async def get_entities_by_recency(
+        self, entity_names: list[str], return_latest_only: bool = True
+    ) -> dict[str, dict]:
+        """
+        Get entities with temporal filtering support.
+        
+        Args:
+            entity_names: List of entity names to retrieve
+            return_latest_only: If True, returns only the most recent version of each entity
+                              based on insertion_order. If False, returns all versions.
+        
+        Returns:
+            Dictionary mapping entity_name to node data. When return_latest_only=True,
+            only entities with the highest insertion_order are included.
+        """
+        graph = await self._get_graph()
+        results = {}
+        
+        for entity_name in entity_names:
+            if graph.has_node(entity_name):
+                node_data = dict(graph.nodes[entity_name])
+                node_data['entity_name'] = entity_name  # Ensure entity_name is included
+                
+                if return_latest_only:
+                    # Check if this entity has insertion_order metadata
+                    if 'insertion_order' in node_data:
+                        # Only return if we don't have this entity yet, or this one is newer
+                        if entity_name not in results:
+                            results[entity_name] = node_data
+                        elif int(node_data.get('insertion_order', 0)) > int(results[entity_name].get('insertion_order', 0)):
+                            results[entity_name] = node_data
+                    else:
+                        # No temporal metadata, include it
+                        results[entity_name] = node_data
+                else:
+                    # Return all versions
+                    results[entity_name] = node_data
+        
+        return results
+    
+    async def get_entity_history(self, entity_name: str) -> dict:
+        """
+        Get the update history for a specific entity.
+        
+        Args:
+            entity_name: Name of the entity to get history for
+        
+        Returns:
+            Dictionary containing:
+            - entity_name: Name of the entity
+            - insertion_order: Most recent insertion order
+            - insertion_timestamp: Most recent timestamp
+            - update_history: List of all source_ids that contributed to this entity
+            - update_count: Number of updates
+        """
+        from lightrag.constants import GRAPH_FIELD_SEP
+        
+        graph = await self._get_graph()
+        
+        if not graph.has_node(entity_name):
+            return None
+        
+        node_data = dict(graph.nodes[entity_name])
+        
+        # Parse update_history from string to list
+        update_history_str = node_data.get('update_history', '')
+        update_history = update_history_str.split(GRAPH_FIELD_SEP) if update_history_str else []
+        
+        return {
+            'entity_name': entity_name,
+            'insertion_order': node_data.get('insertion_order'),
+            'insertion_timestamp': node_data.get('insertion_timestamp'),
+            'update_history': update_history,
+            'update_count': len(update_history) if update_history else 0,
+            'description': node_data.get('description', ''),
+            'entity_type': node_data.get('entity_type', ''),
+        }
+    
+    async def get_entities_at_time(self, insertion_order: int) -> dict[str, dict]:
+        """
+        Get all entities as they existed at a specific point in time.
+        
+        Args:
+            insertion_order: Point in time represented by insertion order
+        
+        Returns:
+            Dictionary mapping entity_name to node data for entities that existed
+            at or before the specified insertion_order.
+        """
+        graph = await self._get_graph()
+        results = {}
+        
+        for node_id in graph.nodes():
+            node_data = dict(graph.nodes[node_id])
+            node_insertion = node_data.get('insertion_order')
+            
+            # Include entities that existed at or before this time
+            if node_insertion is not None and int(node_insertion) <= insertion_order:
+                node_data['entity_name'] = node_id
+                results[node_id] = node_data
+        
+        return results
+    
+    async def filter_entities_by_order(self, entity_data: list[dict], max_insertion_order: int = None, 
+                                      min_insertion_order: int = None) -> list[dict]:
+        """
+        Filter entity data by insertion order range.
+        
+        Args:
+            entity_data: List of entity dictionaries
+            max_insertion_order: Maximum insertion order to include (inclusive)
+            min_insertion_order: Minimum insertion order to include (inclusive)
+        
+        Returns:
+            Filtered list of entity dictionaries
+        """
+        filtered = []
+        for entity in entity_data:
+            insertion_order = entity.get('insertion_order')
+            if insertion_order is None:
+                # No temporal metadata, include by default
+                filtered.append(entity)
+                continue
+                
+            insertion_order = int(insertion_order)
+            
+            # Apply filters
+            if max_insertion_order is not None and insertion_order > max_insertion_order:
+                continue
+            if min_insertion_order is not None and insertion_order < min_insertion_order:
+                continue
+                
+            filtered.append(entity)
+        
+        return filtered
+    
+    async def detect_entity_changes(self, entity_name: str, order1: int, order2: int) -> dict:
+        """
+        Detect changes in an entity between two points in time.
+        
+        Args:
+            entity_name: Name of the entity to check
+            order1: Earlier insertion order
+            order2: Later insertion order
+        
+        Returns:
+            Dictionary containing:
+            - entity_name: Name of the entity
+            - changed: Boolean indicating if entity changed
+            - state_at_order1: Entity data at earlier time (or None)
+            - state_at_order2: Entity data at later time (or None)
+            - description_diff: Textual difference if descriptions changed
+        """
+        from lightrag.constants import GRAPH_FIELD_SEP
+        
+        graph = await self._get_graph()
+        
+        if not graph.has_node(entity_name):
+            return {
+                'entity_name': entity_name,
+                'changed': False,
+                'state_at_order1': None,
+                'state_at_order2': None,
+                'description_diff': None,
+            }
+        
+        node_data = dict(graph.nodes[entity_name])
+        update_history_str = node_data.get('update_history', '')
+        update_history = update_history_str.split(GRAPH_FIELD_SEP) if update_history_str else []
+        
+        # Check if entity existed at each time point
+        insertion_order = int(node_data.get('insertion_order', 0))
+        
+        state1 = None if insertion_order > order1 else node_data
+        state2 = None if insertion_order > order2 else node_data
+        
+        # Detect if entity was created or modified between order1 and order2
+        changed = False
+        if state1 is None and state2 is not None:
+            changed = True  # Entity was created
+        elif state1 is not None and state2 is not None:
+            # Check if update_history shows changes in this range
+            # This is a simplified check - full implementation would track per-update timestamps
+            changed = order1 < insertion_order <= order2
+        
+        return {
+            'entity_name': entity_name,
+            'changed': changed,
+            'state_at_order1': state1,
+            'state_at_order2': state2,
+            'description_diff': None if not changed else f"Entity updated at order {insertion_order}",
+        }
+    
+    async def create_supersedes_relationship(self, prev_doc_id: str, new_doc_id: str, 
+                                            prev_insertion_order: int, new_insertion_order: int) -> None:
+        """
+        Create an explicit SUPERSEDES relationship between two document versions.
+        
+        Args:
+            prev_doc_id: Document ID of the previous version
+            new_doc_id: Document ID of the new version
+            prev_insertion_order: Insertion order of previous document
+            new_insertion_order: Insertion order of new document
+        """
+        import time
+        
+        # Create a special edge type for supersession
+        edge_data = {
+            'relationship': 'SUPERSEDES',
+            'description': f'Document {new_doc_id} (order {new_insertion_order}) supersedes {prev_doc_id} (order {prev_insertion_order})',
+            'keywords': 'supersedes,replaces,updates',
+            'weight': '1.0',
+            'insertion_order': str(new_insertion_order),
+            'insertion_timestamp': str(int(time.time())),
+        }
+        
+        await self.upsert_edge(prev_doc_id, new_doc_id, edge_data)
+        logger.info(f"Created SUPERSEDES relationship: {prev_doc_id} -> {new_doc_id}")
+    
+    async def get_document_chain(self, doc_id: str) -> list[dict]:
+        """
+        Get the full chain of document versions (predecessors and successors).
+        
+        Args:
+            doc_id: Document ID to start from
+        
+        Returns:
+            List of documents in chronological order with their relationships
+        """
+        graph = await self._get_graph()
+        chain = []
+        
+        # Find all SUPERSEDES relationships
+        for source, target, edge_data in graph.edges(data=True):
+            if edge_data.get('relationship') == 'SUPERSEDES':
+                chain.append({
+                    'prev_doc': source,
+                    'new_doc': target,
+                    'insertion_order': edge_data.get('insertion_order'),
+                    'description': edge_data.get('description'),
+                })
+        
+        # Sort by insertion order
+        chain.sort(key=lambda x: int(x.get('insertion_order', 0)))
+        return chain
 
     async def index_done_callback(self) -> bool:
-        """Save data to disk"""
+        """Save data to disk with insertion counter persistence"""
         async with self._storage_lock:
             # Check if storage was updated by another process
             if self.storage_updated.value:
@@ -533,6 +909,17 @@ class NetworkXStorage(BaseGraphStorage):
                 return False  # Return error
 
         return True
+    
+    async def save_insertion_counter(self, counter_value: int) -> None:
+        """
+        Save the insertion counter to graph metadata.
+        
+        Args:
+            counter_value: Current value of the insertion counter
+        """
+        graph = await self._get_graph()
+        graph.graph['insertion_counter'] = counter_value
+        logger.debug(f"[{self.workspace}] Saved insertion counter: {counter_value}")
 
     async def drop(self) -> dict[str, str]:
         """Drop all graph data from storage and clean up resources

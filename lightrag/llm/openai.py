@@ -722,6 +722,7 @@ async def openai_embed(
     embedding_dim: int | None = None,
     max_token_size: int | None = None,
     client_configs: dict[str, Any] | None = None,
+    extra_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
     use_azure: bool = False,
     azure_deployment: str | None = None,
@@ -821,6 +822,7 @@ async def openai_embed(
             "model": api_model,
             "input": texts,
             "encoding_format": "base64",
+            **(extra_configs or {}),
         }
 
         # Add dimensions parameter only if embedding_dim is provided

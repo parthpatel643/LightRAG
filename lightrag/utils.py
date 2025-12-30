@@ -1927,7 +1927,7 @@ async def update_chunk_cache_list(
 
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags from the text
-    Remove  orphon ...</think> tags from the text also"""
+    Remove orphan </think> tags from the text also"""
     return re.sub(
         r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
     ).strip()
