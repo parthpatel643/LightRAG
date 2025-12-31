@@ -1,18 +1,17 @@
-# Chronological Contract RAG - Complete Implementation Guide
+# Chronological Contract RAG - Implementation Guide
 
-> **Last Updated:** December 30, 2025  
-> **Status:** ✅ All features implemented and tested
+> **Last Updated:** December 31, 2025  
+> **Status:** ✅ Production Ready
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Latest Updates](#latest-updates)
-- [Critical Bug Fix (December 2025)](#critical-bug-fix-december-2025)
 - [Key Features](#key-features)
+- [Architecture](#architecture)
 - [Implementation Details](#implementation-details)
 - [Usage Examples](#usage-examples)
-- [Enhanced API Reference](#enhanced-api-reference)
-- [Testing](#testing)
+- [API Reference](#api-reference)
+- [Testing & Debugging](#testing--debugging)
 - [Design Decisions](#design-decisions)
 - [Migration Paths](#migration-paths)
 - [Performance Considerations](#performance-considerations)
@@ -21,151 +20,9 @@
 
 ## Overview
 
-This implementation extends LightRAG with **temporal tracking** capabilities, enabling chronological document management for contract RAG use cases. The system automatically tracks document insertion order and maintains entity/relationship recency, making it ideal for managing Base Agreements, Amendments, and Addendums.
+This implementation extends LightRAG with **temporal tracking** capabilities, enabling chronological document management for contract RAG use cases. The system automatically tracks document insertion order and maintains entity/relationship recency with intelligent relevance-aware filtering.
 
-**Key Principle:** Later documents always supersede earlier ones, and queries return only the most current information.
-
----
-
-## Latest Updates
-
-### 🎉 All Planned Enhancements Completed (December 2025)
-
-This implementation now includes advanced temporal tracking capabilities:
-
-- ✅ **Query Pipeline Temporal Filtering**: Filter entities by insertion order range
-- ✅ **Document Type Inference**: Content-based automatic classification (base_agreement, amendment, addendum, exhibit)
-- ✅ **Temporal Graph Traversal**: Point-in-time queries to see graph state at any moment
-- ✅ **Change Detection**: Track modifications between versions
-- ✅ **SUPERSEDES Relationships**: Explicit document version chains
-- ✅ **Critical Bug Fix**: Proper temporal metadata extraction from all nodes/edges
-
----
-
-## Critical Bug Fix (December 2025)
-
-### Problem Identified
-
-The chronological RAG implementation was not correctly prioritizing the most recent document versions during queries. When multiple documents contained the same entity (e.g., pricing information for Boeing 787), the query results included data from **all versions** instead of only the **most recent** version.
-
-### Root Cause
-
-In `lightrag/operate.py`, the functions `_merge_nodes_then_upsert()` and `_merge_edges_then_upsert()` were extracting temporal metadata (`insertion_order` and `insertion_timestamp`) from only the **first** node/edge in the batch, rather than taking the **maximum** (most recent) value across all nodes/edges.
-
-**Before (Buggy Code):**
-```python
-# Extract temporal metadata from first node (all nodes in nodes_data should have same temporal metadata)
-insertion_order = None
-insertion_timestamp = None
-if nodes_data:
-    first_node = nodes_data[0]
-    insertion_order = first_node.get('insertion_order')
-    insertion_timestamp = first_node.get('insertion_timestamp')
-```
-
-**Why This Was Wrong:**
-1. When an entity appears in multiple documents (e.g., "Boeing 787 pricing" in both Amendment 2023 and Fully Executed 2024), each occurrence has a different `insertion_order`
-2. Taking only the first node's metadata meant the entity could be tagged with an **earlier** insertion order instead of the most recent one
-3. The `upsert_node()` function in NetworkX storage correctly keeps the maximum insertion_order when merging, but it never received the correct maximum value to begin with
-
-### Solution Implemented
-
-Modified both `_merge_nodes_then_upsert()` and `_merge_edges_then_upsert()` in `lightrag/operate.py` to:
-
-1. **Iterate through ALL nodes/edges** in the batch to find the maximum `insertion_order` and `insertion_timestamp`
-2. **Also check existing nodes/edges** (from the graph) to ensure we don't downgrade to an earlier version
-3. **Convert values to strings** before storing (to match GraphML format requirements)
-
-**After (Fixed Code):**
-```python
-# Extract temporal metadata - use MAXIMUM (most recent) values from all nodes
-insertion_order = None
-insertion_timestamp = None
-if nodes_data:
-    # Get maximum insertion_order and insertion_timestamp from all nodes
-    for node in nodes_data:
-        node_order = node.get('insertion_order')
-        node_timestamp = node.get('insertion_timestamp')
-        
-        if node_order is not None:
-            if insertion_order is None:
-                insertion_order = node_order
-            else:
-                insertion_order = max(int(insertion_order), int(node_order))
-        
-        if node_timestamp is not None:
-            if insertion_timestamp is None:
-                insertion_timestamp = node_timestamp
-            else:
-                insertion_timestamp = max(int(insertion_timestamp), int(node_timestamp))
-
-# Also check already_node for existing temporal metadata
-if already_node:
-    existing_order = already_node.get('insertion_order')
-    existing_timestamp = already_node.get('insertion_timestamp')
-    
-    if existing_order is not None:
-        if insertion_order is None:
-            insertion_order = existing_order
-        else:
-            insertion_order = max(int(insertion_order), int(existing_order))
-    
-    if existing_timestamp is not None:
-        if insertion_timestamp is None:
-            insertion_timestamp = existing_timestamp
-        else:
-            insertion_timestamp = max(int(insertion_timestamp), int(existing_timestamp))
-
-node_data = dict(
-    entity_id=entity_name,
-    entity_type=entity_type,
-    description=description,
-    source_id=source_id,
-    file_path=file_path,
-    created_at=int(time.time()),
-    truncate=truncation_info,
-)
-
-# Add temporal metadata if available
-if insertion_order is not None:
-    node_data['insertion_order'] = str(insertion_order)  # Convert to string
-if insertion_timestamp is not None:
-    node_data['insertion_timestamp'] = str(insertion_timestamp)  # Convert to string
-if source_ids:
-    node_data['update_history'] = source_ids
-```
-
-### Impact of the Fix
-
-**Before Fix:**
-- Query: "What are the latest rates for Boeing 787 flights with lavatory service?"
-- Response: Returns pricing from **all three documents** (Amendment 2023, READONLY, and Fully Executed):
-  - $372.85 (from Amendment 2023 - insertion_order=1)
-  - $384.08 (from READONLY - insertion_order=2)  
-  - $392.50 (from Fully Executed - insertion_order=3)
-- LLM must disambiguate, leading to confused responses
-
-**After Fix:**
-- Query: "What are the latest rates for Boeing 787 flights with lavatory service?"
-- Response: Returns pricing **only from Fully Executed** (insertion_order=3):
-  - $392.50 (from Fully Executed contract - the most recent version)
-- LLM confidently states the current rate
-
-### Files Modified
-
-- `lightrag/operate.py`
-  - `_merge_nodes_then_upsert()` (lines ~1859-1895)
-  - `_merge_edges_then_upsert()` (lines ~2415-2451)
-
-### Data Flow After Fix
-
-```
-Document (insertion_order=3) 
-  → Chunks (insertion_order=3) 
-  → Entities (insertion_order=max(1,2,3)=3) ✓ FIXED
-  → Relationships (insertion_order=max(1,2,3)=3) ✓ FIXED
-  → Query Results (only order=3 data returned) ✓
-```
+**Key Principle:** Later documents supersede earlier ones when they contain the same information. The system intelligently falls back to earlier documents when content doesn't exist in newer versions.
 
 ---
 
@@ -189,12 +46,19 @@ Each level preserves:
 
 ### 3. Entity-Level Recency with Update History
 When the same entity appears in multiple documents:
-- The system keeps the **maximum** `insertion_order` (most recent) ✅ Fixed
+- The system keeps the **maximum** `insertion_order` (most recent)
 - Entity descriptions are merged using LLM summarization
 - `update_history` tracks ALL source chunks (full audit trail)
 - No chunk deduplication—same text in different documents is preserved (for legal compliance)
 
-### 4. NetworkX Storage Extensions
+### 4. Relevance-Aware Temporal Filtering
+The system intelligently selects chunks based on both **recency** and **relevance**:
+- Tries the most recent document (highest insertion_order) first
+- Only accepts chunks that meet a minimum similarity threshold (default: 0.3)
+- Falls back to earlier documents if recent ones lack relevant content
+- Returns all chunks across all orders if no single order is sufficient
+
+### 5. NetworkX Storage Extensions
 New methods added to `NetworkXStorage`:
 - `get_entities_by_recency(entity_names, return_latest_only=True)`: Retrieve only the most recent version of each entity
 - `get_entity_history(entity_name)`: Get complete update history for an entity
@@ -203,38 +67,211 @@ New methods added to `NetworkXStorage`:
 - `detect_entity_changes(...)`: Detect changes between two versions
 - `create_supersedes_relationship(...)`: Create explicit supersession links
 - `get_document_chain(doc_id)`: Get full version chain
-- `save_insertion_counter(counter_value)`: Persist counter to graph metadata
 
-### 5. Session Persistence
+### 6. Session Persistence
 The insertion counter is saved to the NetworkX graph metadata and restored on initialization, maintaining chronology across restarts.
+
+---
+
+## Architecture
+
+### Complete Data Flow
+
+```mermaid
+graph TD
+    A[Document Upload] -->|Sequential Insertion| B[Assign insertion_order]
+    B --> C{Document Type?}
+    C -->|Base Agreement| D[insertion_order = 1]
+    C -->|Amendment 1| E[insertion_order = 2]
+    C -->|Amendment 2| F[insertion_order = 3]
+    C -->|Amendment 3| G[insertion_order = 4]
+    
+    D --> H[Chunk Creation]
+    E --> H
+    F --> H
+    G --> H
+    
+    H --> I[Add temporal metadata to chunks]
+    I --> J[Entity Extraction]
+    J --> K{Entity Merging}
+    
+    K -->|Same entity in multiple docs| L[Take MAX insertion_order]
+    K -->|New entity| M[Keep current insertion_order]
+    
+    L --> N[Store in Knowledge Graph]
+    M --> N
+    
+    N --> O[User Query]
+    O --> P[Vector Search]
+    P --> Q[Retrieve Candidate Chunks]
+    
+    Q --> R{Temporal Filtering with Relevance Check}
+    
+    R --> S{Check insertion_order=4}
+    S -->|Relevance Score >= 0.3| T[Return order=4 chunks]
+    S -->|Relevance Score < 0.3| U[Skip order=4, try order=3]
+    
+    U --> V{Check insertion_order=3}
+    V -->|Relevance Score >= 0.3| W[Return order=3 chunks]
+    V -->|Relevance Score < 0.3| X[Skip order=3, try order=2]
+    
+    X --> Y{Check insertion_order=2}
+    Y -->|Relevance Score >= 0.3| Z[Return order=2 chunks]
+    Y -->|Relevance Score < 0.3| AA[Skip order=2, try order=1]
+    
+    AA --> AB{Check insertion_order=1}
+    AB -->|Relevance Score >= 0.3| AC[Return order=1 chunks]
+    AB -->|All orders fail| AD[Return ALL chunks from ALL orders]
+    
+    T --> AE[LLM Answer Generation]
+    W --> AE
+    Z --> AE
+    AC --> AE
+    AD --> AE
+    
+    style L fill:#90EE90
+    style R fill:#FFD700
+    style AD fill:#FFA07A
+```
+
+### Relevance-Aware Temporal Filtering Logic
+
+```mermaid
+flowchart TD
+    Start[User Query] --> VectorSearch[Vector Similarity Search]
+    
+    VectorSearch --> Group[Group Chunks by insertion_order]
+    Group --> Summary["Example: {4: 8 chunks, 3: 6 chunks, 2: 6 chunks, 1: 8 chunks}"]
+    
+    Summary --> Check4{Check Latest Order<br/>insertion_order=4}
+    
+    Check4 --> Calc4[Filter chunks where<br/>similarity >= 0.3]
+    Calc4 --> Decision4{Relevant chunks >= min_chunks?}
+    
+    Decision4 -->|Yes: 5/8 relevant| Return4[✓ Return order=4 chunks<br/>Latest document has answer]
+    Decision4 -->|No: 0/8 relevant| Skip4[✗ Skip order=4<br/>Content not relevant]
+    
+    Skip4 --> Check3{Check Next Order<br/>insertion_order=3}
+    
+    Check3 --> Calc3[Filter chunks where<br/>similarity >= 0.3]
+    Calc3 --> Decision3{Relevant chunks >= min_chunks?}
+    
+    Decision3 -->|Yes: 4/6 relevant| Return3[✓ Return order=3 chunks<br/>Previous doc has answer]
+    Decision3 -->|No: 0/6 relevant| Skip3[✗ Skip order=3<br/>Content not relevant]
+    
+    Skip3 --> Check2{Check Next Order<br/>insertion_order=2}
+    
+    Check2 --> Calc2[Filter chunks where<br/>similarity >= 0.3]
+    Calc2 --> Decision2{Relevant chunks >= min_chunks?}
+    
+    Decision2 -->|Yes: 3/6 relevant| Return2[✓ Return order=2 chunks<br/>Earlier doc has answer]
+    Decision2 -->|No: All fail| Fallback[⚠ No single order sufficient<br/>Return ALL chunks]
+    
+    Return4 --> LLM[LLM Answer Generation]
+    Return3 --> LLM
+    Return2 --> LLM
+    Fallback --> LLM
+    
+    LLM --> Answer[Final Answer with Citations]
+    
+    style Return4 fill:#90EE90
+    style Return3 fill:#90EE90
+    style Return2 fill:#90EE90
+    style Fallback fill:#FFE4B5
+    style Answer fill:#87CEEB
+```
+
+### Query Routing: Content-Aware Document Selection
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant RAG as LightRAG Query Engine
+    participant Filter as Temporal Filter<br/>(Relevance-Aware)
+    participant KG as Knowledge Graph
+    participant LLM
+    
+    Note over User,LLM: Scenario 1: Latest Document Has Answer
+    
+    User->>RAG: "What are latest Boeing 787 rates?"
+    RAG->>KG: Search for pricing entities
+    KG->>Filter: Chunks from orders {1, 2, 3, 4}
+    
+    Note over Filter: Check order=4 (latest)
+    Filter->>Filter: 8/10 chunks have<br/>similarity >= 0.3 ✓
+    Filter->>RAG: Return order=4 chunks only
+    RAG->>LLM: Generate answer from order=4
+    LLM->>User: "$392.50 per event<br/>(Amendment 4 - 2025)"
+    
+    Note over User,LLM: Scenario 2: Content Only in Earlier Document
+    
+    User->>RAG: "What are termination conditions?"
+    RAG->>KG: Search for termination entities
+    KG->>Filter: Chunks from orders {1, 2, 3, 4}
+    
+    Note over Filter: Check order=4 (latest)
+    Filter->>Filter: 0/6 chunks have<br/>similarity >= 0.3 ✗
+    Note over Filter: Skip order=4 (pricing only)
+    
+    Note over Filter: Check order=3
+    Filter->>Filter: 0/6 chunks have<br/>similarity >= 0.3 ✗
+    Note over Filter: Skip order=3
+    
+    Note over Filter: Check order=2
+    Filter->>Filter: 3/6 chunks have<br/>similarity >= 0.3 ✓
+    Filter->>RAG: Return order=2 chunks
+    RAG->>LLM: Generate answer from order=2
+    LLM->>User: "Termination after escalation...<br/>(Amendment 2 - still valid)"
+```
 
 ---
 
 ## Implementation Details
 
-### Modified Files
+### Modified Files and Core Components
 
 #### `lightrag/lightrag.py`
-- Added `_document_insertion_counter` initialization in `__post_init__`
-- Counter restoration from graph metadata in `initialize_storages`
-- Temporal metadata injection into chunks during `apipeline_process_enqueue_documents`
-- Counter persistence in `_insert_done`
+Core temporal tracking initialization and persistence:
+- `_document_insertion_counter`: Auto-incrementing counter for insertion order
+- Counter restoration from graph metadata in `initialize_storages()`
+- Temporal metadata injection into chunks during document processing
+- Counter persistence in `_insert_done()`
 
 #### `lightrag/kg/networkx_impl.py`
-- Extended `upsert_node` to handle temporal fields with intelligent merging:
-  - `update_history`: Combines and deduplicates lists
+Extended graph storage with temporal capabilities:
+- `upsert_node()`: Intelligent temporal field merging
+  - `update_history`: Combines and deduplicates chunk IDs
   - `insertion_order`: Keeps maximum (most recent)
   - `insertion_timestamp`: Keeps maximum (most recent)
-- Extended `upsert_edge` with same temporal handling
-- Added temporal query methods (see Enhanced API Reference)
+- `upsert_edge()`: Same temporal handling for relationships
+- Temporal query methods (see API Reference)
 
-#### `lightrag/operate.py` ✅ **FIXED**
-- Updated `_handle_single_entity_extraction` to accept and propagate temporal metadata
-- Updated `_handle_single_relationship_extraction` to accept and propagate temporal metadata
-- Updated `_process_extraction_result` to pass temporal metadata
-- Modified `_process_single_content` to extract temporal metadata from chunks
-- **FIXED** `_merge_nodes_then_upsert` to extract MAXIMUM insertion_order from all nodes
-- **FIXED** `_merge_edges_then_upsert` to extract MAXIMUM insertion_order from all edges
+#### `lightrag/operate.py`
+Entity extraction and temporal filtering:
+- `_handle_single_entity_extraction()`: Propagates temporal metadata
+- `_handle_single_relationship_extraction()`: Propagates temporal metadata
+- `_merge_nodes_then_upsert()`: Extracts MAX insertion_order from all nodes
+- `_merge_edges_then_upsert()`: Extracts MAX insertion_order from all edges
+- `_apply_temporal_chunk_filtering()`: **Relevance-aware filtering** with progressive fallback
+- `extract_table_semantic_text()`: HTML table parsing for better vector search
+
+### Temporal Filtering Algorithm
+
+The relevance-aware temporal filtering follows this logic:
+
+1. **Group chunks by insertion_order**
+2. **For each order (from highest to lowest)**:
+   - Filter chunks where `similarity >= relevance_threshold` (default 0.3)
+   - If `relevant_chunks >= min_chunks`: Return all chunks from this order
+   - Else: Skip to next lower order
+3. **Ultimate fallback**: If no single order is sufficient, return ALL chunks
+4. **LLM processing**: Generate answer from selected chunks
+
+This ensures:
+- ✅ Recent documents are preferred when they contain relevant information
+- ✅ System falls back to earlier documents when content isn't in latest versions
+- ✅ No hallucination from irrelevant boilerplate text
+- ✅ Full audit trail preserved across all documents
 
 ---
 
@@ -313,7 +350,7 @@ latest_entities = await graph.get_entities_by_recency(
 
 ---
 
-## Enhanced API Reference
+## API Reference
 
 ### Temporal Query Methods
 
@@ -374,93 +411,52 @@ doc_type = rag._infer_document_type(
 # - 'unknown': Default when no patterns match
 ```
 
-### Complete Enhanced Example
-
-```python
-from lightrag import LightRAG, QueryParam
-
-# Initialize
-rag = LightRAG(working_dir="./storage")
-await rag.initialize_storages()
-
-# Insert documents - types are inferred automatically
-await rag.ainsert(content1, file_paths="Base_Agreement_2020.txt")
-await rag.ainsert(content2, file_paths="Amendment_1_2021.txt")
-await rag.ainsert(content3, file_paths="Addendum_Quality_2022.txt")
-
-# Create supersession relationships
-graph = rag.chunk_entity_relation_graph
-await graph.create_supersedes_relationship(
-    "Base_Agreement_2020.txt", "Amendment_1_2021.txt", 1, 2
-)
-
-# Query at a specific point in time
-entities_2021 = await graph.get_entities_at_time(insertion_order=2)
-print(f"Entities as of Amendment 1: {len(entities_2021)}")
-
-# Detect changes between versions
-changes = await graph.detect_entity_changes("pricing_terms", order1=1, order2=2)
-if changes['changed']:
-    print(f"Pricing terms were modified in Amendment 1")
-
-# Get document chain
-chain = await graph.get_document_chain("Base_Agreement_2020.txt")
-print(f"Document evolution: {[link['new_doc'] for link in chain]}")
-
-# Query with temporal awareness (always returns latest information)
-result = await rag.aquery(
-    "What are the current pricing terms?",
-    param=QueryParam(mode="mix")  # Best mode for production
-)
-```
-
 ---
 
-## Testing
+## Testing & Debugging
 
-### Quick Test (Before Full Indexing)
+### Query Debugging Script
 
-Run the test script to verify the temporal tracking fix:
+Use the included debug script to inspect each step of query execution:
 
 ```bash
-uv run python test.py
+# Run with full debugging output
+python debug_query.py "What are the latest Boeing 787 rates?"
+
+# Debug specific query modes
+python debug_query.py "Contract termination?" --mode hybrid
+
+# Adjust temporal filtering parameters
+python debug_query.py "Your query" --relevance-threshold 0.4
 ```
 
-This will:
-1. Insert 3 test documents with different rates ($300 → $350 → $400)
-2. Verify entities have `insertion_order=3` (the latest)
-3. Query for current rates and verify only $400 is returned
-4. Display temporal metadata for all entities
+The debug script provides:
+- ✓ Vector search results with similarity scores
+- ✓ Temporal filtering decisions for each insertion_order
+- ✓ Entity and relationship extraction details
+- ✓ Chunk selection and merging process
+- ✓ Final context sent to LLM
+- ✓ Complete execution timeline
 
-**Expected Output:**
-```
-✓ Entity: RON With Lavatory Service
-  Insertion Order: 3
-  ✅ PASS: Has latest insertion_order (3)
-  Update History: 3 chunk(s)
+See [debug_query.py](debug_query.py) for full documentation.
 
-❓ Query: What is the current rate for Boeing 787 RON with lavatory service?
-📝 Answer: The current rate is $400 per aircraft
-✅ PASS: Contains latest rate ($400)
-```
+### Production Testing
 
-### Full Production Testing
+After initial setup:
 
-After the quick test passes:
-
-1. **Delete existing graph storage** to force re-indexing:
+1. **Delete existing graph** to force re-indexing:
    ```bash
-   rm -rf ./data/storage/graph_*.graphml
+   rm -rf ./data/storage/*.json
    ```
 
-2. **Rebuild the graph** with your full contract documents:
+2. **Rebuild the graph** with your documents:
    ```bash
-   uv run python build_graph.py
+   python build_graph.py
    ```
 
-3. **Query the graph** to verify only most recent data is returned:
+3. **Run queries** to verify temporal behavior:
    ```bash
-   uv run python query_graph.py
+   python query_graph.py
    ```
 
 4. **Verify entity metadata** programmatically:
@@ -472,27 +468,41 @@ After the quick test passes:
 
 ---
 
+---
+
 ## Design Decisions
 
 ### 1. Chunk-Level No-Deduplication
-When the same clause appears in both Base Agreement (2020) and Addendum (2022), both chunks are kept with different `insertion_order` values. This ensures:
-- Full legal compliance and audit trail
-- Ability to trace which document contained which version
-- No information loss
+When the same clause appears in multiple documents, both chunks are kept with different `insertion_order` values. This ensures:
+- ✅ Full legal compliance and audit trail
+- ✅ Ability to trace which document contained which version
+- ✅ No information loss
 
 ### 2. Entity-Level Recency with Merging
 When extracting entities from multiple chunks:
 - Entities with the same name are merged
-- The **maximum** `insertion_order` is retained (most recent) ✅ **Now properly implemented**
+- The **maximum** `insertion_order` is retained (most recent)
 - Descriptions are combined and summarized by LLM
 - `update_history` preserves all contributing chunk IDs
 
 This approach ensures:
-- Latest information is prominently surfaced
-- Historical context is preserved in update_history
-- Efficient querying without manual date filtering
+- ✅ Latest information is prominently surfaced
+- ✅ Historical context is preserved in update_history
+- ✅ Efficient querying without manual date filtering
 
-### 3. Automatic Chronology (No Manual Date Extraction)
+### 3. Relevance-Aware Temporal Filtering
+Instead of blindly selecting the latest document:
+- System checks if chunks from latest order are actually relevant (similarity >= 0.3)
+- Falls back to earlier documents if latest lacks relevant content
+- Returns all chunks across all orders if no single order is sufficient
+- LLM intelligently extracts answer from the appropriate source
+
+Benefits:
+- ✅ No hallucination from irrelevant boilerplate
+- ✅ Correct answers even when content moved/removed in later versions
+- ✅ Transparent decision-making with detailed logging
+
+### 4. Automatic Chronology (No Manual Date Extraction)
 Instead of parsing dates from document content or filenames:
 - Sequential insertion order serves as the chronology
 - Users upload documents in order (BA → Amd1 → Add1 → Amd2)
@@ -512,7 +522,7 @@ The implementation is designed for easy PostgreSQL migration:
 - `insertion_timestamp` → `TIMESTAMP` type
 - `update_history` → `TEXT[]` array type
 
-**Required PostgreSQL Additions:**
+**Required PostgreSQL Schema:**
 ```sql
 -- Add to nodes table
 ALTER TABLE nodes ADD COLUMN insertion_order BIGINT;
@@ -562,10 +572,10 @@ g.V().has('entity_name', entityName)
 ## Performance Considerations
 
 ### NetworkX (In-Memory)
-- ✅ Excellent for development and small datasets (<10,000 documents)
-- ✅ Fast temporal queries with Python list/dict operations
+- ✅ Excellent for development and datasets <10,000 documents
+- ✅ Fast temporal queries with Python dict operations
 - ⚠️ Memory constraints with large chronologies
-- 💡 Solution: Partition by date ranges or migrate to PostgreSQL
+- 💡 **Solution**: Partition by date ranges or migrate to PostgreSQL
 
 ### PostgreSQL
 - ✅ Handles millions of documents
@@ -575,38 +585,31 @@ g.V().has('entity_name', entityName)
 
 ### AWS Neptune
 - ✅ Distributed architecture for massive scale
-- ✅ Graph-native traversals for relationship-heavy queries
+- ✅ Graph-native traversals for relationship queries
 - ✅ Built-in sharding and replication
 
 ---
 
-## Query Modes Explained
+## Query Modes
 
 When querying your chronological RAG, use these modes:
 
-- **`mix`** ✅ **Recommended for production**: Combines knowledge graph (entities + relationships) + vector chunks for most complete answers
-- **`hybrid`**: Knowledge graph only (entities + relationships), useful for testing entity temporal tracking
+- **`hybrid`** ✅ **Recommended**: Combines knowledge graph (entities + relationships) + vector chunks
 - **`local`**: Only local entities and their relationships
 - **`global`**: Only global relationships and connected entities
 - **`naive`**: Basic vector search without knowledge graph
 
 ---
 
-## Future Enhancements (Optional)
-
-All planned features are now implemented! Optional advanced features for future consideration:
-
-1. **LLM-based date extraction**: Parse actual dates from document content for more precise temporal tracking
-2. **Bi-temporal tracking**: Track both "valid time" (when facts were true) and "transaction time" (when facts were recorded)
-3. **Temporal aggregations**: SQL-like temporal joins and time-series analysis
-4. **Automated conflict resolution**: Smart merging when contradictory information appears
-
----
-
 ## Conclusion
 
-This implementation provides a production-ready foundation for chronological contract RAG with minimal user intervention. The December 2025 bug fix ensures that the system behaves exactly as designed: **later documents always supersede earlier ones**, and queries return only the most current information.
+This implementation provides a production-ready foundation for chronological contract RAG with intelligent content-aware temporal filtering. The system automatically handles:
 
-By leveraging automatic insertion order tracking and entity-level recency (now properly implemented), the system ensures users always retrieve the most recent applicable information while preserving full audit trails for legal compliance.
+✨ **Automatic temporal tracking**: Just upload documents in order
+✨ **Smart document selection**: Returns the right document based on content relevance
+✨ **Entity recency management**: Always surfaces the latest version
+✨ **Full audit trails**: Complete update history for compliance
 
-**Key Takeaway:** Simply insert your documents in chronological order, and the system automatically handles temporal tracking, entity merging, and recency management! ✨
+**Key Principle**: The system understands both **time** (insertion order) and **content** (relevance), ensuring accurate answers while preserving legal audit trails.
+
+Simply insert your documents in chronological order, and the system handles the rest! 🚀

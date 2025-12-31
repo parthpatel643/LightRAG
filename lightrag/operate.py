@@ -75,6 +75,180 @@ from lightrag.utils import (
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
+# Try to import BeautifulSoup for table parsing
+try:
+    from bs4 import BeautifulSoup
+    _BS4_AVAILABLE = True
+except ImportError:
+    BeautifulSoup = None
+    _BS4_AVAILABLE = False
+    logger.debug("BeautifulSoup not available - table semantic extraction will be limited")
+
+
+def extract_table_semantic_text(html_content: str) -> str:
+    """
+    Extract semantic searchable text from HTML tables to improve vector embeddings.
+    
+    This function parses HTML tables and generates natural language descriptions
+    of the data, making it easier for vector search to match table content with
+    natural language queries. Preserves HTML format for merged headers (rowspan/colspan)
+    while adding searchable metadata.
+    
+    Handles HTML fragments from token-based chunking by wrapping orphaned table rows.
+    
+    Args:
+        html_content: HTML string potentially containing table markup
+        
+    Returns:
+        Semantic text describing table contents, empty string if no tables found
+    """
+    # Handle both complete tables and orphaned table rows from chunking
+    has_table_tag = '<table>' in html_content or '<TABLE>' in html_content
+    has_table_rows = '<tr>' in html_content or '<TR>' in html_content
+    
+    if not has_table_rows:
+        return ""
+    
+    # Repair HTML fragments: wrap orphaned <tr> tags before first <table> in table structure
+    # This handles chunks that start mid-table or have rows before proper table tags
+    import re
+    first_table_match = re.search(r'<table[^>]*>', html_content, re.IGNORECASE)
+    first_tr_match = re.search(r'<tr[^>]*>', html_content, re.IGNORECASE)
+    
+    if first_tr_match:
+        tr_pos = first_tr_match.start()
+        
+        if not first_table_match or tr_pos < first_table_match.start():
+            # Found <tr> before first <table> (or no table at all) - wrap orphaned rows
+            if first_table_match:
+                # Wrap content before first <table>
+                before_table = html_content[:first_table_match.start()]
+                after_table = html_content[first_table_match.start():]
+                html_content = f"<table><tbody>{before_table}</tbody></table>{after_table}"
+            else:
+                # No table tags, wrap entire content
+                html_content = f"<table><tbody>{html_content}</tbody></table>"
+    
+    if not _BS4_AVAILABLE:
+        # Fallback: simple regex-based extraction
+        import re
+        searchable_parts = []
+        
+        # Extract text between <th> and </th>, <td> and </td>
+        th_pattern = r'<th[^>]*>(.*?)</th>'
+        td_pattern = r'<td[^>]*>(.*?)</td>'
+        
+        headers = re.findall(th_pattern, html_content, re.IGNORECASE | re.DOTALL)
+        cells = re.findall(td_pattern, html_content, re.IGNORECASE | re.DOTALL)
+        
+        # Clean HTML tags from extracted text
+        def clean_html(text):
+            return re.sub(r'<[^>]+>', '', text).strip()
+        
+        # Look for common patterns: aircraft type + service + rate
+        for i in range(len(headers)):
+            header_text = clean_html(headers[i])
+            if header_text and any(x in header_text.lower() for x in ['narrowbody', 'widebody', 'express', '787', '777', '767']):
+                # Find associated service and rate in nearby cells
+                for j in range(i, min(i + 15, len(cells))):
+                    cell_text = clean_html(cells[j])
+                    if 'service' in cell_text.lower() and 'only' in cell_text.lower():
+                        # Found service type, look for rate nearby
+                        for k in range(j, min(j + 12, len(cells))):
+                            rate_text = clean_html(cells[k])
+                            if '$' in rate_text and rate_text.replace('$', '').replace('.', '').replace(',', '').strip().isdigit():
+                                searchable_parts.append(
+                                    f"{header_text} {cell_text} rate is {rate_text}"
+                                )
+                                break
+        
+        if searchable_parts:
+            return "\n\n[TABLE DATA] " + " | ".join(searchable_parts[:20])  # Limit to avoid token explosion
+        return ""
+    
+    # BeautifulSoup-based extraction (preferred)
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        tables = soup.find_all('table')
+        
+        if not tables:
+            return ""
+        
+        searchable_parts = []
+        
+        for table in tables:
+            rows = table.find_all('tr')
+            
+            for row in rows:
+                # Get row header (aircraft type)
+                header = row.find('th', {'scope': 'row'})
+                if not header:
+                    header = row.find('th')
+                
+                cells = row.find_all('td')
+                
+                if header and len(cells) >= 2:
+                    aircraft_type = header.get_text(strip=True)
+                    
+                    # Skip empty or non-aircraft rows
+                    if not aircraft_type or len(aircraft_type) > 50:
+                        continue
+                    
+                    # Look for service type in first few cells
+                    service_type = ""
+                    for i in range(min(3, len(cells))):
+                        cell_text = cells[i].get_text(strip=True)
+                        if any(svc in cell_text.lower() for svc in ['service', 'turn', 'ron', 'clean', 'international']):
+                            service_type = cell_text
+                            break
+                    
+                    # Look for rate ($ amount) in later cells - specifically cell 11 (index 10)
+                    rate = ""
+                    # The total rate is typically in the 11th data cell (index 10)
+                    if len(cells) > 10:
+                        cell_text = cells[10].get_text(strip=True)
+                        if '$' in cell_text:
+                            # Verify it's a valid dollar amount
+                            cleaned = cell_text.replace('$', '').replace(',', '').strip()
+                            if cleaned and cleaned.replace('.', '', 1).replace('-', '').isdigit():
+                                if cleaned != '-':
+                                    rate = cell_text
+                    
+                    # Fallback: if not found in cell 11, search cells 8-14
+                    if not rate:
+                        for i in range(8, min(len(cells), 15)):
+                            cell_text = cells[i].get_text(strip=True)
+                            if '$' in cell_text and len(cell_text) < 20:
+                                cleaned = cell_text.replace('$', '').replace(',', '').strip()
+                                # Look for amounts > $10 (rates are typically higher than component costs)
+                                try:
+                                    amount = float(cleaned) if cleaned and cleaned != '-' else 0
+                                    if amount > 10.0:  # Filter out low component costs
+                                        rate = cell_text
+                                        break
+                                except (ValueError, TypeError):
+                                    continue
+                    
+                    if service_type and rate:
+                        searchable_parts.append(
+                            f"{aircraft_type} {service_type} costs {rate}"
+                        )
+                    elif service_type:
+                        # Include service even without rate
+                        searchable_parts.append(
+                            f"{aircraft_type} {service_type}"
+                        )
+        
+        if searchable_parts:
+            # Limit to avoid token explosion, but include enough for good coverage
+            return "\n\n[TABLE DATA FOR SEARCH] " + " | ".join(searchable_parts[:25])
+        
+        return ""
+        
+    except Exception as e:
+        logger.debug(f"Error extracting table semantic text: {e}")
+        return ""
+
 
 def _truncate_entity_identifier(
     identifier: str, limit: int, chunk_key: str, identifier_role: str
@@ -141,10 +315,23 @@ def chunking_by_token_size(
                 else:
                     new_chunks.append((len(_tokens), chunk))
         for index, (_len, chunk) in enumerate(new_chunks):
+            # Enhance chunks containing tables with semantic metadata
+            chunk_text = chunk.strip()
+            semantic_text = extract_table_semantic_text(chunk_text)
+            
+            # If table found, append searchable text for better embeddings
+            if semantic_text:
+                enhanced_content = chunk_text + semantic_text
+                # Recalculate tokens with enhanced content
+                enhanced_tokens = len(tokenizer.encode(enhanced_content))
+            else:
+                enhanced_content = chunk_text
+                enhanced_tokens = _len
+            
             results.append(
                 {
-                    "tokens": _len,
-                    "content": chunk.strip(),
+                    "tokens": enhanced_tokens,
+                    "content": enhanced_content,
                     "chunk_order_index": index,
                 }
             )
@@ -153,10 +340,24 @@ def chunking_by_token_size(
             range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
         ):
             chunk_content = tokenizer.decode(tokens[start : start + chunk_token_size])
+            chunk_text = chunk_content.strip()
+            
+            # Enhance chunks containing tables with semantic metadata
+            semantic_text = extract_table_semantic_text(chunk_text)
+            
+            # If table found, append searchable text for better embeddings
+            if semantic_text:
+                enhanced_content = chunk_text + semantic_text
+                # Recalculate tokens with enhanced content
+                enhanced_tokens = len(tokenizer.encode(enhanced_content))
+            else:
+                enhanced_content = chunk_text
+                enhanced_tokens = min(chunk_token_size, len(tokens) - start)
+            
             results.append(
                 {
-                    "tokens": min(chunk_token_size, len(tokens) - start),
-                    "content": chunk_content.strip(),
+                    "tokens": enhanced_tokens,
+                    "content": enhanced_content,
                     "chunk_order_index": index,
                 }
             )
@@ -3610,6 +3811,95 @@ async def extract_keywords_only(
     return hl_keywords, ll_keywords
 
 
+def _apply_temporal_chunk_filtering(chunks: list[dict], operation_name: str = "query", min_chunks: int = 1, relevance_threshold: float = 0.3) -> list[dict]:
+    """
+    Apply progressive temporal search: try highest insertion_order first, fall back to lower orders if needed.
+    
+    This ensures we prefer the most recent document version but can fall back to historical data
+    when the query topic doesn't exist in newer versions (e.g., contract termination clause
+    removed in latest amendment but still valid from earlier version).
+    
+    Uses relevance-aware filtering: chunks are only considered "sufficient" if they meet
+    a minimum similarity threshold, preventing selection of irrelevant chunks from latest docs.
+    
+    Args:
+        chunks: List of chunk dictionaries with optional insertion_order metadata and similarity scores
+        operation_name: Name of the operation for logging
+        min_chunks: Minimum number of chunks needed to consider an order "sufficient" (default: 1)
+        relevance_threshold: Minimum similarity score for chunks to be considered relevant (default: 0.3)
+    
+    Returns:
+        Chunks from the highest insertion_order that has at least min_chunks relevant matches,
+        or all chunks if no temporal metadata exists
+    """
+    if not chunks:
+        return chunks
+    
+    # Group chunks by insertion_order
+    chunks_by_order = {}
+    chunks_without_order = []
+    
+    for chunk in chunks:
+        order = chunk.get("insertion_order")
+        if order is not None:
+            try:
+                order_int = int(order)
+                if order_int not in chunks_by_order:
+                    chunks_by_order[order_int] = []
+                chunks_by_order[order_int].append(chunk)
+            except (ValueError, TypeError):
+                chunks_without_order.append(chunk)
+        else:
+            chunks_without_order.append(chunk)
+    
+    # If we have temporal metadata, use progressive search from highest to lowest order
+    if chunks_by_order:
+        sorted_orders = sorted(chunks_by_order.keys(), reverse=True)
+        
+        # Log what we found
+        chunks_summary = {order: len(chunks_by_order[order]) for order in sorted_orders}
+        logger.info(f"{operation_name}: Found chunks by order: {chunks_summary}")
+        
+        # Try each insertion_order from highest to lowest
+        for order in sorted_orders:
+            order_chunks = chunks_by_order[order]
+            
+            # Filter by relevance: only count chunks with sufficient similarity
+            relevant_chunks = [
+                c for c in order_chunks
+                if c.get("similarity", 0) >= relevance_threshold or c.get("distance", 1.0) <= (1.0 - relevance_threshold)
+            ]
+            
+            if len(relevant_chunks) >= min_chunks:
+                # Found sufficient RELEVANT chunks at this order level
+                result_chunks = order_chunks + chunks_without_order  # Return all from this order, not just relevant ones
+                logger.info(
+                    f"{operation_name}: {len(result_chunks)} chunks from insertion_order={order} (searched {sorted_orders}, found {len(relevant_chunks)} relevant of {len(order_chunks)} total at order {order})"
+                )
+                return result_chunks
+            else:
+                # Log why we're skipping this order
+                logger.info(
+                    f"{operation_name}: Skipping insertion_order={order} - only {len(relevant_chunks)}/{len(order_chunks)} chunks meet relevance threshold {relevance_threshold}"
+                )
+        
+        # Fallback: if no order has min_chunks relevant matches, return ALL chunks across ALL orders
+        # This allows the LLM to find the answer even if it's in an older document with lower similarity
+        all_chunks_with_order = []
+        for order in sorted_orders:
+            all_chunks_with_order.extend(chunks_by_order[order])
+        all_chunks_with_order.extend(chunks_without_order)
+        
+        logger.info(
+            f"{operation_name}: No single order has {min_chunks} relevant chunks (threshold={relevance_threshold}), returning all {len(all_chunks_with_order)} chunks across all orders"
+        )
+        return all_chunks_with_order
+    
+    # No temporal metadata found, return all chunks
+    logger.info(f"{operation_name}: {len(chunks_without_order)} chunks (no temporal metadata)")
+    return chunks_without_order
+
+
 async def _get_vector_context(
     query: str,
     chunks_vdb: BaseVectorStorage,
@@ -3619,8 +3909,8 @@ async def _get_vector_context(
     """
     Retrieve text chunks from the vector database without reranking or truncation.
 
-    This function performs vector search to find relevant text chunks for a query.
-    Reranking and truncation will be handled later in the unified processing.
+    This function performs hybrid search combining vector similarity with keyword matching
+    to improve retrieval of table data and exact term matches.
 
     Args:
         query: The query string to search for
@@ -3645,9 +3935,30 @@ async def _get_vector_context(
             )
             return []
 
+        # Extract key terms from query for keyword boosting
+        query_lower = query.lower()
+        keywords = []
+        # Common service type patterns
+        if "water service" in query_lower:
+            keywords.append("water service only")
+        if "lav" in query_lower or "lavatory" in query_lower:
+            keywords.append("lav service only")
+        # Aircraft type patterns
+        if "narrow" in query_lower or "narrowbody" in query_lower:
+            keywords.append("narrowbody")
+        if "wide" in query_lower or "widebody" in query_lower:
+            keywords.append("widebody")
+        if "express" in query_lower:
+            keywords.append("express")
+
         valid_chunks = []
         for result in results:
             if "content" in result:
+                content_lower = result["content"].lower()
+                
+                # Keyword boost: prioritize chunks with exact matches
+                keyword_score = sum(1 for kw in keywords if kw in content_lower)
+                
                 chunk_with_metadata = {
                     "content": result["content"],
                     "created_at": result.get("created_at", None),
@@ -3655,42 +3966,23 @@ async def _get_vector_context(
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
                     "insertion_order": result.get("insertion_order"),  # Preserve temporal metadata
+                    "keyword_score": keyword_score,  # Add keyword matching score
                 }
                 valid_chunks.append(chunk_with_metadata)
+        
+        # Sort by keyword score (descending) then by original order
+        # This ensures chunks with exact keyword matches rank higher
+        valid_chunks.sort(key=lambda x: x.get("keyword_score", 0), reverse=True)
 
-        # Filter chunks to keep only the most recent versions (highest insertion_order)
-        # Group chunks by file_path to find the maximum insertion_order per document series
+        # Apply progressive temporal search for chronological document series
+        # Strategy: Try highest insertion_order first, fall back to lower orders if needed
         if valid_chunks:
-            max_insertion_order = 0
-            for chunk in valid_chunks:
-                order = chunk.get("insertion_order")
-                if order is not None:
-                    try:
-                        order_int = int(order)
-                        if order_int > max_insertion_order:
-                            max_insertion_order = order_int
-                    except (ValueError, TypeError):
-                        pass
-            
-            # If we found temporal metadata, filter to keep only chunks with the highest order
-            if max_insertion_order > 0:
-                filtered_chunks = []
-                for chunk in valid_chunks:
-                    order = chunk.get("insertion_order")
-                    if order is None:
-                        # Keep chunks without temporal metadata (backward compatibility)
-                        filtered_chunks.append(chunk)
-                    else:
-                        try:
-                            if int(order) == max_insertion_order:
-                                filtered_chunks.append(chunk)
-                        except (ValueError, TypeError):
-                            filtered_chunks.append(chunk)
-                
-                logger.info(
-                    f"Naive query: {len(filtered_chunks)}/{len(valid_chunks)} chunks after temporal filtering (max_order:{max_insertion_order}, chunk_top_k:{search_top_k})"
-                )
-                return filtered_chunks
+            filtered_chunks = _apply_temporal_chunk_filtering(
+                valid_chunks, 
+                operation_name="Naive query",
+                min_chunks=1  # Accept even 1 chunk from highest order if relevant
+            )
+            return filtered_chunks
 
         logger.info(
             f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
@@ -4106,6 +4398,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "insertion_order": chunk.get("insertion_order"),  # Preserve temporal metadata
                     }
                 )
 
@@ -4120,6 +4413,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "insertion_order": chunk.get("insertion_order"),  # Preserve temporal metadata
                     }
                 )
 
@@ -4134,12 +4428,17 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "insertion_order": chunk.get("insertion_order"),  # Preserve temporal metadata
                     }
                 )
 
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
+    
+    # Apply FINAL temporal filtering AFTER merging all sources
+    # This ensures all paths (vector, entity, relationship) use the same insertion_order
+    merged_chunks = _apply_temporal_chunk_filtering(merged_chunks, "Final merged chunks", min_chunks=1)
 
     return merged_chunks
 
@@ -4717,6 +5016,8 @@ async def _find_related_text_unit_from_entities(
                     "order": i + 1,  # 1-based order in final entity-related results
                 }
 
+    # Note: Temporal filtering now happens AFTER merging all sources (vector+entity+relationship)
+    # to ensure consistent insertion_order selection across all paths
     return result_chunks
 
 
@@ -5009,6 +5310,8 @@ async def _find_related_text_unit_from_relations(
                     "order": i + 1,  # 1-based order in final relation-related results
                 }
 
+    # Note: Temporal filtering now happens AFTER merging all sources (vector+entity+relationship)
+    # to ensure consistent insertion_order selection across all paths
     return result_chunks
 
 

@@ -13,12 +13,10 @@ Usage:
 
 import asyncio
 
-
+from functions_openai import embedding_func, llm_model_func
 from lightrag import LightRAG
-
-from functions import llm_model_func, embedding_func, rerank_model_func
-from lightrag.utils import setup_logger
 from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="WARN")
 
@@ -34,13 +32,13 @@ async def build_graph():
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
-        rerank_model_func=rerank_model_func,
         entity_extract_max_gleaning=3,
         chunk_token_size=2000,
         chunk_overlap_token_size=200,
         embedding_func_max_async=4,
         llm_model_max_async=4,
-        max_parallel_insert=1
+        max_parallel_insert=1,
+        enable_llm_cache=False
     )
     await rag.initialize_storages()
     await initialize_pipeline_status()

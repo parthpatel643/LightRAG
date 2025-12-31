@@ -36,6 +36,9 @@ async def query_graph():
         entity_extract_max_gleaning=3,
         chunk_token_size=2000,
         chunk_overlap_token_size=200,
+        chunk_top_k=75,  # Increased to improve retrieval of table-heavy chunks  
+        max_total_tokens=50000,  # Increased to allow more context for table data
+        enable_llm_cache=False
     )
     await rag.initialize_storages()
     await initialize_pipeline_status() 
@@ -57,9 +60,10 @@ async def query_graph():
 
     test_queries = [
         "What are the latest rates for Boeing 787 flights that remain overnight and undergo cabin cleaning with lavatory service?",
-        # "What are the latest rates for Airbus flights that remain overnight and undergo cabin cleaning with lavatory service?",
-        # "What are the latest rates for a narrow body with water service only?",
-        # "Tell me about the contract termination conditions?",
+        "What are the latest rates for Airbus flights that remain overnight and undergo cabin cleaning with lavatory service?",
+        "What are the latest rates for a narrow body with water service only?",
+        "What are the latest rates for a wide body with lavatory service only?",
+        "Tell me about the contract termination conditions?",
     ]
 
     for query in test_queries:

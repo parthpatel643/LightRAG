@@ -1,46 +1,46 @@
 from __future__ import annotations
-import weakref
-
-import sys
 
 import asyncio
-import html
 import csv
+import html
 import inspect
 import json
 import logging
 import logging.handlers
 import os
 import re
+import sys
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
 from typing import (
-    Any,
-    Protocol,
-    Callable,
     TYPE_CHECKING,
+    Any,
+    Callable,
+    Collection,
+    Iterable,
     List,
     Optional,
-    Iterable,
+    Protocol,
     Sequence,
-    Collection,
 )
+
 import numpy as np
 from dotenv import load_dotenv
 
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
-    GRAPH_FIELD_SEP,
+    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-    VALID_SOURCE_IDS_LIMIT_METHODS,
+    GRAPH_FIELD_SEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    VALID_SOURCE_IDS_LIMIT_METHODS,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -3258,6 +3258,11 @@ def convert_to_user_format(
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
         }
+        # Include temporal metadata if available (for chronological contract RAG)
+        if "insertion_order" in chunk:
+            chunk_data["insertion_order"] = chunk.get("insertion_order")
+        if "insertion_timestamp" in chunk:
+            chunk_data["insertion_timestamp"] = chunk.get("insertion_timestamp")
         formatted_chunks.append(chunk_data)
 
     logger.debug(
