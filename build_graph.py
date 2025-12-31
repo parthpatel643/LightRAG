@@ -12,6 +12,7 @@ Usage:
 """
 
 import asyncio
+import os
 
 from functions_openai import embedding_func, llm_model_func
 from lightrag import LightRAG
@@ -21,7 +22,8 @@ from lightrag.utils import setup_logger
 setup_logger("lightrag", level="WARN")
 
 # Configuration
-WORKING_DIR = "./data/storage"
+WORKING_DIR = "./data/output/sea-cabin-cleaning"
+os.makedirs(WORKING_DIR, exist_ok=True)
 
 
 async def build_graph():
@@ -38,7 +40,7 @@ async def build_graph():
         embedding_func_max_async=4,
         llm_model_max_async=4,
         max_parallel_insert=1,
-        enable_llm_cache=False
+        enable_llm_cache=False,
     )
     await rag.initialize_storages()
     await initialize_pipeline_status()
