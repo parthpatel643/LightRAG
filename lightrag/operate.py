@@ -78,175 +78,134 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False
 # Try to import BeautifulSoup for table parsing
 try:
     from bs4 import BeautifulSoup
+
     _BS4_AVAILABLE = True
 except ImportError:
     BeautifulSoup = None
     _BS4_AVAILABLE = False
-    logger.debug("BeautifulSoup not available - table semantic extraction will be limited")
+    logger.debug(
+        "BeautifulSoup not available - table semantic extraction will be limited"
+    )
 
 
-def extract_table_semantic_text(html_content: str) -> str:
+def extract_table_semantic_text(content: str) -> str:
     """
-    Extract semantic searchable text from HTML tables to improve vector embeddings.
-    
-    This function parses HTML tables and generates natural language descriptions
-    of the data, making it easier for vector search to match table content with
-    natural language queries. Preserves HTML format for merged headers (rowspan/colspan)
-    while adding searchable metadata.
-    
-    Handles HTML fragments from token-based chunking by wrapping orphaned table rows.
-    
+    Extract semantic text from YAML tables for better vector search.
+    Focuses on aircraft types, service types, and rates from pricing tables.
+
     Args:
-        html_content: HTML string potentially containing table markup
-        
+        content: Content containing YAML tables (markdown with yaml code blocks)
+
     Returns:
-        Semantic text describing table contents, empty string if no tables found
+        Formatted string with searchable table data
     """
-    # Handle both complete tables and orphaned table rows from chunking
-    has_table_tag = '<table>' in html_content or '<TABLE>' in html_content
-    has_table_rows = '<tr>' in html_content or '<TR>' in html_content
-    
-    if not has_table_rows:
+    if not content or not content.strip():
         return ""
-    
-    # Repair HTML fragments: wrap orphaned <tr> tags before first <table> in table structure
-    # This handles chunks that start mid-table or have rows before proper table tags
-    import re
-    first_table_match = re.search(r'<table[^>]*>', html_content, re.IGNORECASE)
-    first_tr_match = re.search(r'<tr[^>]*>', html_content, re.IGNORECASE)
-    
-    if first_tr_match:
-        tr_pos = first_tr_match.start()
-        
-        if not first_table_match or tr_pos < first_table_match.start():
-            # Found <tr> before first <table> (or no table at all) - wrap orphaned rows
-            if first_table_match:
-                # Wrap content before first <table>
-                before_table = html_content[:first_table_match.start()]
-                after_table = html_content[first_table_match.start():]
-                html_content = f"<table><tbody>{before_table}</tbody></table>{after_table}"
-            else:
-                # No table tags, wrap entire content
-                html_content = f"<table><tbody>{html_content}</tbody></table>"
-    
-    if not _BS4_AVAILABLE:
-        # Fallback: simple regex-based extraction
-        import re
-        searchable_parts = []
-        
-        # Extract text between <th> and </th>, <td> and </td>
-        th_pattern = r'<th[^>]*>(.*?)</th>'
-        td_pattern = r'<td[^>]*>(.*?)</td>'
-        
-        headers = re.findall(th_pattern, html_content, re.IGNORECASE | re.DOTALL)
-        cells = re.findall(td_pattern, html_content, re.IGNORECASE | re.DOTALL)
-        
-        # Clean HTML tags from extracted text
-        def clean_html(text):
-            return re.sub(r'<[^>]+>', '', text).strip()
-        
-        # Look for common patterns: aircraft type + service + rate
-        for i in range(len(headers)):
-            header_text = clean_html(headers[i])
-            if header_text and any(x in header_text.lower() for x in ['narrowbody', 'widebody', 'express', '787', '777', '767']):
-                # Find associated service and rate in nearby cells
-                for j in range(i, min(i + 15, len(cells))):
-                    cell_text = clean_html(cells[j])
-                    if 'service' in cell_text.lower() and 'only' in cell_text.lower():
-                        # Found service type, look for rate nearby
-                        for k in range(j, min(j + 12, len(cells))):
-                            rate_text = clean_html(cells[k])
-                            if '$' in rate_text and rate_text.replace('$', '').replace('.', '').replace(',', '').strip().isdigit():
-                                searchable_parts.append(
-                                    f"{header_text} {cell_text} rate is {rate_text}"
-                                )
-                                break
-        
-        if searchable_parts:
-            return "\n\n[TABLE DATA] " + " | ".join(searchable_parts[:20])  # Limit to avoid token explosion
-        return ""
-    
-    # BeautifulSoup-based extraction (preferred)
+
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        tables = soup.find_all('table')
-        
-        if not tables:
+        import re
+
+        import yaml
+
+        # Extract YAML code blocks
+        yaml_pattern = r"```yaml\s*\n(.*?)\n```"
+        yaml_blocks = re.findall(yaml_pattern, content, re.DOTALL)
+
+        if not yaml_blocks:
             return ""
-        
+
         searchable_parts = []
-        
-        for table in tables:
-            rows = table.find_all('tr')
-            
-            for row in rows:
-                # Get row header (aircraft type)
-                header = row.find('th', {'scope': 'row'})
-                if not header:
-                    header = row.find('th')
-                
-                cells = row.find_all('td')
-                
-                if header and len(cells) >= 2:
-                    aircraft_type = header.get_text(strip=True)
-                    
-                    # Skip empty or non-aircraft rows
-                    if not aircraft_type or len(aircraft_type) > 50:
+
+        for yaml_block in yaml_blocks:
+            try:
+                # Parse YAML
+                data = yaml.safe_load(yaml_block)
+
+                if not isinstance(data, list):
+                    continue
+
+                # Process each YAML list item (table row)
+                for item in data:
+                    if not isinstance(item, dict):
                         continue
-                    
-                    # Look for service type in first few cells
-                    service_type = ""
-                    for i in range(min(3, len(cells))):
-                        cell_text = cells[i].get_text(strip=True)
-                        if any(svc in cell_text.lower() for svc in ['service', 'turn', 'ron', 'clean', 'international']):
-                            service_type = cell_text
-                            break
-                    
-                    # Look for rate ($ amount) in later cells - specifically cell 11 (index 10)
-                    rate = ""
-                    # The total rate is typically in the 11th data cell (index 10)
-                    if len(cells) > 10:
-                        cell_text = cells[10].get_text(strip=True)
-                        if '$' in cell_text:
-                            # Verify it's a valid dollar amount
-                            cleaned = cell_text.replace('$', '').replace(',', '').strip()
-                            if cleaned and cleaned.replace('.', '', 1).replace('-', '').isdigit():
-                                if cleaned != '-':
-                                    rate = cell_text
-                    
-                    # Fallback: if not found in cell 11, search cells 8-14
-                    if not rate:
-                        for i in range(8, min(len(cells), 15)):
-                            cell_text = cells[i].get_text(strip=True)
-                            if '$' in cell_text and len(cell_text) < 20:
-                                cleaned = cell_text.replace('$', '').replace(',', '').strip()
-                                # Look for amounts > $10 (rates are typically higher than component costs)
+
+                    # Extract aircraft type from various possible keys
+                    aircraft_type = None
+                    service_type = None
+                    rate = None
+
+                    for key, value in item.items():
+                        key_lower = str(key).lower()
+                        value_str = str(value) if value else ""
+
+                        # Identify aircraft type
+                        if "cs agent minutes" in key_lower or "aircraft" in key_lower:
+                            # Extract aircraft info from values like '767', '757-All/737-800/737-900', 'Airbus - All / 737-500/737-700'
+                            if (
+                                value_str
+                                and value_str.strip()
+                                and not value_str.isspace()
+                            ):
+                                aircraft_type = value_str.strip()
+
+                        # Identify service type
+                        if "service description" in key_lower or (
+                            "service" in key_lower and "lav driver" in key_lower
+                        ):
+                            if value_str and (
+                                "w/" in value_str.lower()
+                                or "only" in value_str.lower()
+                                or "clean" in value_str.lower()
+                            ):
+                                service_type = value_str.strip()
+
+                        # Identify rate - look for dollar amounts in overhead/profit/price keys
+                        if (
+                            "overhead" in key_lower
+                            and "profit" in key_lower
+                            and "event" in key_lower
+                        ) or ("price" in key_lower and "event" in key_lower):
+                            if "$" in value_str:
+                                # Extract dollar amount
+                                cleaned = (
+                                    value_str.replace("$", "").replace(",", "").strip()
+                                )
                                 try:
-                                    amount = float(cleaned) if cleaned and cleaned != '-' else 0
-                                    if amount > 10.0:  # Filter out low component costs
-                                        rate = cell_text
-                                        break
+                                    amount = (
+                                        float(cleaned)
+                                        if cleaned and cleaned != "-"
+                                        else 0
+                                    )
+                                    if (
+                                        amount > 10.0
+                                    ):  # Filter out small component costs
+                                        rate = value_str.strip()
                                 except (ValueError, TypeError):
-                                    continue
-                    
-                    if service_type and rate:
+                                    pass
+
+                    # Create searchable text if we have meaningful data
+                    if aircraft_type and service_type and rate:
                         searchable_parts.append(
                             f"{aircraft_type} {service_type} costs {rate}"
                         )
-                    elif service_type:
-                        # Include service even without rate
-                        searchable_parts.append(
-                            f"{aircraft_type} {service_type}"
-                        )
-        
+                    elif aircraft_type and service_type:
+                        searchable_parts.append(f"{aircraft_type} {service_type}")
+
+            except yaml.YAMLError as e:
+                logger.debug(f"Error parsing YAML block: {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"Error processing YAML table data: {e}")
+                continue
+
         if searchable_parts:
-            # Limit to avoid token explosion, but include enough for good coverage
-            return "\n\n[TABLE DATA FOR SEARCH] " + " | ".join(searchable_parts[:25])
-        
+            # Limit to avoid token explosion
+            return "\n\n[TABLE DATA FOR SEARCH] " + " | ".join(searchable_parts[:30])
+
         return ""
-        
+
     except Exception as e:
-        logger.debug(f"Error extracting table semantic text: {e}")
+        logger.debug(f"Error extracting YAML table semantic text: {e}")
         return ""
 
 
@@ -318,7 +277,7 @@ def chunking_by_token_size(
             # Enhance chunks containing tables with semantic metadata
             chunk_text = chunk.strip()
             semantic_text = extract_table_semantic_text(chunk_text)
-            
+
             # If table found, append searchable text for better embeddings
             if semantic_text:
                 enhanced_content = chunk_text + semantic_text
@@ -327,7 +286,7 @@ def chunking_by_token_size(
             else:
                 enhanced_content = chunk_text
                 enhanced_tokens = _len
-            
+
             results.append(
                 {
                     "tokens": enhanced_tokens,
@@ -341,10 +300,10 @@ def chunking_by_token_size(
         ):
             chunk_content = tokenizer.decode(tokens[start : start + chunk_token_size])
             chunk_text = chunk_content.strip()
-            
+
             # Enhance chunks containing tables with semantic metadata
             semantic_text = extract_table_semantic_text(chunk_text)
-            
+
             # If table found, append searchable text for better embeddings
             if semantic_text:
                 enhanced_content = chunk_text + semantic_text
@@ -353,7 +312,7 @@ def chunking_by_token_size(
             else:
                 enhanced_content = chunk_text
                 enhanced_tokens = min(chunk_token_size, len(tokens) - start)
-            
+
             results.append(
                 {
                     "tokens": enhanced_tokens,
@@ -648,13 +607,13 @@ async def _handle_single_entity_extraction(
             file_path=file_path,
             timestamp=timestamp,
         )
-        
+
         # Add temporal metadata if available
         if insertion_order is not None:
-            result['insertion_order'] = insertion_order
+            result["insertion_order"] = insertion_order
         if insertion_timestamp is not None:
-            result['insertion_timestamp'] = insertion_timestamp
-        
+            result["insertion_timestamp"] = insertion_timestamp
+
         return result
 
     except ValueError as e:
@@ -749,13 +708,13 @@ async def _handle_single_relationship_extraction(
             file_path=file_path,
             timestamp=timestamp,
         )
-        
+
         # Add temporal metadata if available
         if insertion_order is not None:
-            result['insertion_order'] = insertion_order
+            result["insertion_order"] = insertion_order
         if insertion_timestamp is not None:
-            result['insertion_timestamp'] = insertion_timestamp
-        
+            result["insertion_timestamp"] = insertion_timestamp
+
         return result
 
     except ValueError as e:
@@ -1175,8 +1134,14 @@ async def _process_extraction_result(
     format_errors = []
 
     if completion_delimiter not in result:
-        logger.warning(
-            f"{chunk_key}: Complete delimiter can not be found in extraction result"
+        error_msg = (
+            f"{chunk_key}: Complete delimiter missing - extraction may be incomplete"
+        )
+        logger.error(error_msg)
+        # Return partial results but mark as potentially incomplete
+        # In production, consider retrying the extraction
+        format_errors.append(
+            {"error": "missing_completion_delimiter", "chunk_key": chunk_key}
         )
 
     # Split LLL output result to records by "\n"
@@ -1240,14 +1205,22 @@ async def _process_extraction_result(
 
         # Try to parse as entity
         entity_data = await _handle_single_entity_extraction(
-            record_attributes, chunk_key, timestamp, file_path, insertion_order, insertion_timestamp
+            record_attributes,
+            chunk_key,
+            timestamp,
+            file_path,
+            insertion_order,
+            insertion_timestamp,
         )
         if entity_data is not None:
             # Check if it's a format error
-            if isinstance(entity_data, dict) and entity_data.get("error") == "format_error":
+            if (
+                isinstance(entity_data, dict)
+                and entity_data.get("error") == "format_error"
+            ):
                 format_errors.append(entity_data)
                 continue
-                
+
             truncated_name = _truncate_entity_identifier(
                 entity_data["entity_name"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
@@ -1260,14 +1233,22 @@ async def _process_extraction_result(
 
         # Try to parse as relationship
         relationship_data = await _handle_single_relationship_extraction(
-            record_attributes, chunk_key, timestamp, file_path, insertion_order, insertion_timestamp
+            record_attributes,
+            chunk_key,
+            timestamp,
+            file_path,
+            insertion_order,
+            insertion_timestamp,
         )
         if relationship_data is not None:
             # Check if it's a format error
-            if isinstance(relationship_data, dict) and relationship_data.get("error") == "format_error":
+            if (
+                isinstance(relationship_data, dict)
+                and relationship_data.get("error") == "format_error"
+            ):
                 format_errors.append(relationship_data)
                 continue
-                
+
             truncated_source = _truncate_entity_identifier(
                 relationship_data["src_id"],
                 DEFAULT_ENTITY_NAME_MAX_LENGTH,
@@ -1321,11 +1302,13 @@ async def _rebuild_from_extraction_result(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
-    
+
     # Log format errors but don't fail (rebuild uses cached data, no retry available)
     if format_errors:
-        logger.warning(f"Rebuild found {len(format_errors)} format errors in cached extraction for chunk {chunk_id}")
-    
+        logger.warning(
+            f"Rebuild found {len(format_errors)} format errors in cached extraction for chunk {chunk_id}"
+        )
+
     return entities, relationships
 
 
@@ -1526,11 +1509,13 @@ async def _rebuild_single_entity(
     entity_types = list(dict.fromkeys(entity_types))
 
     # Get most common entity type
-    entity_type = (
-        max(set(entity_types), key=entity_types.count)
-        if entity_types
-        else current_entity.get("entity_type", "UNKNOWN")
-    )
+    if entity_types:
+        entity_type = max(set(entity_types), key=entity_types.count)
+    elif current_entity and current_entity.get("entity_type"):
+        entity_type = current_entity.get("entity_type")
+    else:
+        entity_type = "UNKNOWN"
+        logger.warning(f"No entity type found for entity: {entity_name}")
 
     # Generate final description from entities or fallback to current
     if description_list:
@@ -2099,38 +2084,42 @@ async def _merge_nodes_then_upsert(
     if nodes_data:
         # Get maximum insertion_order and insertion_timestamp from all nodes
         for node in nodes_data:
-            node_order = node.get('insertion_order')
-            node_timestamp = node.get('insertion_timestamp')
-            
+            node_order = node.get("insertion_order")
+            node_timestamp = node.get("insertion_timestamp")
+
             if node_order is not None:
                 if insertion_order is None:
                     insertion_order = node_order
                 else:
                     insertion_order = max(int(insertion_order), int(node_order))
-            
+
             if node_timestamp is not None:
                 if insertion_timestamp is None:
                     insertion_timestamp = node_timestamp
                 else:
-                    insertion_timestamp = max(int(insertion_timestamp), int(node_timestamp))
-    
+                    insertion_timestamp = max(
+                        int(insertion_timestamp), int(node_timestamp)
+                    )
+
     # Also check already_node for existing temporal metadata
     if already_node:
-        existing_order = already_node.get('insertion_order')
-        existing_timestamp = already_node.get('insertion_timestamp')
-        
+        existing_order = already_node.get("insertion_order")
+        existing_timestamp = already_node.get("insertion_timestamp")
+
         if existing_order is not None:
             if insertion_order is None:
                 insertion_order = existing_order
             else:
                 insertion_order = max(int(insertion_order), int(existing_order))
-        
+
         if existing_timestamp is not None:
             if insertion_timestamp is None:
                 insertion_timestamp = existing_timestamp
             else:
-                insertion_timestamp = max(int(insertion_timestamp), int(existing_timestamp))
-    
+                insertion_timestamp = max(
+                    int(insertion_timestamp), int(existing_timestamp)
+                )
+
     node_data = dict(
         entity_id=entity_name,
         entity_type=entity_type,
@@ -2140,16 +2129,26 @@ async def _merge_nodes_then_upsert(
         created_at=int(time.time()),
         truncate=truncation_info,
     )
-    
-    # Add temporal metadata if available
+
+    # Add temporal metadata if available (store as int for consistency)
     if insertion_order is not None:
-        node_data['insertion_order'] = str(insertion_order)
+        try:
+            node_data["insertion_order"] = int(insertion_order)
+        except (ValueError, TypeError):
+            logger.warning(
+                f"Invalid insertion_order value for {entity_name}: {insertion_order}"
+            )
     if insertion_timestamp is not None:
-        node_data['insertion_timestamp'] = str(insertion_timestamp)
+        try:
+            node_data["insertion_timestamp"] = int(insertion_timestamp)
+        except (ValueError, TypeError):
+            logger.warning(
+                f"Invalid insertion_timestamp value for {entity_name}: {insertion_timestamp}"
+            )
     # Track update history with source_ids
     if source_ids:
-        node_data['update_history'] = source_ids
-    
+        node_data["update_history"] = source_ids
+
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
@@ -2646,40 +2645,44 @@ async def _merge_edges_then_upsert(
     if edges_data:
         # Get maximum insertion_order and insertion_timestamp from all edges
         for edge in edges_data:
-            edge_order = edge.get('insertion_order')
-            edge_timestamp = edge.get('insertion_timestamp')
-            
+            edge_order = edge.get("insertion_order")
+            edge_timestamp = edge.get("insertion_timestamp")
+
             if edge_order is not None:
                 if insertion_order is None:
                     insertion_order = edge_order
                 else:
                     insertion_order = max(int(insertion_order), int(edge_order))
-            
+
             if edge_timestamp is not None:
                 if insertion_timestamp is None:
                     insertion_timestamp = edge_timestamp
                 else:
-                    insertion_timestamp = max(int(insertion_timestamp), int(edge_timestamp))
-    
+                    insertion_timestamp = max(
+                        int(insertion_timestamp), int(edge_timestamp)
+                    )
+
     # Also check already_edge for existing temporal metadata
     if already_edge:
-        existing_order = already_edge.get('insertion_order')
-        existing_timestamp = already_edge.get('insertion_timestamp')
-        
+        existing_order = already_edge.get("insertion_order")
+        existing_timestamp = already_edge.get("insertion_timestamp")
+
         if existing_order is not None:
             if insertion_order is None:
                 insertion_order = existing_order
             else:
                 insertion_order = max(int(insertion_order), int(existing_order))
-        
+
         if existing_timestamp is not None:
             if insertion_timestamp is None:
                 insertion_timestamp = existing_timestamp
             else:
-                insertion_timestamp = max(int(insertion_timestamp), int(existing_timestamp))
-    
+                insertion_timestamp = max(
+                    int(insertion_timestamp), int(existing_timestamp)
+                )
+
     edge_created_at = int(time.time())
-    
+
     edge_upsert_data = dict(
         weight=weight,
         description=description,
@@ -2689,16 +2692,16 @@ async def _merge_edges_then_upsert(
         created_at=edge_created_at,
         truncate=truncation_info,
     )
-    
+
     # Add temporal metadata if available
     if insertion_order is not None:
-        edge_upsert_data['insertion_order'] = str(insertion_order)
+        edge_upsert_data["insertion_order"] = str(insertion_order)
     if insertion_timestamp is not None:
-        edge_upsert_data['insertion_timestamp'] = str(insertion_timestamp)
+        edge_upsert_data["insertion_timestamp"] = str(insertion_timestamp)
     # Track update history with source_ids
     if source_ids:
-        edge_upsert_data['update_history'] = source_ids
-    
+        edge_upsert_data["update_history"] = source_ids
+
     await knowledge_graph_inst.upsert_edge(
         src_id,
         tgt_id,
@@ -2716,14 +2719,14 @@ async def _merge_edges_then_upsert(
         truncate=truncation_info,
         weight=weight,
     )
-    
+
     # Add temporal metadata to edge_data as well for return value
     if insertion_order is not None:
-        edge_data['insertion_order'] = insertion_order
+        edge_data["insertion_order"] = insertion_order
     if insertion_timestamp is not None:
-        edge_data['insertion_timestamp'] = insertion_timestamp
+        edge_data["insertion_timestamp"] = insertion_timestamp
     if source_ids:
-        edge_data['update_history'] = source_ids
+        edge_data["update_history"] = source_ids
 
     # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
     if src_id > tgt_id:
@@ -3264,7 +3267,7 @@ async def extract_entities(
                 insertion_order=insertion_order,
                 insertion_timestamp=insertion_timestamp,
             )
-            
+
             # Combine format errors from gleaning
             format_errors.extend(glean_errors)
 
@@ -3290,7 +3293,9 @@ async def extract_entities(
                     original_desc_len = len(
                         maybe_edges[edge_key][0].get("description", "") or ""
                     )
-                    glean_desc_len = len(glean_edges_list[0].get("description", "") or "")
+                    glean_desc_len = len(
+                        glean_edges_list[0].get("description", "") or ""
+                    )
 
                     if glean_desc_len > original_desc_len:
                         maybe_edges[edge_key] = list(glean_edges_list)
@@ -3304,8 +3309,10 @@ async def extract_entities(
         retry_count = 0
         while format_errors and retry_count < max_retries:
             retry_count += 1
-            logger.info(f"{chunk_key}: Retrying {len(format_errors)} format errors (attempt {retry_count}/{max_retries})")
-            
+            logger.info(
+                f"{chunk_key}: Retrying {len(format_errors)} format errors (attempt {retry_count}/{max_retries})"
+            )
+
             # Build retry prompt with specific error feedback
             error_descriptions = []
             for error in format_errors:
@@ -3321,13 +3328,13 @@ async def extract_entities(
                         f"Relation '{attrs[1] if len(attrs) > 1 else 'UNKNOWN'}'~'{attrs[2] if len(attrs) > 2 else 'UNKNOWN'}' has {error['actual_fields']} fields instead of {error['expected_fields']}. "
                         f"Please provide exactly 5 fields: relation<|#|>SOURCE<|#|>TARGET<|#|>KEYWORDS<|#|>DESCRIPTION"
                     )
-            
+
             retry_prompt = (
                 "The previous extraction had format errors:\n"
                 + "\n".join(f"- {desc}" for desc in error_descriptions)
                 + "\n\nPlease re-extract ONLY these entities/relations with the correct format."
             )
-            
+
             retry_result, retry_timestamp = await use_llm_func_with_cache(
                 retry_prompt,
                 use_llm_func,
@@ -3338,12 +3345,16 @@ async def extract_entities(
                 chunk_id=chunk_key,
                 cache_keys_collector=cache_keys_collector,
             )
-            
+
             # Update history with retry
             history = pack_user_ass_to_openai_messages(retry_prompt, retry_result)
-            
+
             # Process retry result
-            retry_nodes, retry_edges, new_format_errors = await _process_extraction_result(
+            (
+                retry_nodes,
+                retry_edges,
+                new_format_errors,
+            ) = await _process_extraction_result(
                 retry_result,
                 chunk_key,
                 retry_timestamp,
@@ -3353,21 +3364,25 @@ async def extract_entities(
                 insertion_order=insertion_order,
                 insertion_timestamp=insertion_timestamp,
             )
-            
+
             # Merge successful retry results
             maybe_nodes.update(retry_nodes)
             maybe_edges.update(retry_edges)
-            
+
             # Update format errors for next iteration (only keep new errors)
             format_errors = new_format_errors
-            
+
             if not format_errors:
-                logger.info(f"{chunk_key}: All format errors resolved after {retry_count} retry attempt(s)")
+                logger.info(
+                    f"{chunk_key}: All format errors resolved after {retry_count} retry attempt(s)"
+                )
                 break
-        
+
         # Log remaining format errors after max retries
         if format_errors:
-            logger.warning(f"{chunk_key}: {len(format_errors)} format errors remain after {max_retries} retry attempts")
+            logger.warning(
+                f"{chunk_key}: {len(format_errors)} format errors remain after {max_retries} retry attempts"
+            )
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
@@ -3811,34 +3826,41 @@ async def extract_keywords_only(
     return hl_keywords, ll_keywords
 
 
-def _apply_temporal_chunk_filtering(chunks: list[dict], operation_name: str = "query", min_chunks: int = 1, relevance_threshold: float = 0.3) -> list[dict]:
+def _apply_temporal_chunk_filtering(
+    chunks: list[dict],
+    operation_name: str = "query",
+    min_chunks: int = 1,
+    relevance_threshold: float = 0.15,
+    strict_temporal_priority: bool = True,
+) -> list[dict]:
     """
     Apply progressive temporal search: try highest insertion_order first, fall back to lower orders if needed.
-    
+
     This ensures we prefer the most recent document version but can fall back to historical data
     when the query topic doesn't exist in newer versions (e.g., contract termination clause
     removed in latest amendment but still valid from earlier version).
-    
+
     Uses relevance-aware filtering: chunks are only considered "sufficient" if they meet
     a minimum similarity threshold, preventing selection of irrelevant chunks from latest docs.
-    
+
     Args:
         chunks: List of chunk dictionaries with optional insertion_order metadata and similarity scores
         operation_name: Name of the operation for logging
         min_chunks: Minimum number of chunks needed to consider an order "sufficient" (default: 1)
-        relevance_threshold: Minimum similarity score for chunks to be considered relevant (default: 0.3)
-    
+        relevance_threshold: Minimum similarity score for chunks to be considered relevant (default: 0.15, lowered from 0.3)
+        strict_temporal_priority: If True, always prefer highest insertion_order regardless of similarity (default: True)
+
     Returns:
         Chunks from the highest insertion_order that has at least min_chunks relevant matches,
         or all chunks if no temporal metadata exists
     """
     if not chunks:
         return chunks
-    
+
     # Group chunks by insertion_order
     chunks_by_order = {}
     chunks_without_order = []
-    
+
     for chunk in chunks:
         order = chunk.get("insertion_order")
         if order is not None:
@@ -3848,31 +3870,47 @@ def _apply_temporal_chunk_filtering(chunks: list[dict], operation_name: str = "q
                     chunks_by_order[order_int] = []
                 chunks_by_order[order_int].append(chunk)
             except (ValueError, TypeError):
+                logger.warning(
+                    f"{operation_name}: Invalid insertion_order value: {order}"
+                )
                 chunks_without_order.append(chunk)
         else:
             chunks_without_order.append(chunk)
-    
+
     # If we have temporal metadata, use progressive search from highest to lowest order
     if chunks_by_order:
         sorted_orders = sorted(chunks_by_order.keys(), reverse=True)
-        
+
         # Log what we found
         chunks_summary = {order: len(chunks_by_order[order]) for order in sorted_orders}
         logger.info(f"{operation_name}: Found chunks by order: {chunks_summary}")
-        
-        # Try each insertion_order from highest to lowest
+
+        # If strict_temporal_priority is True, always return highest order with any chunks
+        if strict_temporal_priority and sorted_orders:
+            highest_order = sorted_orders[0]
+            result_chunks = chunks_by_order[highest_order] + chunks_without_order
+            logger.info(
+                f"{operation_name}: Strict temporal priority - returning {len(result_chunks)} chunks from insertion_order={highest_order} (highest available)"
+            )
+            return result_chunks
+
+        # Try each insertion_order from highest to lowest with relevance filtering
         for order in sorted_orders:
             order_chunks = chunks_by_order[order]
-            
+
             # Filter by relevance: only count chunks with sufficient similarity
             relevant_chunks = [
-                c for c in order_chunks
-                if c.get("similarity", 0) >= relevance_threshold or c.get("distance", 1.0) <= (1.0 - relevance_threshold)
+                c
+                for c in order_chunks
+                if c.get("similarity", 0) >= relevance_threshold
+                or c.get("distance", 1.0) <= (1.0 - relevance_threshold)
             ]
-            
+
             if len(relevant_chunks) >= min_chunks:
                 # Found sufficient RELEVANT chunks at this order level
-                result_chunks = order_chunks + chunks_without_order  # Return all from this order, not just relevant ones
+                result_chunks = (
+                    order_chunks + chunks_without_order
+                )  # Return all from this order, not just relevant ones
                 logger.info(
                     f"{operation_name}: {len(result_chunks)} chunks from insertion_order={order} (searched {sorted_orders}, found {len(relevant_chunks)} relevant of {len(order_chunks)} total at order {order})"
                 )
@@ -3882,21 +3920,23 @@ def _apply_temporal_chunk_filtering(chunks: list[dict], operation_name: str = "q
                 logger.info(
                     f"{operation_name}: Skipping insertion_order={order} - only {len(relevant_chunks)}/{len(order_chunks)} chunks meet relevance threshold {relevance_threshold}"
                 )
-        
+
         # Fallback: if no order has min_chunks relevant matches, return ALL chunks across ALL orders
         # This allows the LLM to find the answer even if it's in an older document with lower similarity
         all_chunks_with_order = []
         for order in sorted_orders:
             all_chunks_with_order.extend(chunks_by_order[order])
         all_chunks_with_order.extend(chunks_without_order)
-        
+
         logger.info(
             f"{operation_name}: No single order has {min_chunks} relevant chunks (threshold={relevance_threshold}), returning all {len(all_chunks_with_order)} chunks across all orders"
         )
         return all_chunks_with_order
-    
+
     # No temporal metadata found, return all chunks
-    logger.info(f"{operation_name}: {len(chunks_without_order)} chunks (no temporal metadata)")
+    logger.info(
+        f"{operation_name}: {len(chunks_without_order)} chunks (no temporal metadata)"
+    )
     return chunks_without_order
 
 
@@ -3955,21 +3995,23 @@ async def _get_vector_context(
         for result in results:
             if "content" in result:
                 content_lower = result["content"].lower()
-                
+
                 # Keyword boost: prioritize chunks with exact matches
                 keyword_score = sum(1 for kw in keywords if kw in content_lower)
-                
+
                 chunk_with_metadata = {
                     "content": result["content"],
                     "created_at": result.get("created_at", None),
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
-                    "insertion_order": result.get("insertion_order"),  # Preserve temporal metadata
+                    "insertion_order": result.get(
+                        "insertion_order"
+                    ),  # Preserve temporal metadata
                     "keyword_score": keyword_score,  # Add keyword matching score
                 }
                 valid_chunks.append(chunk_with_metadata)
-        
+
         # Sort by keyword score (descending) then by original order
         # This ensures chunks with exact keyword matches rank higher
         valid_chunks.sort(key=lambda x: x.get("keyword_score", 0), reverse=True)
@@ -3978,9 +4020,9 @@ async def _get_vector_context(
         # Strategy: Try highest insertion_order first, fall back to lower orders if needed
         if valid_chunks:
             filtered_chunks = _apply_temporal_chunk_filtering(
-                valid_chunks, 
+                valid_chunks,
                 operation_name="Naive query",
-                min_chunks=1  # Accept even 1 chunk from highest order if relevant
+                min_chunks=1,  # Accept even 1 chunk from highest order if relevant
             )
             return filtered_chunks
 
@@ -4398,7 +4440,9 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
-                        "insertion_order": chunk.get("insertion_order"),  # Preserve temporal metadata
+                        "insertion_order": chunk.get(
+                            "insertion_order"
+                        ),  # Preserve temporal metadata
                     }
                 )
 
@@ -4413,7 +4457,9 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
-                        "insertion_order": chunk.get("insertion_order"),  # Preserve temporal metadata
+                        "insertion_order": chunk.get(
+                            "insertion_order"
+                        ),  # Preserve temporal metadata
                     }
                 )
 
@@ -4428,17 +4474,21 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
-                        "insertion_order": chunk.get("insertion_order"),  # Preserve temporal metadata
+                        "insertion_order": chunk.get(
+                            "insertion_order"
+                        ),  # Preserve temporal metadata
                     }
                 )
 
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
-    
+
     # Apply FINAL temporal filtering AFTER merging all sources
     # This ensures all paths (vector, entity, relationship) use the same insertion_order
-    merged_chunks = _apply_temporal_chunk_filtering(merged_chunks, "Final merged chunks", min_chunks=1)
+    merged_chunks = _apply_temporal_chunk_filtering(
+        merged_chunks, "Final merged chunks", min_chunks=1
+    )
 
     return merged_chunks
 

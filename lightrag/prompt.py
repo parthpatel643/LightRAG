@@ -274,14 +274,19 @@ You are an expert AI assistant specializing in synthesizing information from a k
    - "Turn" service = quick turnaround (NOT remain overnight)
    - If a chunk contains multiple service types, extract ONLY the one that matches the query
    - Do NOT confuse different service types even if in the same chunk
-8. HTML TABLE PARSING (CRITICAL FOR RATE EXTRACTION):
-   - Tables use <th scope="row"> for row headers (aircraft type: "Narrowbody", "Widebody", "Express")
-   - Service type appears in 2nd or 3rd <td> cell (e.g., "Lav Service ONLY", "Water Service ONLY", "Turn w/lav & water")
-   - The TOTAL RATE is in the 11th <td> cell (after cost breakdown columns like wages, taxes, benefits, overhead, profit)
-   - When you see: <th>Narrowbody</th><td>0</td><td>Water Service ONLY</td>...[9 more td cells]...<td>$ 46.61</td>
-   - The $ 46.61 is the rate you should extract (it's the 11th data cell in that row)
-   - IGNORE earlier $ amounts (base wages, taxes) - find the FINAL total rate column
-   - The pattern: Aircraft Type (th) -> Service Name (td) -> [cost breakdown cells] -> TOTAL RATE (td)
+8. YAML TABLE PARSING (CRITICAL FOR RATE EXTRACTION):
+   - Pricing tables are in YAML format with key-value pairs
+   - Aircraft type appears in keys like 'CS Agent minutes': '757-All/737-800/737-900' or 'CS Agent minutes': '767'
+   - Service description in key 'Service Description (all svcs must be quoted) / Lav Driver minutes': 'Turn w/lav & water'
+   - Rate values appear in keys like 'Overhead & profit per event': '$ 391.93' (this is the TOTAL RATE)
+   - Pattern: Look for the aircraft type in the first key, then find matching service description, then extract the rate from 'Overhead & profit per event' or 'Price/event' keys
+   - IGNORE intermediate cost breakdown values - find the final total rate
+   - Example YAML structure:
+     ```yaml
+     - 'CS Agent minutes': '767'
+       'Service Description (all svcs must be quoted) / Lav Driver minutes': 'Ron w/lav & water'
+       'Overhead & profit per event': '$ 391.93'
+     ```
 </critical_instructions>
 
 <step_by_step_process>
@@ -289,13 +294,13 @@ You are an expert AI assistant specializing in synthesizing information from a k
 2. Scrutinize ONLY Document Chunks section - IGNORE Knowledge Graph Data for rates/prices
 3. Find MAXIMUM insertion_order value across all chunks
 4. **Filter**: Discard chunks with insertion_order < maximum (use ONLY latest document)
-5. **HTML Table Scan**: In highest-order chunks, search for:
-   - <th scope="row"> containing aircraft type ("Narrowbody" for "narrow body", "Widebody" for "wide body")
-   - In same row, find <td> containing exact service type ("Water Service ONLY", "Lav Service ONLY", etc.)
-6. **Rate Extraction**: Once correct row found, count to 11th <td> cell for total rate
-   - Skip cells 1-2: event details
-   - Skip cells 3-10: cost breakdown (wages, taxes, benefits, overhead, profit)
-   - Cell 11: **TOTAL RATE** (e.g., "$ 46.61") - THIS is your answer
+5. **YAML Table Scan**: In highest-order chunks, search for:
+   - YAML list items containing aircraft type in keys (e.g., '767', '757-All/737-800/737-900', 'Airbus - All')
+   - In same YAML item, find 'Service Description' key containing exact service type ('Turn w/lav & water', 'Ron w/lav & water', etc.)
+6. **Rate Extraction**: Once correct YAML item found, extract from 'Overhead & profit per event' or 'Price/event' key
+   - Look for keys containing dollar amounts like '$ 391.93'
+   - The 'Overhead & profit per event' key typically contains the **TOTAL RATE**
+   - This is your answer
 7. Verify: Aircraft type + Service type + insertion_order = correct match
 8. **IF NOT FOUND**: State "The requested information is not available in the latest documents"
 9. Track reference_id from Document Chunks used
