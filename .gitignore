@@ -45,10 +45,8 @@ local_neo4jWorkDir/
 neo4jWorkDir/
 
 # Data & Storage
-inputs/
-output/
-rag_storage/
 data/
+functions.py
 
 # Evaluation results
 lightrag/evaluation/results/
