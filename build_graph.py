@@ -14,13 +14,9 @@ Usage:
 import asyncio
 import os
 
-from functions_openai import embedding_func, llm_model_func
+from functions import embedding_func, llm_model_func
 from lightrag import LightRAG
 from lightrag.kg.shared_storage import initialize_pipeline_status
-
-# Configuration
-WORKING_DIR = "./data/output/sea-cabin-cleaning"
-os.makedirs(WORKING_DIR, exist_ok=True)
 
 
 async def build_graph():
@@ -28,7 +24,7 @@ async def build_graph():
 
     # Initialize LightRAG with NetworkX storage and Azure OpenAI
     rag = LightRAG(
-        working_dir=WORKING_DIR,
+        working_dir=os.getenv("WORKING_DIR", ""),
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
         entity_extract_max_gleaning=3,
@@ -49,20 +45,20 @@ async def build_graph():
     # Simulate contract document chronology
     documents = [
         {
-            "name": "CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
-            "path": "./data/processed/CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
+            "name": "base_agreement",
+            "path": "data/processed/sea-cabin-cleaning/CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
         },
         {
             "name": "amendment_1",
-            "path": "./data/processed/amendment_1.md",
+            "path": "data/processed/sea-cabin-cleaning/SEA_-_G2_Cabin_Cleaning_and_Janitorial_Amendment_2023 - G2 Signed.md",
         },
         {
             "name": "amendment_2",
-            "path": "./data/processed/amendment_2.md",
+            "path": "data/processed/sea-cabin-cleaning/CW54832-2_-_G2_-_Aircraft_Appearance___Janitorial_-_SEA_READONLY.md",
         },
         {
             "name": "amendment_3",
-            "path": "./data/processed/amendment_3.md",
+            "path": "data/processed/sea-cabin-cleaning/CW54832-2_-_G2_-_Aircraft_Appearance___Janitorial_-_SEA_Fully Executed.md",
         },
     ]
 
@@ -72,7 +68,7 @@ async def build_graph():
         print(f"\n{i}. Inserting: {doc['name']}")
         with open(doc["path"], "r", encoding="utf-8") as f:
             content = f.read()
-        await rag.ainsert(content, file_paths=doc["path"])
+        await rag.ainsert(content, file_paths=[doc["path"]])
         print(f"   ✓ Insertion order: {rag._document_insertion_counter}")
 
     print("\n" + "=" * 80)
