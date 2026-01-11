@@ -17,9 +17,6 @@ import os
 from functions_openai import embedding_func, llm_model_func
 from lightrag import LightRAG
 from lightrag.kg.shared_storage import initialize_pipeline_status
-from lightrag.utils import setup_logger
-
-setup_logger("lightrag", level="WARN")
 
 # Configuration
 WORKING_DIR = "./data/output/sea-cabin-cleaning"
@@ -51,10 +48,10 @@ async def build_graph():
 
     # Simulate contract document chronology
     documents = [
-        # {
-        #     "name": "CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
-        #     "path": "./data/processed/CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
-        # },
+        {
+            "name": "CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
+            "path": "./data/processed/CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
+        },
         {
             "name": "amendment_1",
             "path": "./data/processed/amendment_1.md",

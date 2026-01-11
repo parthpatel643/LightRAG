@@ -1,13 +1,13 @@
 # This method should generate a new bearer token every 60 minute and provide
 # The below code assumes you have access to gen-ai sdk
 import time
-
+import os
 import requests
 
 _token_cache = {"token": None, "timestamp": 0}
 
 
-def provide_bearer_token(base_url: str = "https://mars-llm-proxy-dev.ual.com"):
+def provide_bearer_token():
     current_time = time.time()
     # Cache for 30 minutes (1800 seconds)
     if _token_cache["token"] and (current_time - _token_cache["timestamp"] < 1800):
@@ -15,10 +15,10 @@ def provide_bearer_token(base_url: str = "https://mars-llm-proxy-dev.ual.com"):
 
     # Refer the separate example shared for generating bearer token.
     request_body = {
-        "key": "dhR1sgZti4EZ4QtbMxBRrAzF99YxNrCJD68OfB4BKsgDALsqaSyKOs3Jg5U3uQX/+fj8MuII0ofmBEAPsowt3pSZsgMw7XXSZeq5DVJxrHdb*EA158QQXDJCZi9RWKCCwMQ==*7+Zyo/EDha4lGLcWxIS0dg==*vCGI7G0EbgwkToOOd9POjw=="
+        "key": os.getenv("TOKEN_BINDING_API_KEY")
     }
     response = requests.post(
-        url=f"{base_url}/generatetoken", json=request_body, verify=False
+        url=os.getenv("TOKEN_BINDING_HOST"), json=request_body, verify=False
     )
     proxy_token = response.json()["access_token"]
 

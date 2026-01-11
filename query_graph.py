@@ -17,10 +17,6 @@ from functions_openai import embedding_func, llm_model_func
 from lightrag import LightRAG, QueryParam
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import initialize_pipeline_status
-from lightrag.utils import setup_logger
-
-setup_logger("lightrag", level="WARN")
-
 # Configuration
 WORKING_DIR = "./data/storage"
 
