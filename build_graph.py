@@ -28,11 +28,11 @@ async def build_graph():
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
         entity_extract_max_gleaning=3,
-        chunk_token_size=2000,
-        chunk_overlap_token_size=200,
-        embedding_func_max_async=4,
-        llm_model_max_async=4,
-        max_parallel_insert=1,
+        chunk_token_size=int(os.getenv("CHUNK_SIZE", 2000)),
+        chunk_overlap_token_size=int(os.getenv("CHUNK_OVERLAP_SIZE", 200)),
+        embedding_func_max_async=int(os.getenv("EMBEDDING_FUNC_MAX_ASYNC", 4)),
+        llm_model_max_async=int(os.getenv("MAX_ASYNC", 4)),
+        max_parallel_insert=int(os.getenv("MAX_PARALLEL_INSERT", 2)),
         enable_llm_cache=False,
     )
     await rag.initialize_storages()

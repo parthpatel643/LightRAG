@@ -12,42 +12,27 @@ Usage:
 """
 
 import asyncio
+import os
 
 from functions import embedding_func, llm_model_func
 from lightrag import LightRAG, QueryParam
-from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import initialize_pipeline_status
-# Configuration
-WORKING_DIR = "./data/storage"
+
 
 async def query_graph():
     """Test chronological document insertion and temporal tracking."""
 
     # Initialize LightRAG with NetworkX storage and Azure OpenAI
     rag = LightRAG(
-        working_dir=WORKING_DIR,
+        working_dir=os.getenv("WORKING_DIR", ""),
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
-        # rerank_model_func=rerank_model_func,
-        entity_extract_max_gleaning=3,
-        chunk_token_size=2000,
-        chunk_overlap_token_size=200,
-        chunk_top_k=75,  # Increased to improve retrieval of table-heavy chunks  
-        max_total_tokens=50000,  # Increased to allow more context for table data
-        enable_llm_cache=False
+        chunk_top_k=int(os.getenv("CHUNK_TOP_K", 5)),
+        max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", 30000)),
+        enable_llm_cache=False,
     )
     await rag.initialize_storages()
-    await initialize_pipeline_status() 
-
-    # Test temporal queries
-    print("\n🔍 Testing temporal query capabilities...\n")
-
-    # Get graph storage to test temporal methods
-    graph: NetworkXStorage = rag.chunk_entity_relation_graph
-    graph_data = await graph._get_graph()
-
-    print(f"Total entities in graph: {graph_data.number_of_nodes()}")
-    print(f"Total relationships in graph: {graph_data.number_of_edges()}")
+    await initialize_pipeline_status()
 
     # Test actual queries with temporal awareness
     print("\n" + "=" * 80)
@@ -65,7 +50,9 @@ async def query_graph():
     for query in test_queries:
         print(f"\n❓ Query: {query}")
         print("-" * 80)
-        result = await rag.aquery(query, param=QueryParam(mode="mix", enable_rerank=False))
+        result = await rag.aquery(
+            query, param=QueryParam(mode="mix", enable_rerank=False)
+        )
         print(f"📝 Answer: {result}")
         print()
 
