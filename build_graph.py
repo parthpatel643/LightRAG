@@ -44,22 +44,78 @@ async def build_graph():
 
     # Simulate contract document chronology
     documents = [
-        {
-            "name": "base_agreement",
-            "path": "data/processed/sea-cabin-cleaning/CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
-        },
-        {
-            "name": "amendment_1",
-            "path": "data/processed/sea-cabin-cleaning/SEA_-_G2_Cabin_Cleaning_and_Janitorial_Amendment_2023 - G2 Signed.md",
-        },
-        {
-            "name": "amendment_2",
-            "path": "data/processed/sea-cabin-cleaning/CW54832-2_-_G2_-_Aircraft_Appearance___Janitorial_-_SEA_READONLY.md",
-        },
-        {
-            "name": "amendment_3",
-            "path": "data/processed/sea-cabin-cleaning/CW54832-2_-_G2_-_Aircraft_Appearance___Janitorial_-_SEA_Fully Executed.md",
-        },
+        # {
+        #     "name": "base_agreement",
+        #     "path": "data/processed/sea-cabin-cleaning/CW54832-Aircraft-Appearance-Janitorial-G2-SEA-Signed.md",
+        # },
+        # {
+        #     "name": "amendment_1",
+        #     "path": "data/processed/sea-cabin-cleaning/SEA_-_G2_Cabin_Cleaning_and_Janitorial_Amendment_2023 - G2 Signed.md",
+        # },
+        # {
+        #     "name": "amendment_2",
+        #     "path": "data/processed/sea-cabin-cleaning/CW54832-2_-_G2_-_Aircraft_Appearance___Janitorial_-_SEA_READONLY.md",
+        # },
+        # {
+        #     "name": "amendment_3",
+        #     "path": "data/processed/sea-cabin-cleaning/CW54832-2_-_G2_-_Aircraft_Appearance___Janitorial_-_SEA_Fully Executed.md",
+        # },
+        # {
+        #     "name": "base_agreement",
+        #     "path": "data/processed/lga-cabin-cleaning/51420-LGA_-_179242_-_Airway_Cleaners_-_Cabin_-_contract.md",
+        # },
+        # {
+        #     "name": "amendment_1",
+        #     "path": "data/processed/lga-cabin-cleaning/179242-5 - Airway Cleaners - LGA Aircraft Appearance Wage + Term Amendment  Jan + Jul 2025 .md",
+        # },
+        # {
+        #     "name": "base_agreement",
+        #     "path": "data/processed/lga-janitorial-services/LGA_-_Guardian_Professional_Services_-_Janitorial_Services_Contract_ID_205176_11.20.2023.docx.md",
+        # },
+        # {
+        #     "name": "amendment_1",
+        #     "path": "data/processed/lga-janitorial-services/205176_-1-_LGA-_Guardian_Professional_Services__Inc._-_Janitorial_Service_20250716-4898-wpp57i.md",
+        # },
+        # {
+        #     "name": "base_agreement",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/G2 - SEA - Contract CW53741.md'
+        # },
+        # {
+        #     "name": "amendment_1",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/G2- SEA - Amendment CW53741-1.md'
+        # },
+        # {
+        #     "name": "amendment_2",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/G2 - SEA -Amendment CW53741-2 .md'
+        # },
+        # {
+        #     "name": "amendment_3",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/G2 - SEA - Amendment CW53741-3.md'
+        # },
+        # {
+        #     "name": "amendment_4",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/SEA - G2- Amendment  CW53741-4.md'
+        # },
+        # {
+        #     "name": "amendment_5",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/SEA - G2- Amendment  CW53741-5.md'
+        # },
+        # {
+        #     "name": "amendment_6",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/CW53741-6 SEA - G2 - Amendment.md'
+        # },
+        # {
+        #     "name": "amendment_7",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/CW53741-7 SEA - G2 - Min Wage.md'
+        # },
+        # {
+        #     "name": "amendment_8",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/CW53741-8 SEA - G2- Minimum Wage.md'
+        # },
+        # {
+        #     "name": "amendment_9",
+        #     "path": 'data/processed/sea-vbc-wheelchairs/CW53741-9_SEA_Passenger_Services_20250514-10029-3pquc4 (1).md'
+        # },
     ]
 
     # Insert documents sequentially
