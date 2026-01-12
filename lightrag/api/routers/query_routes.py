@@ -4,11 +4,13 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 from typing import Any, Dict, List, Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
-from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
+
+from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import QueryParam
+from lightrag.utils import logger
 
 router = APIRouter(tags=["query"])
 
@@ -91,8 +93,8 @@ class QueryRequest(BaseModel):
     )
 
     enable_rerank: Optional[bool] = Field(
-        default=None,
-        description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
+        default=False,
+        description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is False to match query_graph.py.",
     )
 
     include_references: Optional[bool] = Field(

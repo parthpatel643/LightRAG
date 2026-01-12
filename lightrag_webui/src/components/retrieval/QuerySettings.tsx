@@ -41,7 +41,7 @@ export default function QuerySettings() {
   const defaultValues = useMemo(() => ({
     mode: 'mix' as QueryMode,
     top_k: 40,
-    chunk_top_k: 20,
+    chunk_top_k: 5,
     max_entity_tokens: 6000,
     max_relation_tokens: 8000,
     max_total_tokens: 30000

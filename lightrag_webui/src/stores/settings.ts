@@ -122,9 +122,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       userPromptHistory: [],
 
       querySettings: {
-        mode: 'global',
+        mode: 'mix',
         top_k: 40,
-        chunk_top_k: 20,
+        chunk_top_k: 5,
         max_entity_tokens: 6000,
         max_relation_tokens: 8000,
         max_total_tokens: 30000,
@@ -133,7 +133,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: false
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -238,7 +238,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -339,6 +339,15 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Remove deprecated response_type parameter
           if (state.querySettings) {
             delete state.querySettings.response_type
+          }
+        }
+        if (version < 20) {
+          // Align defaults with query_graph.py
+          if (state.querySettings) {
+            state.querySettings.mode = 'mix'
+            state.querySettings.chunk_top_k = 5
+            state.querySettings.max_total_tokens = 30000
+            state.querySettings.enable_rerank = false
           }
         }
         return state

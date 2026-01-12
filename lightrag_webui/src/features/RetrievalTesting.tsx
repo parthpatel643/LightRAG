@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
+import ErrorBoundary from '@/components/common/ErrorBoundary'
 import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -257,8 +258,16 @@ export default function RetrievalTesting() {
         }
       }
 
+      // Track whether any content was received during streaming
+      let hadStreamOutput = false
+      // Track whether we discarded the assistant bubble due to a hard error
+      let assistantDiscarded = false
+
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
+        if (chunk && chunk.length > 0) {
+          hadStreamOutput = true
+        }
         assistantMessage.content += chunk
 
         // Start thinking timer on first sight of think tag
@@ -370,23 +379,50 @@ export default function RetrievalTesting() {
       try {
         // Run query
         if (state.querySettings.stream) {
-          let errorMessage = ''
+          let streamError = ''
           await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
+            streamError += (streamError ? '\n' : '') + error
           })
-          if (errorMessage) {
-            if (assistantMessage.content) {
-              errorMessage = assistantMessage.content + '\n' + errorMessage
+          if (!hadStreamOutput) {
+            // Fallback: if stream yielded no content, attempt non-stream query
+            try {
+              const fallbackResponse = await queryText(queryParams)
+              updateAssistantMessage(fallbackResponse.response)
+            } catch (fallbackErr) {
+              const emsg = errorMessage(fallbackErr)
+              // Do not inject error text into chat; show toast only.
+              // If no assistant content at all, keep a neutral bubble with a concise note.
+              if (!assistantMessage.content.trim()) {
+                updateAssistantMessage(t('retrievePanel.retrieval.noResponse', 'No response received. Please try again.'), false)
+              } else {
+                // Ensure error state is cleared when we have content.
+                updateAssistantMessage('', false)
+              }
+              toast.error(emsg)
             }
-            updateAssistantMessage(errorMessage, true)
+          } else if (streamError) {
+            // Stream had output but also reported errors; notify without corrupting message content
+            toast.error(streamError)
           }
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
         }
       } catch (err) {
-        // Handle error
-        updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
+        // Handle error without polluting chat content; mark error bubble only if no content
+        const emsg = errorMessage(err)
+        // If error message equals the original query, treat as noise
+        const looksLikeQuery = typeof emsg === 'string' && emsg.trim() === actualQuery.trim()
+        if (!assistantMessage.content.trim()) {
+          // Keep a neutral assistant bubble with a concise note; rely on toast for details.
+          updateAssistantMessage(t('retrievePanel.retrieval.noResponse', 'No response received. Please try again.'), false)
+        } else {
+          // Do not mark the assistant message as error when it already has content.
+          updateAssistantMessage('', false)
+        }
+        if (!looksLikeQuery) {
+          toast.error(emsg)
+        }
       } finally {
         // Clear loading and add messages to state
         setIsLoading(false)
@@ -422,9 +458,10 @@ export default function RetrievalTesting() {
 
         // Save history with error handling
         try {
+          const finalHistory = [...prevMessages, userMessage, assistantMessage]
           useSettingsStore
             .getState()
-            .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
+            .setRetrievalHistory(finalHistory)
         } catch (error) {
           console.error('Error saving retrieval history:', error)
         }
@@ -703,11 +740,10 @@ export default function RetrievalTesting() {
                   {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
-                messages.map((message) => { // Remove unused idx
-                  // isComplete logic is now handled internally based on message.mermaidRendered
+                messages.map((message) => {
                   return (
                     <div
-                      key={message.id} // Use stable ID for key
+                      key={message.id}
                       className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} items-end gap-2`}
                     >
                       {message.role === 'user' && (
@@ -721,7 +757,15 @@ export default function RetrievalTesting() {
                           <CopyIcon className="size-4" />
                         </Button>
                       )}
-                      <ChatMessage message={message} isTabActive={isRetrievalTabActive} />
+                      <ErrorBoundary
+                        fallback={(
+                          <div className="w-[95%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400 rounded-lg px-4 py-2 text-xs">
+                            {t('retrievePanel.retrieval.error')}
+                          </div>
+                        )}
+                      >
+                        <ChatMessage message={message} isTabActive={isRetrievalTabActive} />
+                      </ErrorBoundary>
                       {message.role === 'assistant' && (
                         <Button
                           onClick={() => handleCopyMessage(message)}
@@ -734,7 +778,7 @@ export default function RetrievalTesting() {
                         </Button>
                       )}
                     </div>
-                  );
+                  )
                 })
               )}
               <div ref={messagesEndRef} className="pb-1" />

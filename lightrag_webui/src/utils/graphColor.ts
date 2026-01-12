@@ -140,9 +140,98 @@ const TYPE_SYNONYMS: Record<string, string> = {
   地址: 'location',
   地理: 'location',
   地域: 'location'
+  ,
+  // Airline domain
+  airline: 'airline',
+  carrier: 'airline',
+  operator: 'airline',
+  航空公司: 'airline',
+  航司: 'airline',
+
+  airport: 'airport',
+  hub: 'airport',
+  station: 'airport',
+  aerodrome: 'airport',
+  机场: 'airport',
+  航站楼: 'terminal',
+
+  flight: 'flight',
+  service: 'flight',
+  segment: 'flight',
+  leg: 'flight',
+  航班: 'flight',
+
+  aircraft: 'aircraft',
+  plane: 'aircraft',
+  tail: 'aircraft',
+  frame: 'aircraft',
+  机型: 'aircraft',
+  飞机: 'aircraft',
+
+  route: 'route',
+  path: 'route',
+  corridor: 'route',
+  航线: 'route',
+
+  gate: 'gate',
+  stand: 'gate',
+  登机口: 'gate',
+
+  terminal: 'terminal',
+  concourse: 'terminal',
+  候机楼: 'terminal',
+
+  crew: 'crew',
+  pilot: 'crew',
+  captain: 'crew',
+  attendant: 'crew',
+  cabincrew: 'crew',
+  机组: 'crew',
+  飞行员: 'crew',
+
+  passenger: 'passenger',
+  customer: 'passenger',
+  traveler: 'passenger',
+  pax: 'passenger',
+  旅客: 'passenger',
+
+  schedule: 'schedule',
+  timetable: 'schedule',
+  排班: 'schedule',
+  时刻表: 'schedule',
+
+  rulebook: 'regulation',
+  faa: 'regulation',
+  caac: 'regulation',
+  规章: 'regulation',
+  规定: 'regulation',
+
+  weather: 'weather',
+  metar: 'weather',
+  taf: 'weather',
+  storm: 'weather',
+  wind: 'weather',
+  天气: 'weather',
+  气象: 'weather',
+
+  incident: 'incident',
+  delay: 'incident',
+  cancellation: 'incident',
+  disruption: 'incident',
+  diversion: 'incident',
+  延误: 'incident',
+  取消: 'incident',
+
+  maintenance: 'maintenance',
+  mx: 'maintenance',
+  check: 'maintenance',
+  inspection: 'maintenance',
+  维修: 'maintenance',
+  检修: 'maintenance'
 }
 
 const NODE_TYPE_COLORS: Record<string, string> = {
+  // Core (existing)
   person: '#4169E1',
   creature: '#bd7ebe',
   organization: '#00cc00',
@@ -155,7 +244,23 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   artifact: '#4421af',
   naturalobject: '#b2e061',
   other: '#f4d371',
-  unknown: '#b0b0b0'
+  unknown: '#b0b0b0',
+
+  // Airline domain
+  airline: '#1f77b4',       // blue
+  airport: '#ff7f0e',       // orange
+  flight: '#17becf',        // cyan
+  aircraft: '#9467bd',      // purple
+  route: '#2ca02c',         // green
+  gate: '#bcbd22',          // olive
+  terminal: '#8c564b',      // brown
+  crew: '#7f7f7f',          // gray
+  passenger: '#3182bd',     // steel blue
+  schedule: '#00bcd4',      // teal
+  regulation: '#e377c2',    // pink
+  weather: '#66c2a5',       // sea green
+  incident: '#d62728',      // red
+  maintenance: '#a6d854'    // lime
 }
 
 const EXTENDED_COLORS = [

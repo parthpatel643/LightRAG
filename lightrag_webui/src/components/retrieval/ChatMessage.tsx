@@ -76,6 +76,11 @@ export const ChatMessage = ({
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
+  // Determine whether to show an error-styled bubble.
+  // If there is any visible display content, never style as error even if isError is true.
+  const hasVisibleContent = !!(finalDisplayContent && finalDisplayContent.trim() !== '')
+  const showErrorBubble = !!message.isError && !hasVisibleContent
+
   // Load KaTeX rehype plugin dynamically
   // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
   useEffect(() => {
@@ -148,7 +153,7 @@ export const ChatMessage = ({
       className={`${
         message.role === 'user'
           ? 'max-w-[80%] bg-primary text-primary-foreground'
-          : message.isError
+          : showErrorBubble
             ? 'w-[95%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
             : 'w-[95%] bg-muted'
       } rounded-lg px-4 py-2`}
