@@ -3327,29 +3327,24 @@ def generate_reference_list_from_chunks(
                     current_max, insertion_order
                 )
 
-    # 2. Sort file paths by insertion_order (descending), then frequency (descending), then first appearance order
-    # Create a list of (file_path, insertion_order, count, first_index) tuples
+    # 2. Sort file paths by frequency (descending), then by first appearance order
+    # This ensures documents contributing more chunks get lower reference numbers
+    # Create a list of (file_path, count, first_index) tuples
     file_path_with_indices = []
     seen_paths = set()
     for i, chunk in enumerate(chunks):
         file_path = chunk.get("file_path", "")
         if file_path and file_path != "unknown_source" and file_path not in seen_paths:
-            insertion_order = file_path_max_insertion_order.get(file_path, -1)
-            file_path_with_indices.append(
-                (file_path, insertion_order, file_path_counts[file_path], i)
-            )
+            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
             seen_paths.add(file_path)
 
     # Sort by:
-    # 1. insertion_order (descending) - newest documents first
-    # 2. count (descending) - more frequent paths get priority within same insertion_order
-    # 3. first appearance index (ascending) - stable ordering
-    sorted_file_paths = sorted(
-        file_path_with_indices, key=lambda x: (-x[1], -x[2], x[3])
-    )
+    # 1. count (descending) - more frequent paths get priority (likely more relevant)
+    # 2. first appearance index (ascending) - stable ordering
+    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
     unique_file_paths = [item[0] for item in sorted_file_paths]
 
-    # 3. Create mapping from file_path to reference_id (prioritized by insertion_order, then frequency)
+    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
     file_path_to_ref_id = {}
     for i, file_path in enumerate(unique_file_paths):
         file_path_to_ref_id[file_path] = str(i + 1)

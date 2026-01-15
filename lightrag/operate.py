@@ -3474,6 +3474,54 @@ async def extract_entities(
     return chunk_results
 
 
+def _renumber_references(
+    response: str, reference_list: list[dict]
+) -> tuple[str, list[dict]]:
+    """Renumber references sequentially based on what was actually cited in the response.
+
+    Args:
+        response: The LLM response containing [1], [2], etc. citations
+        reference_list: List of reference dicts with 'reference_id' and 'file_path'
+
+    Returns:
+        Tuple of (updated_response, updated_reference_list) with sequential numbering
+    """
+    import re
+
+    # Find all reference IDs cited in the response (e.g., [1], [2], [10])
+    cited_ids = set()
+    for match in re.finditer(r"\[(\d+)\]", response):
+        cited_ids.add(match.group(1))
+
+    if not cited_ids:
+        # No citations found, return original
+        return response, reference_list
+
+    # Create mapping from old IDs to new sequential IDs
+    sorted_cited_ids = sorted(cited_ids, key=int)
+    old_to_new = {old_id: str(i + 1) for i, old_id in enumerate(sorted_cited_ids)}
+
+    # Replace reference IDs in response
+    updated_response = response
+    # Sort by descending length to avoid replacing "[1]" before "[10]"
+    for old_id in sorted(sorted_cited_ids, key=lambda x: len(x), reverse=True):
+        new_id = old_to_new[old_id]
+        updated_response = updated_response.replace(f"[{old_id}]", f"[{new_id}]")
+
+    # Update reference list to only include cited references with new IDs
+    updated_reference_list = []
+    for old_id in sorted_cited_ids:
+        # Find the original reference with this ID
+        for ref in reference_list:
+            if ref.get("reference_id") == old_id:
+                updated_ref = ref.copy()
+                updated_ref["reference_id"] = old_to_new[old_id]
+                updated_reference_list.append(updated_ref)
+                break
+
+    return updated_response, updated_reference_list
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -3673,6 +3721,17 @@ async def kg_query(
                 .replace("</system>", "")
                 .strip()
             )
+
+        # Renumber references sequentially based on what was actually cited
+        original_references = context_result.raw_data.get("data", {}).get(
+            "references", []
+        )
+        if original_references:
+            response, renumbered_references = _renumber_references(
+                response, original_references
+            )
+            # Update the reference list in raw_data
+            context_result.raw_data["data"]["references"] = renumbered_references
 
         return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
@@ -4098,6 +4157,7 @@ async def _perform_kg_search(
             knowledge_graph_inst,
             relationships_vdb,
             query_param,
+            entities_vdb,
         )
 
     else:  # hybrid or mix mode
@@ -4114,6 +4174,7 @@ async def _perform_kg_search(
                 knowledge_graph_inst,
                 relationships_vdb,
                 query_param,
+                entities_vdb,
             )
 
         # Get vector chunks for mix mode
@@ -4306,7 +4367,7 @@ async def _apply_token_truncation(
             entity_copy.pop("created_at", None)
             entities_context_for_truncation.append(entity_copy)
 
-        entities_context = truncate_list_by_token_size(
+        truncated_entities_no_metadata = truncate_list_by_token_size(
             entities_context_for_truncation,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]
@@ -4314,6 +4375,12 @@ async def _apply_token_truncation(
             max_token_size=max_entity_tokens,
             tokenizer=tokenizer,
         )
+
+        # Map truncated results back to original entities (with file_path)
+        truncated_entity_names = {e["entity"] for e in truncated_entities_no_metadata}
+        entities_context = [
+            e for e in entities_context if e["entity"] in truncated_entity_names
+        ]
 
     if relations_context:
         # Remove file_path and created_at for token calculation
@@ -4324,7 +4391,7 @@ async def _apply_token_truncation(
             relation_copy.pop("created_at", None)
             relations_context_for_truncation.append(relation_copy)
 
-        relations_context = truncate_list_by_token_size(
+        truncated_relations_no_metadata = truncate_list_by_token_size(
             relations_context_for_truncation,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]
@@ -4332,6 +4399,16 @@ async def _apply_token_truncation(
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
+
+        # Map truncated results back to original relations (with file_path)
+        truncated_relation_pairs = {
+            (r["entity1"], r["entity2"]) for r in truncated_relations_no_metadata
+        }
+        relations_context = [
+            r
+            for r in relations_context
+            if (r["entity1"], r["entity2"]) in truncated_relation_pairs
+        ]
 
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
@@ -4592,9 +4669,47 @@ async def _build_context_str(
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
 
-    # Generate reference list from truncated chunks using the new common function
-    reference_list, truncated_chunks = generate_reference_list_from_chunks(
-        truncated_chunks
+    # Collect all sources (entities, relations, chunks) for comprehensive reference generation
+    all_sources_for_references = []
+    all_sources_for_references.extend(entities_context)  # Include entities
+    all_sources_for_references.extend(relations_context)  # Include relations
+    all_sources_for_references.extend(truncated_chunks)  # Include chunks
+
+    # Generate reference list from ALL sources (entities, relations, chunks)
+    reference_list, _ = generate_reference_list_from_chunks(all_sources_for_references)
+
+    # Map reference_ids to all sources based on file_path
+    file_path_to_ref_id = {
+        ref["file_path"]: ref["reference_id"] for ref in reference_list
+    }
+
+    # Add reference_id to entities
+    for entity in entities_context:
+        entity["reference_id"] = file_path_to_ref_id.get(
+            entity.get("file_path", ""), ""
+        )
+
+    # Add reference_id to relations
+    for relation in relations_context:
+        relation["reference_id"] = file_path_to_ref_id.get(
+            relation.get("file_path", ""), ""
+        )
+
+    # Add reference_id to chunks
+    for chunk in truncated_chunks:
+        chunk["reference_id"] = file_path_to_ref_id.get(chunk.get("file_path", ""), "")
+
+    # Log reference assignments for debugging
+    logger.info(
+        f"Reference assignments: {[(ref['reference_id'], ref['file_path'].split('/')[-1][:80]) for ref in reference_list]}"
+    )
+    entity_docs = {}
+    for e in entities_context:
+        doc = e.get("file_path", "").split("/")[-1]
+        entity_docs[doc] = entity_docs.get(doc, 0) + 1
+    logger.info(f"Entities by document: {entity_docs}")
+    logger.info(
+        f"Chunks by document: {dict((doc, sum(1 for c in truncated_chunks if c.get('file_path', '').split('/')[-1] == doc)) for doc in set(c.get('file_path', '').split('/')[-1] for c in truncated_chunks))}"
     )
 
     # Rebuild chunks_context with truncated chunks
@@ -4840,6 +4955,7 @@ async def _get_node_data(
             "entity_name": k["entity_name"],
             "rank": d,
             "created_at": k.get("created_at"),
+            "file_path": k.get("file_path", n.get("file_path", "unknown_source")),
         }
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
@@ -5082,6 +5198,7 @@ async def _get_edge_data(
     knowledge_graph_inst: BaseGraphStorage,
     relationships_vdb: BaseVectorStorage,
     query_param: QueryParam,
+    entities_vdb: BaseVectorStorage = None,
 ):
     logger.info(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
@@ -5114,6 +5231,9 @@ async def _get_edge_data(
                 "src_id": k["src_id"],
                 "tgt_id": k["tgt_id"],
                 "created_at": k.get("created_at", None),
+                "file_path": k.get(
+                    "file_path", edge_props.get("file_path", "unknown_source")
+                ),
                 **edge_props,
             }
             edge_datas.append(combined)
@@ -5124,6 +5244,7 @@ async def _get_edge_data(
         edge_datas,
         query_param,
         knowledge_graph_inst,
+        entities_vdb,
     )
 
     logger.info(
@@ -5137,6 +5258,7 @@ async def _find_most_related_entities_from_relationships(
     edge_datas: list[dict],
     query_param: QueryParam,
     knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage = None,
 ):
     entity_names = []
     seen = set()
@@ -5152,6 +5274,23 @@ async def _find_most_related_entities_from_relationships(
     # Only get nodes data, no need for node degrees
     nodes_dict = await knowledge_graph_inst.get_nodes_batch(entity_names)
 
+    # Get file_path metadata from VDB for these entities
+    # VDB has the file_path information that graph storage doesn't have
+    vdb_results = {}
+    if entities_vdb is not None and entity_names:
+        try:
+            maybe_tqdm = tqdm if query_param.mode == "naive" else lambda x, **kwargs: x
+            for entity_name in maybe_tqdm(
+                entity_names,
+                desc="Fetching entity metadata from VDB",
+                disable=len(entity_names) < 5,
+            ):
+                vdb_data = await entities_vdb.query(entity_name, top_k=1)
+                if vdb_data and len(vdb_data) > 0:
+                    vdb_results[entity_name] = vdb_data[0]
+        except Exception as e:
+            logger.warning(f"Failed to fetch entity metadata from VDB: {e}")
+
     # Rebuild the list in the same order as entity_names
     node_datas = []
     for entity_name in entity_names:
@@ -5159,8 +5298,16 @@ async def _find_most_related_entities_from_relationships(
         if node is None:
             logger.warning(f"Node '{entity_name}' not found in batch retrieval.")
             continue
-        # Combine the node data with the entity name, no rank needed
-        combined = {**node, "entity_name": entity_name}
+        # Get file_path from VDB result if available, otherwise fall back to graph node
+        vdb_data = vdb_results.get(entity_name, {})
+        file_path = vdb_data.get("file_path", node.get("file_path", "unknown_source"))
+
+        # Combine the node data with the entity name and file_path, no rank needed
+        combined = {
+            **node,
+            "entity_name": entity_name,
+            "file_path": file_path,
+        }
         node_datas.append(combined)
 
     return node_datas
