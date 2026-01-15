@@ -40,21 +40,30 @@ async def query_graph():
     print("=" * 80)
 
     test_queries = [
-        "What are the latest rates for Boeing 787 flights that remain overnight and undergo cabin cleaning with lavatory service?",
-        "What are the latest rates for Airbus flights that remain overnight and undergo cabin cleaning with lavatory service?",
-        "What are the latest rates for a narrow body with water service only?",
-        "What are the latest rates for a wide body with lavatory service only?",
-        "Tell me about the contract termination conditions?",
+        # "What are the latest rates for Boeing 787 flights that remain overnight and undergo cabin cleaning with lavatory service?",
+        # "What are the latest rates for Airbus flights that remain overnight and undergo cabin cleaning with lavatory service?",
+        # "What are the latest rates for a narrow body with water service only?",
+        # "What is the price per event rate for a narrowbody with lavatory service only?",
+        # "Tell me about the contract termination conditions?",
+        # "list the cleaning specifications from Exhibit A1?"
+        "list performance management policies"
     ]
 
     for query in test_queries:
         print(f"\n❓ Query: {query}")
         print("-" * 80)
-        result = await rag.aquery(
-            query, param=QueryParam(mode="mix", enable_rerank=False)
+        print("📝 Answer: ", end="", flush=True)
+
+        # Enable streaming in QueryParam
+        result_stream = await rag.aquery(
+            query, param=QueryParam(mode="mix", enable_rerank=False, stream=True)
         )
-        print(f"📝 Answer: {result}")
-        print()
+
+        # Iterate through the stream and print chunks as they arrive
+        async for chunk in result_stream:
+            print(chunk, end="", flush=True)
+
+        print("\n")
 
     await rag.finalize_storages()
 

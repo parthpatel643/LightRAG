@@ -83,8 +83,8 @@ DEFAULT_MAX_FILE_PATH_LENGTH = 32768
 # Placeholder for more file paths in meta data for entity and relation (Should not be changed)
 DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
 
-# Default temperature for LLM
-DEFAULT_TEMPERATURE = 1.0
+# Default temperature for LLM (0.3 for consistency, higher values = more creative but less consistent)
+DEFAULT_TEMPERATURE = 0.3
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations

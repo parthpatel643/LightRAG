@@ -3574,12 +3574,15 @@ async def kg_query(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    hl_keywords, ll_keywords = await get_keywords_from_query(
+    hl_keywords, ll_keywords, question_type = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
+    logger.debug(
+        f"Question type (GPT 5.1): {question_type}"
+    )  # GPT 5.1: Log question type
 
     # Handle empty keywords
     if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
@@ -3607,6 +3610,7 @@ async def kg_query(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        question_type,  # GPT 5.1: Pass question type for metadata
     )
 
     if context_result is None:
@@ -3762,17 +3766,17 @@ async def get_keywords_from_query(
         hashing_kv: Optional key-value storage for caching results
 
     Returns:
-        A tuple containing (high_level_keywords, low_level_keywords)
+        A tuple containing (high_level_keywords, low_level_keywords, question_type)
     """
     # Check if pre-defined keywords are already provided
     if query_param.hl_keywords or query_param.ll_keywords:
-        return query_param.hl_keywords, query_param.ll_keywords
+        return query_param.hl_keywords, query_param.ll_keywords, "qualitative"
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
-    hl_keywords, ll_keywords = await extract_keywords_only(
+    hl_keywords, ll_keywords, question_type = await extract_keywords_only(
         query, query_param, global_config, hashing_kv
     )
-    return hl_keywords, ll_keywords
+    return hl_keywords, ll_keywords, question_type
 
 
 async def extract_keywords_only(
@@ -3780,11 +3784,14 @@ async def extract_keywords_only(
     param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], str]:
     """
-    Extract high-level and low-level keywords from the given 'text' using the LLM.
+    Extract high-level keywords, low-level keywords, and question type from the given 'text' using the LLM.
     This method does NOT build the final RAG context or provide a final answer.
-    It ONLY extracts keywords (hl_keywords, ll_keywords).
+    It ONLY extracts keywords (hl_keywords, ll_keywords) and classifies question_type (GPT 5.1).
+
+    Returns:
+        tuple: (high_level_keywords, low_level_keywords, question_type)
     """
 
     # 1. Build the examples
@@ -3805,8 +3812,12 @@ async def extract_keywords_only(
         cached_response, _ = cached_result  # Extract content, ignore timestamp
         try:
             keywords_data = json_repair.loads(cached_response)
-            return keywords_data.get("high_level_keywords", []), keywords_data.get(
-                "low_level_keywords", []
+            return (
+                keywords_data.get("high_level_keywords", []),
+                keywords_data.get("low_level_keywords", []),
+                keywords_data.get(
+                    "question_type", "qualitative"
+                ),  # GPT 5.1: Get question type from cache
             )
         except (json.JSONDecodeError, KeyError):
             logger.warning(
@@ -3842,20 +3853,28 @@ async def extract_keywords_only(
         keywords_data = json_repair.loads(result)
         if not keywords_data:
             logger.error("No JSON-like structure found in the LLM respond.")
-            return [], []
+            return (
+                [],
+                [],
+                "qualitative",
+            )  # GPT 5.1: Return default question type on error
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error: {e}")
         logger.error(f"LLM respond: {result}")
-        return [], []
+        return [], [], "qualitative"  # GPT 5.1: Return default question type on error
 
     hl_keywords = keywords_data.get("high_level_keywords", [])
     ll_keywords = keywords_data.get("low_level_keywords", [])
+    question_type = keywords_data.get(
+        "question_type", "qualitative"
+    )  # GPT 5.1: Extract question type
 
     # 6. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
         cache_data = {
             "high_level_keywords": hl_keywords,
             "low_level_keywords": ll_keywords,
+            "question_type": question_type,  # GPT 5.1: Cache question type
         }
         if hashing_kv.global_config.get("enable_llm_cache"):
             # Save to cache with query parameters
@@ -3882,7 +3901,7 @@ async def extract_keywords_only(
                 ),
             )
 
-    return hl_keywords, ll_keywords
+    return hl_keywords, ll_keywords, question_type  # GPT 5.1: Return question type
 
 
 def _apply_temporal_chunk_filtering(
@@ -4728,11 +4747,25 @@ async def _build_context_str(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+
+    # Build enhanced reference list format with document context
+    reference_list_lines = []
+    for ref in reference_list:
+        if ref["reference_id"]:
+            ref_id = ref["reference_id"]
+            file_path = ref["file_path"]
+            display_context = ref.get("display_context", "")
+
+            if display_context:
+                # Format: [1] Amendment (January 2024) — /path/to/file.pdf
+                reference_list_lines.append(
+                    f"[{ref_id}] {display_context} — {file_path}"
+                )
+            else:
+                # Fallback: [1] /path/to/file.pdf
+                reference_list_lines.append(f"[{ref_id}] {file_path}")
+
+    reference_list_str = "\n".join(reference_list_lines)
 
     logger.info(
         f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
@@ -4807,6 +4840,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    question_type: str = "qualitative",  # GPT 5.1: Question type classification
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -4894,6 +4928,12 @@ async def _build_query_context(
         "high_level": hl_keywords_list,
         "low_level": ll_keywords_list,
     }
+    raw_data["metadata"]["question_type"] = (
+        question_type  # GPT 5.1: Store question type
+    )
+    raw_data["metadata"]["verbosity"] = (
+        query_param.verbosity
+    )  # GPT 5.1: Store verbosity setting
     raw_data["metadata"]["processing_info"] = {
         "total_entities_found": len(search_result.get("final_entities", [])),
         "total_relations_found": len(search_result.get("final_relations", [])),
@@ -5686,11 +5726,25 @@ async def naive_query(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+
+    # Build enhanced reference list format with document context (naive mode)
+    reference_list_lines = []
+    for ref in reference_list:
+        if ref["reference_id"]:
+            ref_id = ref["reference_id"]
+            file_path = ref["file_path"]
+            display_context = ref.get("display_context", "")
+
+            if display_context:
+                # Format: [1] Amendment (January 2024) — /path/to/file.pdf
+                reference_list_lines.append(
+                    f"[{ref_id}] {display_context} — {file_path}"
+                )
+            else:
+                # Fallback: [1] /path/to/file.pdf
+                reference_list_lines.append(f"[{ref_id}] {file_path}")
+
+    reference_list_str = "\n".join(reference_list_lines)
 
     naive_context_template = PROMPTS["naive_query_context"]
     context_content = naive_context_template.format(

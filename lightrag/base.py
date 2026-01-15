@@ -1,36 +1,38 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from enum import Enum
 import os
-from dotenv import load_dotenv
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import (
     Any,
-    Literal,
-    TypedDict,
-    TypeVar,
+    AsyncIterator,
     Callable,
-    Optional,
     Dict,
     List,
-    AsyncIterator,
+    Literal,
+    Optional,
+    TypedDict,
+    TypeVar,
 )
-from .utils import EmbeddingFunc
-from .types import KnowledgeGraph
+
+from dotenv import load_dotenv
+
 from .constants import (
-    DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
+    DEFAULT_HISTORY_TURNS,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_HISTORY_TURNS,
-    DEFAULT_OLLAMA_MODEL_NAME,
-    DEFAULT_OLLAMA_MODEL_TAG,
-    DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_SIZE,
+    DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_TOP_K,
 )
+from .types import KnowledgeGraph
+from .utils import EmbeddingFunc
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -102,6 +104,14 @@ class QueryParam:
 
     response_type: str = "Multiple Paragraphs"
     """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
+
+    verbosity: Literal["minimal", "standard", "detailed"] = "standard"
+    """Controls response detail level based on question type (GPT 5.1 optimized):
+    - "minimal": Ultra-concise, typically 1 sentence (ideal for quantitative queries)
+    - "standard": Balanced detail, 2-3 paragraphs (default for most queries)
+    - "detailed": Comprehensive analysis, 3-5 paragraphs (for exploratory queries)
+    Note: The system may auto-detect appropriate verbosity from question type in keywords extraction.
+    """
 
     stream: bool = False
     """If True, enables streaming output for real-time responses."""

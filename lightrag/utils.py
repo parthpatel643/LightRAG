@@ -3291,6 +3291,94 @@ def convert_to_user_format(
     }
 
 
+def _infer_document_type_and_date(file_path: str) -> tuple[str, str]:
+    """
+    Infer document type and extract date from file path for enhanced citations.
+
+    Args:
+        file_path: File path to analyze
+
+    Returns:
+        tuple: (document_type, date_info)
+            - document_type: "Amendment", "Addendum", "Base Agreement", or ""
+            - date_info: Extracted date like "January 2024" or ""
+    """
+    if not file_path:
+        return "", ""
+
+    filename_lower = file_path.lower()
+    doc_type = ""
+    date_info = ""
+
+    # Detect document type
+    if "amendment" in filename_lower:
+        doc_type = "Amendment"
+    elif "addendum" in filename_lower:
+        doc_type = "Addendum"
+    elif any(term in filename_lower for term in ["contract", "agreement", "master"]):
+        doc_type = "Agreement"
+
+    # Extract dates (various formats)
+    import re
+
+    # Pattern: YYYY-MM-DD or YYYY_MM_DD
+    date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})", file_path)
+    if date_match:
+        year, month, day = date_match.groups()
+        try:
+            month_names = [
+                "",
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ]
+            month_name = month_names[int(month)]
+            date_info = f"{month_name} {year}"
+        except (ValueError, IndexError):
+            date_info = year
+    else:
+        # Pattern: YYYY
+        year_match = re.search(r"(20\d{2})", file_path)
+        if year_match:
+            date_info = year_match.group(1)
+
+        # Pattern: Month Year (e.g., "Jan 2024", "January 2024")
+        month_year_match = re.search(
+            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)[_\s-]*(\d{4})",
+            file_path,
+            re.IGNORECASE,
+        )
+        if month_year_match:
+            month_str, year = month_year_match.groups()
+            month_map = {
+                "jan": "January",
+                "feb": "February",
+                "mar": "March",
+                "apr": "April",
+                "may": "May",
+                "jun": "June",
+                "jul": "July",
+                "aug": "August",
+                "sep": "September",
+                "oct": "October",
+                "nov": "November",
+                "dec": "December",
+            }
+            month_normalized = month_map.get(month_str[:3].lower(), month_str.title())
+            date_info = f"{month_normalized} {year}"
+
+    return doc_type, date_info
+
+
 def generate_reference_list_from_chunks(
     chunks: list[dict],
 ) -> tuple[list[dict], list[dict]]:
@@ -3360,9 +3448,24 @@ def generate_reference_list_from_chunks(
             chunk_copy["reference_id"] = ""
         updated_chunks.append(chunk_copy)
 
-    # 5. Build reference_list
+    # 5. Build reference_list with enhanced formatting
     reference_list = []
     for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
+        doc_type, date_info = _infer_document_type_and_date(file_path)
+
+        # Build display context
+        display_parts = []
+        if doc_type:
+            display_parts.append(doc_type)
+        if date_info:
+            display_parts.append(f"({date_info})")
+
+        ref_entry = {"reference_id": str(i + 1), "file_path": file_path}
+
+        # Add optional metadata for display (LLM can use this in citations)
+        if display_parts:
+            ref_entry["display_context"] = " ".join(display_parts)
+
+        reference_list.append(ref_entry)
 
     return reference_list, updated_chunks
