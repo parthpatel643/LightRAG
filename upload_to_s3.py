@@ -6,10 +6,10 @@ This script recursively uploads all files from a local directory to an S3 bucket
 preserving the folder structure.
 
 Usage:
-    python upload_to_s3.py --folder <local_folder> --bucket <bucket_name> [--prefix <s3_prefix>]
+    python upload_to_s3.py --folder <local_folder> --s3-uri <s3://bucket/prefix>
 
 Example:
-    python upload_to_s3.py --folder ./rag_storage --bucket my-lightrag-bucket --prefix backups/2024-01-15/
+    python upload_to_s3.py --folder ./rag_storage --s3-uri s3://my-lightrag-bucket/backups/2024-01-15/
 """
 
 import argparse
@@ -17,7 +17,8 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 try:
     import boto3
@@ -33,6 +34,36 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def parse_s3_uri(s3_uri: str) -> Tuple[str, str]:
+    """
+    Parse S3 URI into bucket name and prefix.
+
+    Args:
+        s3_uri: S3 URI in format s3://bucket-name/prefix/path
+
+    Returns:
+        Tuple of (bucket_name, prefix)
+
+    Raises:
+        ValueError: If URI format is invalid
+    """
+    if not s3_uri.startswith("s3://"):
+        raise ValueError(
+            f"Invalid S3 URI format. Expected 's3://bucket/prefix', got: {s3_uri}"
+        )
+
+    parsed = urlparse(s3_uri)
+    bucket_name = parsed.netloc
+
+    if not bucket_name:
+        raise ValueError(f"No bucket name found in S3 URI: {s3_uri}")
+
+    # Remove leading slash and use as prefix
+    prefix = parsed.path.lstrip("/")
+
+    return bucket_name, prefix
 
 
 class S3Uploader:
@@ -185,13 +216,13 @@ def main():
         epilog="""
 Examples:
   # Upload rag_storage folder to bucket root
-  python upload_to_s3.py --folder ./rag_storage --bucket my-lightrag-bucket
+  python upload_to_s3.py --folder ./rag_storage --s3-uri s3://my-lightrag-bucket/
 
   # Upload with S3 prefix (folder path in bucket)
-  python upload_to_s3.py --folder ./rag_storage --bucket my-bucket --prefix backups/2024-01-15/
+  python upload_to_s3.py --folder ./rag_storage --s3-uri s3://my-bucket/backups/2024-01-15/
 
   # Upload from inputs folder to specific region
-  python upload_to_s3.py --folder ./inputs --bucket my-bucket --region us-west-2
+  python upload_to_s3.py --folder ./inputs --s3-uri s3://my-bucket/ --region us-west-2
 
 Environment Variables:
   AWS_ACCESS_KEY_ID     - AWS access key
@@ -206,14 +237,9 @@ Environment Variables:
         help="Local folder path to upload",
     )
     parser.add_argument(
-        "--bucket",
+        "--s3-uri",
         required=True,
-        help="S3 bucket name",
-    )
-    parser.add_argument(
-        "--prefix",
-        default="",
-        help="S3 key prefix (folder path in bucket, e.g., 'backups/2024-01-15/')",
+        help="S3 destination URI (e.g., s3://bucket-name/prefix/path/)",
     )
     parser.add_argument(
         "--region",
@@ -233,8 +259,11 @@ Environment Variables:
         logger.setLevel(logging.DEBUG)
 
     try:
-        uploader = S3Uploader(bucket_name=args.bucket, region_name=args.region)
-        uploader.upload_folder(folder_path=args.folder, s3_prefix=args.prefix)
+        # Parse S3 URI to extract bucket and prefix
+        bucket_name, prefix = parse_s3_uri(args.s3_uri)
+
+        uploader = S3Uploader(bucket_name=bucket_name, region_name=args.region)
+        uploader.upload_folder(folder_path=args.folder, s3_prefix=prefix)
 
         # Exit with error code if any uploads failed
         if uploader.failed_files > 0:
