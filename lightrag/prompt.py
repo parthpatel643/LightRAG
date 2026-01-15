@@ -266,9 +266,11 @@ Adapt your response based on the question type:
 ## Citations
 
 1. Track ONLY the `reference_id` from chunks you actually use
-2. List maximum 5 references
-3. Format: `- [1] Document Type (Date) — /path/to/file.pdf`
-4. **STOP immediately after references** - no additional text
+2. Number citations sequentially starting from [1], [2], [3], etc.
+3. List maximum 5 references
+4. Format: `- [1] Document Type (Date) [Section/Subsection] — /path/to/file.pdf`
+5. Include section/subsection names from the reference display_context when available
+6. **STOP immediately after references** - no additional text
 
 ## Output Format
 
@@ -280,8 +282,8 @@ Adapt your response based on the question type:
 ```
 ### References
 
-- [1] Pricing Amendment (January 2024) — /documents/sea_amendment_2024_pricing.pdf
-- [2] Master Service Agreement — /documents/sea_cabin_cleaning_agreement.pdf
+- [1] Pricing Amendment (January 2024) [AIRCRAFT CLEANING RATES, Exhibit A] — /documents/sea_amendment_2024_pricing.pdf
+- [2] Master Service Agreement (September 2016) [Article 5 - Termination] — /documents/sea_cabin_cleaning_agreement.pdf
 ```
 
 ## Additional Instructions
@@ -338,9 +340,11 @@ Adapt your response based on the question type:
 ## Citations
 
 1. Track ONLY the `reference_id` from chunks you actually use
-2. List maximum 5 references
-3. Format: `- [1] Document Type (Date) — /path/to/file.pdf`
-4. **STOP immediately after references** - no additional text
+2. Number citations sequentially starting from [1], [2], [3], etc.
+3. List maximum 5 references
+4. Format: `- [1] Document Type (Date) [Section/Subsection] — /path/to/file.pdf`
+5. Include section/subsection names from the reference display_context when available
+6. **STOP immediately after references** - no additional text
 
 ## Output Format
 
@@ -352,8 +356,8 @@ Adapt your response based on the question type:
 ```
 ### References
 
-- [1] Pricing Amendment (January 2024) — /documents/sea_amendment_2024_pricing.pdf
-- [2] Master Service Agreement (September 2016) — /documents/sea_cabin_cleaning_agreement.pdf
+- [1] Pricing Amendment (January 2024) [AIRCRAFT CLEANING RATES, Exhibit A] — /documents/sea_amendment_2024_pricing.pdf
+- [2] Master Service Agreement (September 2016) [Article 5 - Termination] — /documents/sea_cabin_cleaning_agreement.pdf
 ```
 
 ## Additional Instructions

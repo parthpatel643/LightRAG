@@ -3379,18 +3379,59 @@ def _infer_document_type_and_date(file_path: str) -> tuple[str, str]:
     return doc_type, date_info
 
 
+def _extract_section_from_chunk(content: str) -> str:
+    """
+    Extract section or subsection heading from chunk content.
+
+    Args:
+        content: Chunk content text
+
+    Returns:
+        Section heading string or empty string if none found
+    """
+    if not content:
+        return ""
+
+    lines = content.strip().split("\n")
+
+    # Look for markdown headings (## Section, ### Subsection)
+    for line in lines[:10]:  # Check first 10 lines
+        line = line.strip()
+        if line.startswith("###"):  # Subsection
+            return line.lstrip("#").strip()
+        elif line.startswith("##"):  # Section
+            return line.lstrip("#").strip()
+
+    # Look for common section patterns (all caps, numbers)
+    for line in lines[:10]:
+        line = line.strip()
+        # Pattern: "SECTION 1." or "Article 5 -" or "EXHIBIT A"
+        if len(line) > 3 and len(line) < 100:
+            # All caps section with number/letter
+            if line.isupper() and any(c.isalnum() for c in line):
+                return line
+            # Numbered article/section
+            if any(
+                pattern in line.lower()
+                for pattern in ["article", "section", "exhibit", "paragraph"]
+            ):
+                if any(c.isdigit() or c.isalpha() for c in line[:30]):
+                    return line
+
+    return ""
+
+
 def generate_reference_list_from_chunks(
     chunks: list[dict],
 ) -> tuple[list[dict], list[dict]]:
     """
-    Generate reference list from chunks, prioritizing by insertion_order (descending) then frequency.
+    Generate reference list from chunks in order of appearance.
 
-    This function extracts file_paths from chunks, counts their occurrences,
-    sorts by insertion_order (newest first), then frequency and first appearance order,
-    creates reference_id mappings, and builds a reference_list structure.
+    This function extracts file_paths from chunks and creates reference_id mappings
+    based on the order chunks appear, letting the LLM handle citation ordering.
 
     Args:
-        chunks: List of chunk dictionaries with file_path and optional insertion_order information
+        chunks: List of chunk dictionaries with file_path information
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
@@ -3400,44 +3441,21 @@ def generate_reference_list_from_chunks(
     if not chunks:
         return [], []
 
-    # 1. Extract all valid file_paths and count their occurrences
-    file_path_counts = {}
-    file_path_max_insertion_order = {}
+    # Extract unique file paths in order of first appearance
+    unique_file_paths = []
+    seen_paths = set()
     for chunk in chunks:
         file_path = chunk.get("file_path", "")
-        if file_path and file_path != "unknown_source":
-            file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
-            # Track the highest insertion_order for each file_path
-            insertion_order = chunk.get("insertion_order")
-            if insertion_order is not None:
-                current_max = file_path_max_insertion_order.get(file_path, -1)
-                file_path_max_insertion_order[file_path] = max(
-                    current_max, insertion_order
-                )
-
-    # 2. Sort file paths by frequency (descending), then by first appearance order
-    # This ensures documents contributing more chunks get lower reference numbers
-    # Create a list of (file_path, count, first_index) tuples
-    file_path_with_indices = []
-    seen_paths = set()
-    for i, chunk in enumerate(chunks):
-        file_path = chunk.get("file_path", "")
         if file_path and file_path != "unknown_source" and file_path not in seen_paths:
-            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
+            unique_file_paths.append(file_path)
             seen_paths.add(file_path)
 
-    # Sort by:
-    # 1. count (descending) - more frequent paths get priority (likely more relevant)
-    # 2. first appearance index (ascending) - stable ordering
-    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
-    unique_file_paths = [item[0] for item in sorted_file_paths]
-
-    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
+    # Create mapping from file_path to reference_id (by appearance order)
     file_path_to_ref_id = {}
     for i, file_path in enumerate(unique_file_paths):
         file_path_to_ref_id[file_path] = str(i + 1)
 
-    # 4. Add reference_id field to each chunk
+    # Add reference_id field to each chunk
     updated_chunks = []
     for chunk in chunks:
         chunk_copy = chunk.copy()
@@ -3448,17 +3466,44 @@ def generate_reference_list_from_chunks(
             chunk_copy["reference_id"] = ""
         updated_chunks.append(chunk_copy)
 
-    # 5. Build reference_list with enhanced formatting
+    # Build reference_list with enhanced formatting including section context
     reference_list = []
+
+    # Group chunks by file_path to extract section information
+    chunks_by_file = {}
+    for chunk in chunks:
+        file_path = chunk.get("file_path", "")
+        if file_path and file_path != "unknown_source":
+            if file_path not in chunks_by_file:
+                chunks_by_file[file_path] = []
+            chunks_by_file[file_path].append(chunk)
+
     for i, file_path in enumerate(unique_file_paths):
         doc_type, date_info = _infer_document_type_and_date(file_path)
 
-        # Build display context
+        # Extract section information from chunks of this file
+        sections = set()
+        file_chunks = chunks_by_file.get(file_path, [])
+        for chunk in file_chunks:
+            content = chunk.get("content", "")
+            section = _extract_section_from_chunk(content)
+            if section:
+                sections.add(section)
+
+        # Build display context with document type, date, and sections
         display_parts = []
         if doc_type:
             display_parts.append(doc_type)
         if date_info:
             display_parts.append(f"({date_info})")
+
+        # Add section context if found (limit to 3 sections to avoid verbosity)
+        if sections:
+            section_list = sorted(list(sections))[:3]
+            sections_str = ", ".join(section_list)
+            if len(sections) > 3:
+                sections_str += ", ..."
+            display_parts.append(f"[{sections_str}]")
 
         ref_entry = {"reference_id": str(i + 1), "file_path": file_path}
 
