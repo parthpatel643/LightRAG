@@ -4485,9 +4485,13 @@ async def _merge_all_chunks(
     )
 
     # Apply FINAL temporal filtering AFTER merging all sources
-    # This ensures all paths (vector, entity, relationship) use the same insertion_order
+    # Use relevance-aware filtering (not strict priority) to allow LLM to access older docs when needed
+    # The LLM will make the final decision based on insertion_order metadata in each chunk
     merged_chunks = _apply_temporal_chunk_filtering(
-        merged_chunks, "Final merged chunks", min_chunks=1
+        merged_chunks,
+        "Final merged chunks",
+        min_chunks=1,
+        strict_temporal_priority=False,
     )
 
     return merged_chunks
