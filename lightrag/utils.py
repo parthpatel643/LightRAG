@@ -3295,14 +3295,14 @@ def generate_reference_list_from_chunks(
     chunks: list[dict],
 ) -> tuple[list[dict], list[dict]]:
     """
-    Generate reference list from chunks, prioritizing by occurrence frequency.
+    Generate reference list from chunks, prioritizing by insertion_order (descending) then frequency.
 
     This function extracts file_paths from chunks, counts their occurrences,
-    sorts by frequency and first appearance order, creates reference_id mappings,
-    and builds a reference_list structure.
+    sorts by insertion_order (newest first), then frequency and first appearance order,
+    creates reference_id mappings, and builds a reference_list structure.
 
     Args:
-        chunks: List of chunk dictionaries with file_path information
+        chunks: List of chunk dictionaries with file_path and optional insertion_order information
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
@@ -3314,26 +3314,42 @@ def generate_reference_list_from_chunks(
 
     # 1. Extract all valid file_paths and count their occurrences
     file_path_counts = {}
+    file_path_max_insertion_order = {}
     for chunk in chunks:
         file_path = chunk.get("file_path", "")
         if file_path and file_path != "unknown_source":
             file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
+            # Track the highest insertion_order for each file_path
+            insertion_order = chunk.get("insertion_order")
+            if insertion_order is not None:
+                current_max = file_path_max_insertion_order.get(file_path, -1)
+                file_path_max_insertion_order[file_path] = max(
+                    current_max, insertion_order
+                )
 
-    # 2. Sort file paths by frequency (descending), then by first appearance order
-    # Create a list of (file_path, count, first_index) tuples
+    # 2. Sort file paths by insertion_order (descending), then frequency (descending), then first appearance order
+    # Create a list of (file_path, insertion_order, count, first_index) tuples
     file_path_with_indices = []
     seen_paths = set()
     for i, chunk in enumerate(chunks):
         file_path = chunk.get("file_path", "")
         if file_path and file_path != "unknown_source" and file_path not in seen_paths:
-            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
+            insertion_order = file_path_max_insertion_order.get(file_path, -1)
+            file_path_with_indices.append(
+                (file_path, insertion_order, file_path_counts[file_path], i)
+            )
             seen_paths.add(file_path)
 
-    # Sort by count (descending), then by first appearance index (ascending)
-    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
+    # Sort by:
+    # 1. insertion_order (descending) - newest documents first
+    # 2. count (descending) - more frequent paths get priority within same insertion_order
+    # 3. first appearance index (ascending) - stable ordering
+    sorted_file_paths = sorted(
+        file_path_with_indices, key=lambda x: (-x[1], -x[2], x[3])
+    )
     unique_file_paths = [item[0] for item in sorted_file_paths]
 
-    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
+    # 3. Create mapping from file_path to reference_id (prioritized by insertion_order, then frequency)
     file_path_to_ref_id = {}
     for i, file_path in enumerate(unique_file_paths):
         file_path_to_ref_id[file_path] = str(i + 1)

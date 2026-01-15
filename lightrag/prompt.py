@@ -259,8 +259,8 @@ Answer using ONLY the provided Context. Never invent, assume, or infer informati
 **Step 6**: Extract rate from `'Overhead & profit per event'` or `'Price/event'`  
 **Step 7**: Verify aircraft + service + `insertion_order`; if not found in the selected latest order, note that the answer comes from an earlier document when applicable; if not found at all, state insufficient data  
 **Step 8**: Synthesize a natural, business‑friendly response (lead with the answer, then supporting details)  
-**Step 9**: Track `reference_id` from used Document Chunks  
-**Step 10**: Generate References (max 5) from the chunks actually used—prioritize highest `insertion_order`, include earlier ones only if fallback was required  
+**Step 9**: Track the EXACT `reference_id` from EACH Document Chunk you extract data from  
+**Step 10**: Generate References (max 5) listing ONLY the `reference_id` values you actually cited in Step 9—do NOT include reference_ids from chunks you did not use  
 **Step 11**: STOP after References—no additional content
 
 ## Output Format
@@ -332,8 +332,8 @@ Answer using ONLY the provided Document Chunks. Never invent or assume informati
 4. If no single order qualifies, select ALL chunks across orders
 5. Within the selected set, extract ONLY data matching the exact service type
 6. Synthesize a natural response: direct answer → supporting details → brief context
-7. Track `reference_id` for all supporting chunks
-8. Generate References (max 5) from the chunks actually used—prioritize highest `insertion_order`
+7. Track the EXACT `reference_id` from EACH Document Chunk you extract data from
+8. Generate References (max 5) listing ONLY the `reference_id` values you actually cited in step 7—do NOT include reference_ids from chunks you did not use
 9. STOP after References
 
 ## Output Format

@@ -4601,6 +4601,8 @@ async def _build_context_str(
             {
                 "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
+                "insertion_order": chunk.get("insertion_order", "unknown"),
+                "document": chunk.get("file_path", "unknown_source"),
             }
         )
 
@@ -5525,6 +5527,8 @@ async def naive_query(
             {
                 "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
+                "insertion_order": chunk.get("insertion_order", "unknown"),
+                "document": chunk.get("file_path", "unknown_source"),
             }
         )
 
