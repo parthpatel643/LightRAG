@@ -1,3 +1,87 @@
+
+## Temporal Retrieval (Chronology Control)
+
+LightRAG now supports date-aware retrieval tailored for legal/contract-style corpora and strict chronology control when using local storages (NetworkX + NanoVector + JSON). The behavior is available via the `temporal_hybrid` mode with two key parameters:
+
+- `query_date` (ISO 8601 string): Returns context that is CURRENT as of the given date; chunks or entities with an effective date after `query_date` are excluded. Within each file, the latest `doc_order_index` up to `query_date` is labeled CURRENT and earlier ones labeled OBSOLETE.
+- `latest_only` (bool, default: true): When `query_date` is not provided, only the latest content is returned. Vector chunks are filtered to the highest `doc_order_index` per file and labeled CURRENT; entities/relations marked OBSOLETE are filtered out.
+
+Supported local stack
+
+- Graph: `NetworkXStorage` (GraphML persisted under the workspace)
+- Vector: `NanoVectorDBStorage` (JSON persisted under the workspace)
+- KV/JSON: `JsonKVStorage`, `JsonDocStatusStorage` (where applicable)
+
+Environment setup (optional)
+
+If you want to explicitly pin local storages to the default stack:
+
+```
+export LIGHTRAG_GRAPH_STORAGE=NetworkXStorage
+export LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage
+```
+
+### API Usage Examples
+
+Latest-only retrieval (no date):
+
+```
+POST /query
+{
+    "query": "What is the current basic rent?",
+    "mode": "temporal_hybrid",
+    "latest_only": true,
+    "include_references": true
+}
+```
+
+As-of-date retrieval:
+
+```
+POST /query
+{
+    "query": "What was the basic rent as of 2024-06-30?",
+    "mode": "temporal_hybrid",
+    "query_date": "2024-06-30",
+    "include_references": true
+}
+```
+
+Structured data (no LLM generation), latest-only:
+
+```
+POST /query/data
+{
+    "query": "Show the clauses affecting basic rent",
+    "mode": "temporal_hybrid",
+    "latest_only": true
+}
+```
+
+### How chronology is enforced
+
+- Vector chunks carry `effective_date` and `doc_order_index` metadata from ingestion. Retrieval filters by `query_date` when provided, or keeps only the highest `doc_order_index` per file when `latest_only` is true.
+- Entities and relations are annotated and filtered using temporal keywords (e.g., `SUPERSEDES`, `AMENDS`) discovered from the knowledge graph. In latest-only mode, items labeled OBSOLETE are excluded from the final context and data.
+- With NetworkX, temporal edges are discovered locally from the persisted GraphML; no external graph database is required.
+
+### Quick start
+
+Run the API locally and query with chronology control:
+
+```
+uvicorn lightrag.api.lightrag_server:app --reload
+```
+
+Then send requests as shown above to `/query`, `/query/stream`, or `/query/data`.
+
+### WebUI Controls
+
+In the WebUI Retrieval panel, use Query Settings to:
+
+- Mode: select "Temporal Hybrid" to enable chronology-aware retrieval.
+- As-of Date: set `YYYY-MM-DD` to filter context to that date.
+- Latest Only: toggle on to prefer CURRENT content and filter OBSOLETE when no date is set.
+
 <div align="center">
 
 <div style="margin: 20px 0;">

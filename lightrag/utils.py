@@ -1,46 +1,46 @@
 from __future__ import annotations
-import weakref
-
-import sys
 
 import asyncio
-import html
 import csv
+import html
 import inspect
 import json
 import logging
 import logging.handlers
 import os
 import re
+import sys
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
 from typing import (
-    Any,
-    Protocol,
-    Callable,
     TYPE_CHECKING,
+    Any,
+    Callable,
+    Collection,
+    Iterable,
     List,
     Optional,
-    Iterable,
+    Protocol,
     Sequence,
-    Collection,
 )
+
 import numpy as np
 from dotenv import load_dotenv
 
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
-    GRAPH_FIELD_SEP,
+    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-    VALID_SOURCE_IDS_LIMIT_METHODS,
+    GRAPH_FIELD_SEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    VALID_SOURCE_IDS_LIMIT_METHODS,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -1119,8 +1119,13 @@ def wrap_embedding_func_with_attrs(**kwargs):
 def load_json(file_name):
     if not os.path.exists(file_name):
         return None
-    with open(file_name, encoding="utf-8-sig") as f:
-        return json.load(f)
+    try:
+        with open(file_name, encoding="utf-8-sig") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        # Handle empty or corrupted JSON files gracefully by treating as no data
+        logger.warning(f"Failed to parse JSON file, treating as empty: {file_name}")
+        return None
 
 
 def _sanitize_string_for_json(text: str) -> str:
@@ -1185,6 +1190,13 @@ class SanitizingJSONEncoder(json.JSONEncoder):
         """
         if isinstance(obj, str):
             return _sanitize_string_for_json(obj)
+        elif isinstance(obj, datetime):
+            # Convert datetime objects to ISO 8601 strings for JSON serialization
+            try:
+                return obj.isoformat()
+            except Exception:
+                # Fallback: convert to string
+                return str(obj)
 
         elif isinstance(obj, dict):
             # Create new dict with sanitized keys and values
@@ -1231,7 +1243,8 @@ def write_json(json_obj, file_name):
             json.dump(json_obj, f, indent=2, ensure_ascii=False)
         return False  # No sanitization needed, no reload required
 
-    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+    except (UnicodeEncodeError, UnicodeDecodeError, TypeError, ValueError) as e:
+        # TypeError commonly occurs for non-serializable types like datetime
         logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
 
     # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
@@ -3257,6 +3270,8 @@ def convert_to_user_format(
             "content": chunk.get("content", ""),
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
+            # Include temporal status when available for UI and API enrichment
+            "status": (chunk.get("status") or chunk.get("temporal_status") or ""),
         }
         formatted_chunks.append(chunk_data)
 
@@ -3342,11 +3357,40 @@ def generate_reference_list_from_chunks(
             chunk_copy["reference_id"] = file_path_to_ref_id[file_path]
         else:
             chunk_copy["reference_id"] = ""
+        # Normalize temporal status field if present
+        status = chunk_copy.get("status") or chunk_copy.get("temporal_status")
+        if status:
+            # Ensure status is uppercase and limited to expected values
+            status_upper = str(status).upper()
+            if status_upper in ("CURRENT", "OBSOLETE"):
+                chunk_copy["status"] = status_upper
+            else:
+                chunk_copy["status"] = status_upper
         updated_chunks.append(chunk_copy)
 
-    # 5. Build reference_list
+    # 5. Build reference_list with aggregated status per file_path
     reference_list = []
+    # Aggregate statuses by file_path from updated_chunks
+    status_by_path: dict[str, str] = {}
+    for ch in updated_chunks:
+        fp = ch.get("file_path", "")
+        st = (ch.get("status") or ch.get("temporal_status") or "").upper()
+        if not fp or fp == "unknown_source":
+            continue
+        if not st:
+            continue
+        # Prefer CURRENT over OBSOLETE when multiple chunks exist for a file
+        prev = status_by_path.get(fp)
+        if prev == "CURRENT":
+            continue
+        if st in ("CURRENT", "OBSOLETE"):
+            status_by_path[fp] = st
+
     for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
+        ref_obj = {"reference_id": str(i + 1), "file_path": file_path}
+        st = status_by_path.get(file_path)
+        if st:
+            ref_obj["status"] = st
+        reference_list.append(ref_obj)
 
     return reference_list, updated_chunks

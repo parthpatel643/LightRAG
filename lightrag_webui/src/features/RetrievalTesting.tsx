@@ -178,7 +178,7 @@ export default function RetrievalTesting() {
       if (!inputValue.trim() || isLoading) return
 
       // Parse query mode prefix
-      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
+      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass', 'temporal_hybrid']
       const prefixMatch = inputValue.match(/^\/(\w+)\s+([\s\S]+)/)
       let modeOverride: QueryMode | undefined = undefined
       let actualQuery = inputValue
@@ -195,7 +195,7 @@ export default function RetrievalTesting() {
         if (!allowedModes.includes(mode)) {
           setInputError(
             t('retrievePanel.retrieval.queryModeError', {
-              modes: 'naive, local, global, hybrid, mix, bypass',
+              modes: 'naive, local, global, hybrid, mix, bypass, temporal_hybrid',
             })
           )
           return
@@ -228,7 +228,8 @@ export default function RetrievalTesting() {
         thinkingTime: null,        // Explicitly initialize to null
         thinkingContent: undefined, // Explicitly initialize to undefined
         displayContent: undefined,  // Explicitly initialize to undefined
-        isThinking: false          // Explicitly initialize to false
+        isThinking: false,          // Explicitly initialize to false
+        references: []
       }
 
       const prevMessages = [...messages]
@@ -373,6 +374,18 @@ export default function RetrievalTesting() {
           let errorMessage = ''
           await queryTextStream(queryParams, updateAssistantMessage, (error) => {
             errorMessage += error
+          }, (refs) => {
+            // Attach references (with optional status) to assistant message
+            assistantMessage.references = refs
+            // Trigger a UI update for the message to reflect references
+            setMessages((prev) => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.id === assistantMessage.id) {
+                Object.assign(lastMessage, { references: refs })
+              }
+              return newMessages
+            })
           })
           if (errorMessage) {
             if (assistantMessage.content) {
@@ -383,6 +396,18 @@ export default function RetrievalTesting() {
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
+          // Attach references if available in non-streaming response
+          if (response.references && Array.isArray(response.references)) {
+            assistantMessage.references = response.references
+            setMessages((prev) => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.id === assistantMessage.id) {
+                Object.assign(lastMessage, { references: response.references })
+              }
+              return newMessages
+            })
+          }
         }
       } catch (err) {
         // Handle error

@@ -1,73 +1,74 @@
 from __future__ import annotations
-from functools import partial
-from pathlib import Path
 
 import asyncio
 import json
-import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+import time
 from collections import Counter, defaultdict
+from functools import partial
+from pathlib import Path
+from typing import Any, AsyncIterator, Literal, overload
 
-from lightrag.exceptions import (
-    PipelineCancelledException,
-    ChunkTokenLimitExceededError,
-)
-from lightrag.utils import (
-    logger,
-    compute_mdhash_id,
-    Tokenizer,
-    is_float_regex,
-    sanitize_and_normalize_extracted_text,
-    pack_user_ass_to_openai_messages,
-    split_string_by_multi_markers,
-    truncate_list_by_token_size,
-    compute_args_hash,
-    handle_cache,
-    save_to_cache,
-    CacheData,
-    use_llm_func_with_cache,
-    update_chunk_cache_list,
-    remove_think_tags,
-    pick_by_weighted_polling,
-    pick_by_vector_similarity,
-    process_chunks_unified,
-    safe_vdb_operation_with_exception,
-    create_prefixed_exception,
-    fix_tuple_delimiter_corruption,
-    convert_to_user_format,
-    generate_reference_list_from_chunks,
-    apply_source_ids_limit,
-    merge_source_ids,
-    make_relation_chunk_key,
-)
+import json_repair
+from dotenv import load_dotenv
+
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
-    TextChunkSchema,
+    QueryContextResult,
     QueryParam,
     QueryResult,
-    QueryContextResult,
+    TextChunkSchema,
 )
-from lightrag.prompt import PROMPTS
 from lightrag.constants import (
-    GRAPH_FIELD_SEP,
+    DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_FILE_PATHS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
-    SOURCE_IDS_LIMIT_METHOD_KEEP,
+    GRAPH_FIELD_SEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
-    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
-    DEFAULT_MAX_FILE_PATHS,
-    DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    SOURCE_IDS_LIMIT_METHOD_KEEP,
+)
+from lightrag.exceptions import (
+    ChunkTokenLimitExceededError,
+    PipelineCancelledException,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
-import time
-from dotenv import load_dotenv
+from lightrag.prompt import PROMPTS
+from lightrag.utils import (
+    CacheData,
+    Tokenizer,
+    apply_source_ids_limit,
+    compute_args_hash,
+    compute_mdhash_id,
+    convert_to_user_format,
+    create_prefixed_exception,
+    fix_tuple_delimiter_corruption,
+    generate_reference_list_from_chunks,
+    handle_cache,
+    is_float_regex,
+    logger,
+    make_relation_chunk_key,
+    merge_source_ids,
+    pack_user_ass_to_openai_messages,
+    pick_by_vector_similarity,
+    pick_by_weighted_polling,
+    process_chunks_unified,
+    remove_think_tags,
+    safe_vdb_operation_with_exception,
+    sanitize_and_normalize_extracted_text,
+    save_to_cache,
+    split_string_by_multi_markers,
+    truncate_list_by_token_size,
+    update_chunk_cache_list,
+    use_llm_func_with_cache,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -3408,6 +3409,9 @@ async def _get_vector_context(
                     "file_path": result.get("file_path", "unknown_source"),
                     "source_type": "vector",  # Mark the source type
                     "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+                    # Temporal metadata (if available in vector storage)
+                    "effective_date": result.get("effective_date"),
+                    "doc_order_index": result.get("doc_order_index"),
                 }
                 valid_chunks.append(chunk_with_metadata)
 
@@ -3501,14 +3505,124 @@ async def _perform_kg_search(
                 query_param,
             )
 
-        # Get vector chunks for mix mode
-        if query_param.mode == "mix" and chunks_vdb:
+        # Get vector chunks for mix/temporal_hybrid mode
+        if query_param.mode in ["mix", "temporal_hybrid"] and chunks_vdb:
             vector_chunks = await _get_vector_context(
                 query,
                 chunks_vdb,
                 query_param,
                 query_embedding,
             )
+            # Temporal filtering and labeling for temporal_hybrid
+            if query_param.mode == "temporal_hybrid" and query_param.query_date:
+                try:
+                    from datetime import datetime
+
+                    qd = datetime.fromisoformat(query_param.query_date)
+                except Exception:
+                    qd = None
+
+                if qd is not None:
+                    filtered = []
+                    by_path: dict[str, list[dict]] = {}
+                    for ch in vector_chunks:
+                        eff = ch.get("effective_date")
+                        eff_dt = None
+                        if isinstance(eff, str):
+                            try:
+                                eff_dt = datetime.fromisoformat(eff)
+                            except Exception:
+                                eff_dt = None
+                        elif eff is not None:
+                            eff_dt = eff
+
+                        # Support multiple effective periods: accept chunk if query date falls in any period
+                        in_any_period = False
+                        periods = ch.get("effective_periods") or []
+                        for p in periods:
+                            try:
+                                ps = p.get("start")
+                                pe = p.get("end")
+                                # Normalize string dates if any
+                                if isinstance(ps, str):
+                                    ps = datetime.fromisoformat(ps)
+                                if isinstance(pe, str):
+                                    pe = datetime.fromisoformat(pe)
+                                if ps and pe:
+                                    if ps <= qd <= pe:
+                                        in_any_period = True
+                                        break
+                                elif ps and not pe:
+                                    if qd >= ps:
+                                        in_any_period = True
+                                        break
+                            except Exception:
+                                continue
+
+                        if in_any_period or eff_dt is None or eff_dt <= qd:
+                            filtered.append(ch)
+                            fp = ch.get("file_path", "unknown_source")
+                            by_path.setdefault(fp, []).append(ch)
+
+                    # Label CURRENT vs OBSOLETE within same file_path using doc_order_index
+                    for fp, arr in by_path.items():
+                        max_order = None
+                        for ch in arr:
+                            oi = ch.get("doc_order_index")
+                            if isinstance(oi, int):
+                                max_order = (
+                                    oi
+                                    if (max_order is None or oi > max_order)
+                                    else max_order
+                                )
+                        for ch in arr:
+                            oi = ch.get("doc_order_index")
+                            if max_order is not None and isinstance(oi, int):
+                                ch["temporal_status"] = (
+                                    "CURRENT" if oi == max_order else "OBSOLETE"
+                                )
+                            else:
+                                ch["temporal_status"] = "CURRENT"
+
+                    vector_chunks = filtered
+            # Latest-only selection when no query_date provided
+            elif (
+                query_param.mode == "temporal_hybrid"
+                and not getattr(query_param, "query_date", None)
+                and getattr(query_param, "latest_only", True)
+            ):
+                # Group by file_path and keep chunks with max doc_order_index only
+                by_path: dict[str, list[dict]] = {}
+                for ch in vector_chunks:
+                    fp = ch.get("file_path", "unknown_source")
+                    by_path.setdefault(fp, []).append(ch)
+
+                filtered_latest = []
+                for fp, arr in by_path.items():
+                    max_order = None
+                    for ch in arr:
+                        oi = ch.get("doc_order_index")
+                        if isinstance(oi, int):
+                            max_order = (
+                                oi
+                                if (max_order is None or oi > max_order)
+                                else max_order
+                            )
+                    for ch in arr:
+                        oi = ch.get("doc_order_index")
+                        if max_order is not None and isinstance(oi, int):
+                            if oi == max_order:
+                                ch["temporal_status"] = "CURRENT"
+                                filtered_latest.append(ch)
+                            else:
+                                # Exclude obsolete from latest-only set
+                                ch["temporal_status"] = "OBSOLETE"
+                        else:
+                            # If no order available, treat as CURRENT
+                            ch["temporal_status"] = "CURRENT"
+                            filtered_latest.append(ch)
+
+                vector_chunks = filtered_latest
             # Track vector chunks with source metadata
             for i, chunk in enumerate(vector_chunks):
                 chunk_id = chunk.get("chunk_id") or chunk.get("id")
@@ -3581,12 +3695,39 @@ async def _perform_kg_search(
         f"Raw search results: {len(final_entities)} entities, {len(final_relations)} relations, {len(vector_chunks)} vector chunks"
     )
 
+    # Temporal graph edges discovery for temporal_hybrid
+    supersedes_pairs = []
+    if getattr(query_param, "mode", "mix") == "temporal_hybrid":
+        try:
+            entity_names = [
+                e.get("entity_name") for e in final_entities if e.get("entity_name")
+            ]
+            if entity_names:
+                temporal_edges = (
+                    await knowledge_graph_inst.get_temporal_edges_for_nodes(
+                        entity_names
+                    )
+                )
+                for te in temporal_edges:
+                    kw = (te.get("keywords") or "").upper()
+                    if "SUPERSEDES" in kw:
+                        # Store undirected pair for downstream labeling
+                        a, b = te.get("src"), te.get("tgt")
+                        if a and b:
+                            pair = tuple(sorted([a, b]))
+                            if pair not in supersedes_pairs:
+                                supersedes_pairs.append(pair)
+        except Exception as _:
+            # Non-fatal: continue without temporal graph edges
+            pass
+
     return {
         "final_entities": final_entities,
         "final_relations": final_relations,
         "vector_chunks": vector_chunks,
         "chunk_tracking": chunk_tracking,
         "query_embedding": query_embedding,
+        "supersedes_pairs": supersedes_pairs,
     }
 
 
@@ -3674,6 +3815,7 @@ async def _apply_token_truncation(
                 "description": relation.get("description", "UNKNOWN"),
                 "created_at": created_at,
                 "file_path": relation.get("file_path", "unknown_source"),
+                "keywords": relation.get("keywords", ""),
             }
         )
 
@@ -3717,6 +3859,75 @@ async def _apply_token_truncation(
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
+
+    # Temporal labeling for relations/entities when in temporal_hybrid mode
+    if getattr(query_param, "mode", "mix") == "temporal_hybrid":
+        try:
+            supersedes_pairs = []
+            # Combine pairs discovered from relations_context and graph search
+            for rel in relations_context:
+                kw = (rel.get("keywords") or "").upper()
+                if "SUPERSEDES" in kw:
+                    supersedes_pairs.append((rel.get("entity1"), rel.get("entity2")))
+            # Add pairs from search_result via Neo4j
+            sr_pairs = search_result.get("supersedes_pairs", []) or []
+            for p in sr_pairs:
+                if isinstance(p, (list, tuple)) and len(p) == 2:
+                    supersedes_pairs.append((p[0], p[1]))
+
+            current_entities = set()
+            obsolete_entities = set()
+            for src, tgt in supersedes_pairs:
+                if src:
+                    current_entities.add(src)
+                if tgt:
+                    obsolete_entities.add(tgt)
+
+            # Annotate relations descriptions
+            for rel in relations_context:
+                e1, e2 = rel.get("entity1"), rel.get("entity2")
+                suffix1 = (
+                    " [CURRENT]"
+                    if e1 in current_entities
+                    else (" [OBSOLETE]" if e1 in obsolete_entities else "")
+                )
+                suffix2 = (
+                    " [CURRENT]"
+                    if e2 in current_entities
+                    else (" [OBSOLETE]" if e2 in obsolete_entities else "")
+                )
+                desc = rel.get("description", "")
+                rel["description"] = f"{desc}{suffix1}{suffix2}".strip()
+
+            # Annotate entities descriptions
+            for ent in entities_context:
+                name = ent.get("entity")
+                if name in current_entities:
+                    ent["description"] = (
+                        f"{ent.get('description', '')} [CURRENT]".strip()
+                    )
+                elif name in obsolete_entities:
+                    ent["description"] = (
+                        f"{ent.get('description', '')} [OBSOLETE]".strip()
+                    )
+
+            # If latest_only and no explicit query_date, filter out obsolete entities/relations
+            if getattr(query_param, "latest_only", True) and not getattr(
+                query_param, "query_date", None
+            ):
+                entities_context = [
+                    e
+                    for e in entities_context
+                    if "[OBSOLETE]" not in (e.get("description") or "")
+                ]
+                relations_context = [
+                    r
+                    for r in relations_context
+                    if "[OBSOLETE]" not in (r.get("description") or "")
+                ]
+        except Exception as _:
+            # Non-fatal: continue without temporal annotations
+            pass
 
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
@@ -3825,6 +4036,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "status": chunk.get("temporal_status"),
                     }
                 )
 
@@ -3839,6 +4051,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "status": chunk.get("temporal_status"),
                     }
                 )
 
@@ -3853,6 +4066,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "status": chunk.get("temporal_status"),
                     }
                 )
 
@@ -3971,6 +4185,7 @@ async def _build_context_str(
             {
                 "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
+                "status": chunk.get("status"),
             }
         )
 
@@ -4426,6 +4641,30 @@ async def _find_related_text_unit_from_entities(
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "entity"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+            # Temporal status labeling for temporal_hybrid
+            if getattr(query_param, "mode", "mix") == "temporal_hybrid" and getattr(
+                query_param, "query_date", None
+            ):
+                try:
+                    from datetime import datetime
+
+                    qd = datetime.fromisoformat(query_param.query_date)
+                except Exception:
+                    qd = None
+                eff = chunk_data_copy.get("effective_date")
+                eff_dt = None
+                if isinstance(eff, str):
+                    try:
+                        eff_dt = datetime.fromisoformat(eff)
+                    except Exception:
+                        eff_dt = None
+                elif eff is not None:
+                    eff_dt = eff
+                if qd is not None:
+                    # Keep semantics: status CURRENT if unknown or <= query_date AND max order per file
+                    chunk_data_copy["temporal_status"] = (
+                        "CURRENT" if (eff_dt is None or eff_dt <= qd) else "OBSOLETE"
+                    )
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided
@@ -4718,6 +4957,29 @@ async def _find_related_text_unit_from_relations(
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "relationship"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+            # Temporal status labeling for temporal_hybrid
+            if getattr(query_param, "mode", "mix") == "temporal_hybrid" and getattr(
+                query_param, "query_date", None
+            ):
+                try:
+                    from datetime import datetime
+
+                    qd = datetime.fromisoformat(query_param.query_date)
+                except Exception:
+                    qd = None
+                eff = chunk_data_copy.get("effective_date")
+                eff_dt = None
+                if isinstance(eff, str):
+                    try:
+                        eff_dt = datetime.fromisoformat(eff)
+                    except Exception:
+                        eff_dt = None
+                elif eff is not None:
+                    eff_dt = eff
+                if qd is not None:
+                    chunk_data_copy["temporal_status"] = (
+                        "CURRENT" if (eff_dt is None or eff_dt <= qd) else "OBSOLETE"
+                    )
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided
@@ -4891,6 +5153,7 @@ async def naive_query(
             {
                 "reference_id": chunk["reference_id"],
                 "content": chunk["content"],
+                "status": chunk.get("status") or chunk.get("temporal_status"),
             }
         )
 

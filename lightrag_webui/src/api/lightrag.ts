@@ -95,7 +95,7 @@ export type LightragDocumentsScanProgress = {
  * - "mix": Integrates knowledge graph and vector retrieval.
  * - "bypass": Bypasses knowledge retrieval and directly uses the LLM.
  */
-export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
+export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass' | 'temporal_hybrid'
 
 export type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -103,12 +103,18 @@ export type Message = {
   thinkingContent?: string
   displayContent?: string
   thinkingTime?: number | null
+  // Optional references attached to assistant messages
+  references?: { reference_id: string; file_path: string; status?: 'CURRENT' | 'OBSOLETE' }[]
 }
 
 export type QueryRequest = {
   query: string
   /** Specifies the retrieval mode. */
   mode: QueryMode
+  /** Optional as-of date for temporal retrieval in YYYY-MM-DD format. */
+  query_date?: string
+  /** When true, prefer latest data and filter obsolete context. */
+  latest_only?: boolean
   /** If True, only returns the retrieved context without generating a response. */
   only_need_context?: boolean
   /** If True, only returns the generated prompt without producing a response. */
@@ -138,10 +144,13 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Include reference metadata in the response when supported by backend. */
+  include_references?: boolean
 }
 
 export type QueryResponse = {
   response: string
+  references?: { reference_id: string; file_path: string; status?: 'CURRENT' | 'OBSOLETE' }[]
 }
 
 export type EntityUpdateResponse = {
@@ -516,7 +525,8 @@ export const queryText = async (request: QueryRequest): Promise<QueryResponse> =
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  onReferences?: (refs: { reference_id: string; file_path: string; status?: 'CURRENT' | 'OBSOLETE' }[]) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -591,6 +601,8 @@ export const queryTextStream = async (
                       onChunk(parsed.response);
                     } else if (parsed.error) {
                       onError?.(parsed.error);
+                    } else if (parsed.references && Array.isArray(parsed.references)) {
+                      onReferences?.(parsed.references);
                     }
                   } catch (parseError) {
                     console.error('Failed to parse JSON:', parseError, 'Line:', line);
@@ -608,6 +620,8 @@ export const queryTextStream = async (
                   onChunk(parsed.response);
                 } else if (parsed.error) {
                   onError?.(parsed.error);
+                } else if (parsed.references && Array.isArray(parsed.references)) {
+                  onReferences?.(parsed.references);
                 }
               } catch (parseError) {
                 console.error('Failed to parse final buffer:', parseError);
@@ -674,6 +688,8 @@ export const queryTextStream = async (
               onChunk(parsed.response);
             } else if (parsed.error && onError) {
               onError(parsed.error);
+            } else if (parsed.references && Array.isArray(parsed.references)) {
+              onReferences?.(parsed.references);
             }
           } catch (error) {
             console.error('Error parsing stream chunk:', line, error);
@@ -691,6 +707,8 @@ export const queryTextStream = async (
           onChunk(parsed.response);
         } else if (parsed.error && onError) {
           onError(parsed.error);
+        } else if (parsed.references && Array.isArray(parsed.references)) {
+          onReferences?.(parsed.references);
         }
       } catch (error) {
         console.error('Error parsing final chunk:', buffer, error);

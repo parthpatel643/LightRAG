@@ -1,6 +1,6 @@
 from __future__ import annotations
-from typing import Any
 
+from typing import Any
 
 PROMPTS: dict[str, Any] = {}
 
@@ -8,57 +8,53 @@ PROMPTS: dict[str, Any] = {}
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
-PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+PROMPTS["LEGAL_ENTITY_EXTRACTION_PROMPT"] = """---Role---
+You are a Legal Knowledge Graph Specialist for aviation contracts, extracting ONLY domain-specific entities and relationships with temporal precedence (Lex Posterior).
+
+---Strict Ontology---
+Entities (types permitted):
+- DOCUMENT: A specific instrument (e.g., "Amendment 3", "Base Lease").
+- CLAUSE: A specific section (e.g., "Section 12.1", "Basic Rent").
+- OBLIGATION: A duty (e.g., "Pay Rent", "Maintain Reserves").
+- ASSET: The aircraft/engine/apu (e.g., "MSN 12345").
+- DATE: A concrete date (e.g., "Effective Date", "Delivery Date").
+- MONETARY_VALUE: A numeric amount and currency (e.g., "USD 150,000/month").
+
+Relationships (edge types permitted):
+- AMENDS: Document A amends Document B.
+- SUPERSEDES: Clause A supersedes Clause B (later clause overrides earlier).
+- DEFINES: Clause defines an Obligation or Value (e.g., rent amount).
+
+Prohibited: Do NOT extract generic entities such as Person, Location, Organization unless they conform to the above ontology.
 
 ---Instructions---
-1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-        *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+0) Output Guard:
+  - Output only the specified lines beginning with `entity` or `relation`, followed by `{completion_delimiter}` at the end. Do not include any other text, explanations, or chain-of-thought.
+1) For each entity, output: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`.
+2) For each relationship, output: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`.
+   - `relationship_keywords` MUST be one of: AMENDS, SUPERSEDES, DEFINES. Multiple keywords allowed, comma-separated.
+3) Treat relationships as undirected in structure but preserve the semantic direction in `relationship_description` (e.g., "Amendment 2 SUPERSEDES Basic Rent (Base Lease)").
+4) Use `{language}`. Use `{tuple_delimiter}` strictly as a field separator. Output `{completion_delimiter}` at the end.
 
-2.  **Relationship Extraction & Output:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-        *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+---Few-Shot Example (Amendment superseding rent)---
+Input Text:
+"Amendment 2 (Effective 2024-01-01) changes Basic Rent from USD 120,000/month (Base Lease, Section 5.1) to USD 135,000/month (Section 5.1, as amended)."
 
-3.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
-    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
-    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
-
-4.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
-
-5.  **Output Order & Prioritization:**
-    *   Output all extracted entities first, followed by all extracted relationships.
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
-
-6.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
-
-7.  **Language & Proper Nouns:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
-
-8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
-
----Examples---
-{examples}
+Output:
+entity{tuple_delimiter}Amendment 2{tuple_delimiter}DOCUMENT{tuple_delimiter}An amending instrument effective 2024-01-01.
+entity{tuple_delimiter}Basic Rent (Base){tuple_delimiter}CLAUSE{tuple_delimiter}Base Lease Section 5.1 specifying monthly rent of USD 120,000.
+entity{tuple_delimiter}Basic Rent (Amended){tuple_delimiter}CLAUSE{tuple_delimiter}Section 5.1 as amended specifying monthly rent of USD 135,000.
+entity{tuple_delimiter}USD 120,000/month{tuple_delimiter}MONETARY_VALUE{tuple_delimiter}Original basic rent amount.
+entity{tuple_delimiter}USD 135,000/month{tuple_delimiter}MONETARY_VALUE{tuple_delimiter}Amended basic rent amount.
+relation{tuple_delimiter}Amendment 2{tuple_delimiter}Base Lease{tuple_delimiter}AMENDS{tuple_delimiter}Amendment 2 amends the Base Lease.
+relation{tuple_delimiter}Basic Rent (Amended){tuple_delimiter}Basic Rent (Base){tuple_delimiter}SUPERSEDES{tuple_delimiter}The amended Basic Rent clause supersedes the base Basic Rent clause.
+relation{tuple_delimiter}Basic Rent (Base){tuple_delimiter}USD 120,000/month{tuple_delimiter}DEFINES{tuple_delimiter}The Base Lease clause defines the original rent amount.
+relation{tuple_delimiter}Basic Rent (Amended){tuple_delimiter}USD 135,000/month{tuple_delimiter}DEFINES{tuple_delimiter}The amended clause defines the new rent amount.
+{completion_delimiter}
 """
+
+# Override default extraction prompts to use the legal ontology
+PROMPTS["entity_extraction_system_prompt"] = PROMPTS["LEGAL_ENTITY_EXTRACTION_PROMPT"]
 
 PROMPTS["entity_extraction_user_prompt"] = """---Task---
 Extract entities and relationships from the input text in Data to be Processed below.
@@ -66,6 +62,7 @@ Extract entities and relationships from the input text in Data to be Processed b
 ---Instructions---
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+  - Do not reveal chain-of-thought or internal reasoning.
 3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
 4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
@@ -93,6 +90,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
 4.  **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
 5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+  - Do not reveal chain-of-thought or internal reasoning.
 6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
 7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
@@ -244,11 +242,17 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - Do not reveal chain-of-thought or internal reasoning. Provide the final answer only.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
+
+5. Temporal Compliance:
+  - When temporal metadata is present (e.g., chunk/reference `status` such as CURRENT/OBSOLETE, or an implicit as-of query date), ensure the answer reflects chronology correctly.
+  - Prefer CURRENT information for the user’s time context or as-of date; treat OBSOLETE content as superseded. If the user explicitly asks for historical context, clearly mark such facts as historical.
+  - Only cite documents consistent with the temporal filter: for latest-only queries, avoid citing OBSOLETE unless needed to explain a change; for as-of queries, use content effective on or before the specified date.
 
 4. References Section Format:
   - The References section should be under heading: `### References`
@@ -298,11 +302,17 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - Do not reveal chain-of-thought or internal reasoning. Provide the final answer only.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
+
+5. Temporal Compliance:
+  - When temporal metadata is present (e.g., chunk/reference `status` such as CURRENT/OBSOLETE, or an implicit as-of query date), ensure the answer reflects chronology correctly.
+  - Prefer CURRENT information for the user’s time context or as-of date; treat OBSOLETE content as superseded. If the user explicitly asks for historical context, clearly mark such facts as historical.
+  - Only cite documents consistent with the temporal filter: for latest-only queries, avoid citing OBSOLETE unless needed to explain a change; for as-of queries, use content effective on or before the specified date.
 
 4. References Section Format:
   - The References section should be under heading: `### References`
@@ -385,6 +395,8 @@ Given a user query, your task is to extract two distinct types of keywords:
 3. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", you should extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
 4. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), you must return a JSON object with empty lists for both keyword types.
 5. **Language**: All extracted keywords MUST be in {language}. Proper nouns (e.g., personal names, place names, organization names) should be kept in their original language.
+6. **JSON Validity**: Ensure the output is valid JSON with double-quoted keys and strings and no trailing commas.
+7. **Reasoning Policy**: Do not reveal chain-of-thought or internal reasoning; return only the final JSON object.
 
 ---Examples---
 {examples}

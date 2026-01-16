@@ -257,6 +257,33 @@ export const ChatMessage = ({
           >
             {finalDisplayContent}
           </ReactMarkdown>
+          {/* References list with temporal badges */}
+          {message.role === 'assistant' && message.references && message.references.length > 0 && (
+            <div className="mt-4 border-t pt-3 text-xs">
+              <div className="mb-2 font-medium text-muted-foreground">References</div>
+              <ul className="space-y-1">
+                {message.references.map((ref) => (
+                  <li key={`ref-${message.id}-${ref.reference_id}`} className="flex items-center gap-2">
+                    <span className="text-foreground">[{ref.reference_id}] {ref.file_path}</span>
+                    {ref.status && (
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold',
+                          ref.status === 'CURRENT'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
+                            : 'bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
+                        )}
+                        aria-label={`Temporal status: ${ref.status}`}
+                        title={ref.status === 'CURRENT' ? 'Latest version' : 'Superseded/obsolete'}
+                      >
+                        {ref.status}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
       {/* Loading indicator - only show in active tab */}

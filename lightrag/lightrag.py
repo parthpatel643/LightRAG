@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import traceback
 import asyncio
 import configparser
 import inspect
 import os
 import time
+import traceback
 import warnings
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -15,105 +15,104 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Dict,
     Iterator,
-    cast,
-    final,
+    List,
     Literal,
     Optional,
-    List,
-    Dict,
     Union,
-)
-from lightrag.prompt import PROMPTS
-from lightrag.exceptions import PipelineCancelledException
-from lightrag.constants import (
-    DEFAULT_MAX_GLEANING,
-    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
-    DEFAULT_TOP_K,
-    DEFAULT_CHUNK_TOP_K,
-    DEFAULT_MAX_ENTITY_TOKENS,
-    DEFAULT_MAX_RELATION_TOKENS,
-    DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_COSINE_THRESHOLD,
-    DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_MIN_RERANK_SCORE,
-    DEFAULT_SUMMARY_MAX_TOKENS,
-    DEFAULT_SUMMARY_CONTEXT_SIZE,
-    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
-    DEFAULT_MAX_ASYNC,
-    DEFAULT_MAX_PARALLEL_INSERT,
-    DEFAULT_MAX_GRAPH_NODES,
-    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
-    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
-    DEFAULT_SUMMARY_LANGUAGE,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
-    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-    DEFAULT_MAX_FILE_PATHS,
-    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
-)
-from lightrag.utils import get_env_value
-
-from lightrag.kg import (
-    STORAGES,
-    verify_storage_implementation,
+    cast,
+    final,
 )
 
-
-from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_data_init_lock,
-    get_default_workspace,
-    set_default_workspace,
-    get_namespace_lock,
-)
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, field_validator
 
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DeletionResult,
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
+    OllamaServerInfos,
     QueryParam,
+    QueryResult,
     StorageNameSpace,
     StoragesStatus,
-    DeletionResult,
-    OllamaServerInfos,
-    QueryResult,
+)
+from lightrag.constants import (
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_MAX_GLEANING,
+    DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
+    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_TOP_K,
+    GRAPH_FIELD_SEP,
+)
+from lightrag.exceptions import PipelineCancelledException
+from lightrag.kg import (
+    STORAGES,
+    verify_storage_implementation,
+)
+from lightrag.kg.shared_storage import (
+    get_data_init_lock,
+    get_default_workspace,
+    get_namespace_data,
+    get_namespace_lock,
+    set_default_workspace,
 )
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_token_size,
     extract_entities,
-    merge_nodes_and_edges,
     kg_query,
+    merge_nodes_and_edges,
     naive_query,
     rebuild_knowledge_from_chunks,
 )
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.prompt import PROMPTS
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
-    Tokenizer,
-    TiktokenTokenizer,
     EmbeddingFunc,
+    TiktokenTokenizer,
+    Tokenizer,
     always_get_an_event_loop,
-    compute_mdhash_id,
-    lazy_external_import,
-    priority_limit_async_func_call,
-    get_content_summary,
-    sanitize_text_for_encoding,
     check_storage_env_vars,
-    generate_track_id,
+    compute_mdhash_id,
     convert_to_user_format,
+    generate_track_id,
+    get_content_summary,
+    get_env_value,
+    lazy_external_import,
     logger,
-    subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    priority_limit_async_func_call,
+    sanitize_text_for_encoding,
+    subtract_source_ids,
 )
-from lightrag.types import KnowledgeGraph
-from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -123,6 +122,36 @@ load_dotenv(dotenv_path=".env", override=False)
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+
+class DocumentMetadata(BaseModel):
+    """Metadata for temporal-legal ingestion."""
+
+    doc_type: Optional[str] = None
+    effective_date: Optional[datetime] = None
+    # Internal sequencing index, computed at ingestion. Not exposed in chunk headers.
+    order_index: Optional[int] = None
+    # Optional list of effective periods for documents with multiple date ranges
+    # Each item: {"start": datetime, "end": Optional[datetime]}
+    effective_periods: Optional[list[dict[str, Optional[datetime]]]] = None
+    source_url: Optional[str] = None
+
+    @field_validator("doc_type", mode="after")
+    @classmethod
+    def _strip_doc_type(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if isinstance(v, str) else v
+
+
+class DocumentInput(BaseModel):
+    """Validated document input with rich metadata."""
+
+    text: str = Field(min_length=1)
+    metadata: DocumentMetadata
+
+    @field_validator("text", mode="after")
+    @classmethod
+    def _strip_text(cls, v: str) -> str:
+        return v.strip()
 
 
 @final
@@ -638,7 +667,7 @@ class LightRAG:
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
+            meta_fields={"full_doc_id", "content", "file_path", "effective_date"},
         )
 
         # Initialize document status storage
@@ -1113,24 +1142,18 @@ class LightRAG:
 
     def insert(
         self,
-        input: str | list[str],
+        documents: List[DocumentInput],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-        ids: str | list[str] | None = None,
-        file_paths: str | list[str] | None = None,
         track_id: str | None = None,
     ) -> str:
-        """Sync Insert documents with checkpoint support
+        """Sync insert of validated document objects with chronology metadata.
 
         Args:
-            input: Single document string or list of document strings
-            split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
-            chunk_token_size, it will be split again by token size.
-            split_by_character_only: if split_by_character_only is True, split the string by character only, when
-            split_by_character is None, this parameter is ignored.
-            ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
-            file_paths: single string of the file path or list of file paths, used for citation
-            track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            documents: List of DocumentInput objects containing text and metadata.
+            split_by_character: Optional chunk delimiter.
+            split_by_character_only: If True, only split by delimiter.
+            track_id: Optional tracking ID; auto-generated if omitted.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1138,35 +1161,27 @@ class LightRAG:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.ainsert(
-                input,
+                documents,
                 split_by_character,
                 split_by_character_only,
-                ids,
-                file_paths,
                 track_id,
             )
         )
 
     async def ainsert(
         self,
-        input: str | list[str],
+        documents: List[DocumentInput],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-        ids: str | list[str] | None = None,
-        file_paths: str | list[str] | None = None,
         track_id: str | None = None,
     ) -> str:
-        """Async Insert documents with checkpoint support
+        """Async insert of validated document objects with checkpoint support.
 
         Args:
-            input: Single document string or list of document strings
-            split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
-            chunk_token_size, it will be split again by token size.
-            split_by_character_only: if split_by_character_only is True, split the string by character only, when
-            split_by_character is None, this parameter is ignored.
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
-            file_paths: list of file paths corresponding to each document, used for citation
-            track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            documents: List of DocumentInput objects.
+            split_by_character: Optional chunk delimiter.
+            split_by_character_only: If True, only split by delimiter.
+            track_id: tracking ID (auto-generated if omitted).
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1175,7 +1190,7 @@ class LightRAG:
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
+        await self.apipeline_enqueue_documents(documents=documents, track_id=track_id)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -1256,7 +1271,7 @@ class LightRAG:
 
     async def apipeline_enqueue_documents(
         self,
-        input: str | list[str],
+        documents: Union[List[DocumentInput], str, List[str]],
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
@@ -1270,9 +1285,9 @@ class LightRAG:
         4. Enqueue document in status
 
         Args:
-            input: Single document string or list of document strings
+            documents: Either a list of DocumentInput objects or raw text(s) for backward compatibility.
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
-            file_paths: list of file paths corresponding to each document, used for citation
+            file_paths: list of file paths corresponding to each document (used when raw texts are provided), used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
 
         Returns:
@@ -1281,29 +1296,58 @@ class LightRAG:
         # Generate track_id if not provided
         if track_id is None or track_id.strip() == "":
             track_id = generate_track_id("enqueue")
-        if isinstance(input, str):
-            input = [input]
+        # Normalize documents input for backward compatibility
+        if isinstance(documents, str):
+            documents = [documents]
         if isinstance(ids, str):
             ids = [ids]
         if isinstance(file_paths, str):
             file_paths = [file_paths]
 
         # If file_paths is provided, ensure it matches the number of documents
-        if file_paths is not None:
+        if (
+            file_paths is not None
+            and isinstance(documents, list)
+            and documents
+            and isinstance(documents[0], str)
+        ):
             if isinstance(file_paths, str):
                 file_paths = [file_paths]
-            if len(file_paths) != len(input):
+            if len(file_paths) != len(documents):
                 raise ValueError(
                     "Number of file paths must match the number of documents"
                 )
         else:
             # If no file paths provided, use placeholder
-            file_paths = ["unknown_source"] * len(input)
+            # When documents are DocumentInput objects, we'll derive file paths from metadata.source_url
+            if (
+                isinstance(documents, list)
+                and documents
+                and isinstance(documents[0], str)
+            ):
+                file_paths = ["unknown_source"] * len(documents)
+
+        # If provided documents are DocumentInput objects, validate and extract
+        validated_docs: List[DocumentInput] = []
+        if (
+            isinstance(documents, list)
+            and documents
+            and not isinstance(documents[0], str)
+        ):
+            # Assume list[DocumentInput] or list[dict]
+            for d in documents:
+                if isinstance(d, DocumentInput):
+                    validated_docs.append(d)
+                elif isinstance(d, dict):
+                    validated_docs.append(DocumentInput(**d))
+                else:
+                    raise TypeError("Unsupported document item type for ingestion")
 
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
-            if len(ids) != len(input):
+            n_items = len(validated_docs) if validated_docs else len(documents)  # type: ignore[arg-type]
+            if len(ids) != n_items:
                 raise ValueError("Number of IDs must match the number of documents")
 
             # Check if IDs are unique
@@ -1312,31 +1356,71 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
-                cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
+            if validated_docs:
+                for id_, doc in zip(ids, validated_docs):
+                    cleaned_content = sanitize_text_for_encoding(doc.text)
+                    path = doc.metadata.source_url or "unknown_source"
+                    if cleaned_content not in unique_contents:
+                        unique_contents[cleaned_content] = (id_, path, doc.metadata)
+            else:
+                for id_, doc, path in zip(ids, documents, cast(List[str], file_paths)):
+                    cleaned_content = sanitize_text_for_encoding(cast(str, doc))
+                    if cleaned_content not in unique_contents:
+                        unique_contents[cleaned_content] = (id_, path, None)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
-                for content, (id_, file_path) in unique_contents.items()
+                id_: {
+                    "content": content,
+                    "file_path": file_path,
+                    "metadata": (
+                        meta.dict()
+                        if (meta is not None and hasattr(meta, "dict"))
+                        else (meta if isinstance(meta, dict) else {})
+                    ),
+                }
+                for content, (id_, file_path, meta) in unique_contents.items()
             }
         else:
             # Clean input text and remove duplicates in one pass
-            unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
-                cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
+            unique_content_map: Dict[str, Dict[str, Any]] = {}
+            if validated_docs:
+                for doc in validated_docs:
+                    cleaned_content = sanitize_text_for_encoding(doc.text)
+                    if cleaned_content not in unique_content_map:
+                        unique_content_map[cleaned_content] = {
+                            "file_path": doc.metadata.source_url or "unknown_source",
+                            "metadata": doc.metadata.dict(),
+                        }
+            else:
+                for doc, path in zip(
+                    cast(List[str], documents), cast(List[str], file_paths)
+                ):
+                    cleaned_content = sanitize_text_for_encoding(doc)
+                    if cleaned_content not in unique_content_map:
+                        unique_content_map[cleaned_content] = {
+                            "file_path": path,
+                            "metadata": {},
+                        }
 
             # Generate contents dict of MD5 hash IDs and documents with paths
             contents = {
-                compute_mdhash_id(content, prefix="doc-"): {
+                # Strengthen uniqueness with temporal attributes when present
+                compute_mdhash_id(
+                    content
+                    + (
+                        f"|{meta.get('effective_date', '')}|{meta.get('order_index', '')}"
+                        if meta
+                        else ""
+                    ),
+                    prefix="doc-",
+                ): {
                     "content": content,
-                    "file_path": path,
+                    "file_path": info["file_path"],
+                    "metadata": info["metadata"],
                 }
-                for content, path in unique_content_with_paths.items()
+                for content, info in unique_content_map.items()
+                for meta in [info.get("metadata")]
             }
 
         # 2. Generate document initial status (without content)
@@ -1351,6 +1435,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "metadata": content_data.get("metadata", {}),
             }
             for id_, content_data in contents.items()
         }
@@ -1391,6 +1476,7 @@ class LightRAG:
             doc_id: {
                 "content": contents[doc_id]["content"],
                 "file_path": contents[doc_id]["file_path"],
+                "metadata": contents[doc_id].get("metadata", {}),
             }
             for doc_id in new_docs.keys()
         }
@@ -1828,16 +1914,54 @@ class LightRAG:
                                     f"got {type(chunking_result)}"
                                 )
 
-                            # Build chunks dictionary
-                            chunks: dict[str, Any] = {
-                                compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                            # Build YAML-style header from document metadata
+                            doc_metadata = content_data.get("metadata", {})
+                            eff_date_str = (
+                                doc_metadata.get("effective_date")
+                                if isinstance(doc_metadata.get("effective_date"), str)
+                                else (
+                                    doc_metadata.get("effective_date").isoformat()
+                                    if doc_metadata.get("effective_date")
+                                    else ""
+                                )
+                            )
+                            status_line = (
+                                "Amends Base Lease"
+                                if str(doc_metadata.get("doc_type", ""))
+                                .lower()
+                                .startswith("amend")
+                                else str(doc_metadata.get("doc_type", ""))
+                            )
+                            header = (
+                                f"---\n"
+                                f"Source: {file_path}\n"
+                                f"Document: {doc_metadata.get('doc_type', '')}\n"
+                                f"EffectiveDate: {eff_date_str}\n"
+                                f"Status: {status_line}\n"
+                                f"---\n\n"
+                            )
+
+                            # Build chunks dictionary with header prepended and effective_date meta
+                            chunks: dict[str, Any] = {}
+                            for dp in chunking_result:
+                                augmented_content = header + dp["content"]
+                                chunk_key = compute_mdhash_id(
+                                    augmented_content, prefix="chunk-"
+                                )
+                                tokens = len(self.tokenizer.encode(augmented_content))
+                                chunks[chunk_key] = {
                                     **dp,
+                                    "content": augmented_content,
+                                    "tokens": tokens,
                                     "full_doc_id": doc_id,
-                                    "file_path": file_path,  # Add file path to each chunk
-                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    "file_path": file_path,
+                                    "llm_cache_list": [],
+                                    "effective_date": eff_date_str,
+                                    "doc_order_index": doc_metadata.get("order_index"),
+                                    "effective_periods": doc_metadata.get(
+                                        "effective_periods"
+                                    ),
                                 }
-                                for dp in chunking_result
-                            }
 
                             if not chunks:
                                 logger.warning("No document chunks to process")
@@ -2610,7 +2734,7 @@ class LightRAG:
 
         query_result = None
 
-        if data_param.mode in ["local", "global", "hybrid", "mix"]:
+        if data_param.mode in ["local", "global", "hybrid", "mix", "temporal_hybrid"]:
             logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
             query_result = await kg_query(
                 query.strip(),
@@ -2721,6 +2845,24 @@ class LightRAG:
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
                 )
+            elif param.mode == "temporal_hybrid":
+                # Temporary behavior: use mix mode retrieval while preserving requested mode in metadata
+                from copy import deepcopy
+
+                internal_param = deepcopy(param)
+                internal_param.mode = "mix"
+                query_result = await kg_query(
+                    query.strip(),
+                    self.chunk_entity_relation_graph,
+                    self.entities_vdb,
+                    self.relationships_vdb,
+                    self.text_chunks,
+                    internal_param,
+                    global_config,
+                    hashing_kv=self.llm_response_cache,
+                    system_prompt=system_prompt,
+                    chunks_vdb=self.chunks_vdb,
+                )
             elif param.mode == "naive":
                 query_result = await naive_query(
                     query.strip(),
@@ -2792,6 +2934,15 @@ class LightRAG:
 
             # Extract structured data from query result
             raw_data = query_result.raw_data or {}
+
+            # Preserve requested mode in metadata when using internal fallback
+            try:
+                if param.mode == "temporal_hybrid":
+                    if "metadata" not in raw_data:
+                        raw_data["metadata"] = {}
+                    raw_data["metadata"]["query_mode"] = "temporal_hybrid"
+            except Exception:
+                pass
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming

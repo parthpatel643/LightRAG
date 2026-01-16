@@ -4,11 +4,13 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 from typing import Any, Dict, List, Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
-from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
+
+from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import QueryParam
+from lightrag.utils import logger
 
 router = APIRouter(tags=["query"])
 
@@ -19,7 +21,9 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
+    mode: Literal[
+        "local", "global", "hybrid", "naive", "mix", "bypass", "temporal_hybrid"
+    ] = Field(
         default="mix",
         description="Query mode",
     )
@@ -108,6 +112,16 @@ class QueryRequest(BaseModel):
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
+    )
+
+    query_date: Optional[str] = Field(
+        default=None,
+        description="Optional query date (ISO 8601) for temporal-aware retrieval.",
+    )
+
+    latest_only: Optional[bool] = Field(
+        default=True,
+        description="Prefer latest-only retrieval when mode='temporal_hybrid' and no query_date is provided.",
     )
 
     @field_validator("query", mode="after")
@@ -421,26 +435,39 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if not response_content:
                 response_content = "No relevant context found for the query."
 
-            # Enrich references with chunk content if requested
-            if request.include_references and request.include_chunk_content:
+            # Enrich references with chunk content and temporal status (if available)
+            if request.include_references:
                 chunks = data.get("chunks", [])
-                # Create a mapping from reference_id to chunk content
-                ref_id_to_content = {}
+                # Create mappings from reference_id to chunk content and status
+                ref_id_to_content: dict[str, list[str]] = {}
+                ref_id_to_status: dict[str, str] = {}
                 for chunk in chunks:
                     ref_id = chunk.get("reference_id", "")
                     content = chunk.get("content", "")
-                    if ref_id and content:
-                        # Collect chunk content; join later to avoid quadratic string concatenation
-                        ref_id_to_content.setdefault(ref_id, []).append(content)
+                    status = (
+                        chunk.get("status") or chunk.get("temporal_status") or ""
+                    ).upper()
+                    if ref_id:
+                        if content:
+                            ref_id_to_content.setdefault(ref_id, []).append(content)
+                        # Prefer CURRENT over OBSOLETE when aggregating
+                        prev = ref_id_to_status.get(ref_id)
+                        if prev == "CURRENT":
+                            pass
+                        elif status in ("CURRENT", "OBSOLETE"):
+                            ref_id_to_status[ref_id] = status
 
-                # Add content to references
+                # Add content and status to references
                 enriched_references = []
                 for ref in references:
                     ref_copy = ref.copy()
                     ref_id = ref.get("reference_id", "")
-                    if ref_id in ref_id_to_content:
+                    if request.include_chunk_content and ref_id in ref_id_to_content:
                         # Keep content as a list of chunks (one file may have multiple chunks)
                         ref_copy["content"] = ref_id_to_content[ref_id]
+                    # Always include status when available
+                    if ref_id in ref_id_to_status:
+                        ref_copy["status"] = ref_id_to_status[ref_id]
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
@@ -674,27 +701,43 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
 
-                # Enrich references with chunk content if requested
-                if request.include_references and request.include_chunk_content:
+                # Enrich references with chunk content and temporal status (if available)
+                if request.include_references:
                     data = result.get("data", {})
                     chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
+                    # Create mappings from reference_id to chunk content and status
+                    ref_id_to_content: dict[str, list[str]] = {}
+                    ref_id_to_status: dict[str, str] = {}
                     for chunk in chunks:
                         ref_id = chunk.get("reference_id", "")
                         content = chunk.get("content", "")
-                        if ref_id and content:
-                            # Collect chunk content
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
+                        status = (
+                            chunk.get("status") or chunk.get("temporal_status") or ""
+                        ).upper()
+                        if ref_id:
+                            if content:
+                                ref_id_to_content.setdefault(ref_id, []).append(content)
+                            # Prefer CURRENT over OBSOLETE when aggregating
+                            prev = ref_id_to_status.get(ref_id)
+                            if prev == "CURRENT":
+                                pass
+                            elif status in ("CURRENT", "OBSOLETE"):
+                                ref_id_to_status[ref_id] = status
 
-                    # Add content to references
+                    # Add content and status to references
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
                         ref_id = ref.get("reference_id", "")
-                        if ref_id in ref_id_to_content:
+                        if (
+                            request.include_chunk_content
+                            and ref_id in ref_id_to_content
+                        ):
                             # Keep content as a list of chunks (one file may have multiple chunks)
                             ref_copy["content"] = ref_id_to_content[ref_id]
+                        # Always include status when available
+                        if ref_id in ref_id_to_status:
+                            ref_copy["status"] = ref_id_to_status[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
 

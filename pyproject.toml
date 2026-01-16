@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp",
+    "asyncpg>=0.31.0",
     "configparser",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
@@ -30,10 +31,15 @@ dependencies = [
     "networkx",
     "numpy>=1.24.0,<2.0.0",
     "pandas>=2.0.0,<2.4.0",
+    "pgvector>=0.4.2",
     "pipmaster",
     "pydantic",
     "pypinyin",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
     "python-dotenv",
+    "qdrant-client>=1.12.1",
+    "ruff>=0.14.6",
     "setuptools",
     "tenacity",
     "tiktoken",
@@ -185,3 +191,16 @@ python_functions = ["test_*"]
 
 [tool.ruff]
 target-version = "py310"
+
+[tool.uv.workspace]
+members = [
+    ".",
+]
+
+[tool.uv.sources]
+lightrag-hku = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "lightrag-hku[api]",
+]

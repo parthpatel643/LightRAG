@@ -1,36 +1,38 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from enum import Enum
 import os
-from dotenv import load_dotenv
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import (
     Any,
-    Literal,
-    TypedDict,
-    TypeVar,
+    AsyncIterator,
     Callable,
-    Optional,
     Dict,
     List,
-    AsyncIterator,
+    Literal,
+    Optional,
+    TypedDict,
+    TypeVar,
 )
-from .utils import EmbeddingFunc
-from .types import KnowledgeGraph
+
+from dotenv import load_dotenv
+
 from .constants import (
-    DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
+    DEFAULT_HISTORY_TURNS,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_HISTORY_TURNS,
-    DEFAULT_OLLAMA_MODEL_NAME,
-    DEFAULT_OLLAMA_MODEL_TAG,
-    DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_SIZE,
+    DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_TOP_K,
 )
+from .types import KnowledgeGraph
+from .utils import EmbeddingFunc
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -85,7 +87,9 @@ T = TypeVar("T")
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
+    mode: Literal[
+        "local", "global", "hybrid", "naive", "mix", "bypass", "temporal_hybrid"
+    ] = "mix"
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
@@ -166,6 +170,18 @@ class QueryParam:
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
+    """
+
+    query_date: Optional[str] = None
+    """Optional query date used for temporal-aware retrieval modes.
+    Format recommendation: ISO 8601 string (e.g., "2024-01-01").
+    Currently used by 'temporal_hybrid' mode.
+    """
+
+    latest_only: bool = True
+    """Prefer only CURRENT (latest) information when performing temporal-aware retrieval.
+    If True and no explicit query_date is provided, retrieval filters out OBSOLETE chunks/entities
+    and prioritizes latest doc_order_index per file and superseding entities/relations.
     """
 
 

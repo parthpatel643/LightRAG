@@ -2,17 +2,18 @@ import os
 from dataclasses import dataclass
 from typing import final
 
-from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from lightrag.utils import logger
-from lightrag.base import BaseGraphStorage
 import networkx as nx
+from dotenv import load_dotenv
+
+from lightrag.base import BaseGraphStorage
+from lightrag.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from lightrag.utils import logger
+
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
-
-from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -499,6 +500,50 @@ class NetworkXStorage(BaseGraphStorage):
             edge_data_with_nodes["target"] = v
             all_edges.append(edge_data_with_nodes)
         return all_edges
+
+    async def get_temporal_edges_for_nodes(
+        self, node_ids: list[str], keywords: list[str] | None = None
+    ) -> list[dict]:
+        """
+        Retrieve temporal edges (e.g., SUPERSEDES, AMENDS) adjacent to the given nodes.
+
+        Args:
+            node_ids: List of node IDs (entity_id) for which to retrieve temporal edges.
+            keywords: List of temporal keywords to match in edge properties (case-insensitive).
+
+        Returns:
+            A list of dicts: {"src": str, "tgt": str, "keywords": str | None, "description": str | None}
+        """
+        if keywords is None:
+            keywords = ["SUPERSEDES", "AMENDS"]
+        kw_upper = [k.upper() for k in keywords]
+
+        graph = await self._get_graph()
+        temporal_edges: list[dict] = []
+        seen_pairs: set[tuple[str, str]] = set()
+
+        for node_id in node_ids:
+            if not graph.has_node(node_id):
+                continue
+            for neighbor in graph.neighbors(node_id):
+                # Normalize undirected edge pair to avoid duplicates
+                pair = tuple(sorted([str(node_id), str(neighbor)]))
+                if pair in seen_pairs:
+                    continue
+                props = graph.get_edge_data(node_id, neighbor) or {}
+                kw_val = str(props.get("keywords", ""))
+                if any(k in kw_val.upper() for k in kw_upper):
+                    temporal_edges.append(
+                        {
+                            "src": str(node_id),
+                            "tgt": str(neighbor),
+                            "keywords": props.get("keywords"),
+                            "description": props.get("description"),
+                        }
+                    )
+                    seen_pairs.add(pair)
+
+        return temporal_edges
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""

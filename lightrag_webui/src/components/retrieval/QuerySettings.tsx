@@ -142,12 +142,59 @@ export default function QuerySettings() {
                       <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
                       <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
                       <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
+                      <SelectItem value="temporal_hybrid">Temporal Hybrid</SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
                 <ResetButton
                   onClick={() => handleReset('mode')}
                   title="Reset to default (Mix)"
+                />
+              </div>
+            </>
+
+            {/* Temporal Controls */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="query_date" className="ml-1 cursor-help">
+                      As-of Date (YYYY-MM-DD)
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>Filter retrieval to documents effective on or before this date.</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div className="flex items-center gap-1">
+                <Input
+                  id="query_date"
+                  type="date"
+                  value={(querySettings as any).query_date || ''}
+                  onChange={(e) => handleChange('query_date', e.target.value)}
+                  className="h-9 flex-1 pr-2"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="latest_only" className="flex-1 ml-1 cursor-help">
+                        Latest Only
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>Prefer latest data and filter obsolete context when no date is set.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="latest_only"
+                  checked={(querySettings as any).latest_only ?? true}
+                  onCheckedChange={(checked) => handleChange('latest_only', checked)}
                 />
               </div>
             </>

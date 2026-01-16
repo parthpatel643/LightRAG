@@ -2548,6 +2548,7 @@ name = "lightrag-hku"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "asyncpg" },
     { name = "configparser" },
     { name = "google-api-core" },
     { name = "google-genai" },
@@ -2557,10 +2558,16 @@ dependencies = [
     { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pgvector" },
     { name = "pipmaster" },
     { name = "pydantic" },
     { name = "pypinyin" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "python-dotenv" },
+    { name = "qdrant-client", version = "1.12.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "qdrant-client", version = "1.15.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "ruff" },
     { name = "setuptools" },
     { name = "tenacity" },
     { name = "tiktoken" },
@@ -2790,6 +2797,11 @@ test = [
     { name = "xlsxwriter" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "lightrag-hku", extra = ["api"] },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", marker = "extra == 'offline-llm'", specifier = ">=12.0.0,<16.0.0" },
@@ -2798,6 +2810,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'api'" },
     { name = "anthropic", marker = "extra == 'offline-llm'", specifier = ">=0.18.0,<1.0.0" },
     { name = "ascii-colors", marker = "extra == 'api'" },
+    { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "asyncpg", marker = "extra == 'offline-storage'", specifier = ">=0.31.0,<1.0.0" },
     { name = "bcrypt", marker = "extra == 'api'", specifier = ">=4.0.0" },
     { name = "configparser" },
@@ -2819,9 +2832,9 @@ requires-dist = [
     { name = "json-repair" },
     { name = "json-repair", marker = "extra == 'api'" },
     { name = "langfuse", marker = "extra == 'observability'", specifier = ">=3.8.1" },
-    { name = "lightrag-hku", extras = ["api"], marker = "extra == 'evaluation'" },
-    { name = "lightrag-hku", extras = ["api"], marker = "extra == 'test'" },
-    { name = "lightrag-hku", extras = ["api", "offline-llm", "offline-storage"], marker = "extra == 'offline'" },
+    { name = "lightrag-hku", extras = ["api"], marker = "extra == 'evaluation'", editable = "." },
+    { name = "lightrag-hku", extras = ["api"], marker = "extra == 'test'", editable = "." },
+    { name = "lightrag-hku", extras = ["api", "offline-llm", "offline-storage"], marker = "extra == 'offline'", editable = "." },
     { name = "llama-index", marker = "extra == 'offline-llm'", specifier = ">=0.14.0,<1.0.0" },
     { name = "llama-index-llms-openai", marker = "extra == 'offline-llm'", specifier = ">=0.6.12" },
     { name = "nano-vectordb" },
@@ -2837,6 +2850,7 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'api'", specifier = ">=3.0.0,<4.0.0" },
     { name = "pandas", specifier = ">=2.0.0,<2.4.0" },
     { name = "pandas", marker = "extra == 'api'", specifier = ">=2.0.0,<2.4.0" },
+    { name = "pgvector", specifier = ">=0.4.2" },
     { name = "pgvector", marker = "extra == 'offline-storage'", specifier = ">=0.4.2,<1.0.0" },
     { name = "pipmaster" },
     { name = "pipmaster", marker = "extra == 'api'" },
@@ -2852,8 +2866,10 @@ requires-dist = [
     { name = "pypdf", marker = "extra == 'api'", specifier = ">=6.1.0" },
     { name = "pypinyin" },
     { name = "pypinyin", marker = "extra == 'api'" },
+    { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest", marker = "extra == 'pytest'", specifier = ">=8.4.2" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "pytest-asyncio", marker = "extra == 'pytest'", specifier = ">=1.2.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.2.0" },
     { name = "python-docx", marker = "extra == 'api'", specifier = ">=0.8.11,<2.0.0" },
@@ -2863,9 +2879,11 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'api'" },
     { name = "python-pptx", marker = "extra == 'api'", specifier = ">=0.6.21,<2.0.0" },
     { name = "pytz", marker = "extra == 'api'" },
+    { name = "qdrant-client", specifier = ">=1.12.1" },
     { name = "qdrant-client", marker = "extra == 'offline-storage'", specifier = ">=1.11.0,<2.0.0" },
     { name = "ragas", marker = "extra == 'evaluation'", specifier = ">=0.3.7" },
     { name = "redis", marker = "extra == 'offline-storage'", specifier = ">=5.0.0,<8.0.0" },
+    { name = "ruff", specifier = ">=0.14.6" },
     { name = "ruff", marker = "extra == 'pytest'" },
     { name = "ruff", marker = "extra == 'test'" },
     { name = "setuptools" },
@@ -2881,6 +2899,9 @@ requires-dist = [
     { name = "zhipuai", marker = "extra == 'offline-llm'", specifier = ">=2.0.0,<3.0.0" },
 ]
 provides-extras = ["pytest", "api", "docling", "offline-storage", "offline-llm", "offline", "test", "evaluation", "observability"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "lightrag-hku", extras = ["api"], editable = "." }]
 
 [[package]]
 name = "llama-cloud"

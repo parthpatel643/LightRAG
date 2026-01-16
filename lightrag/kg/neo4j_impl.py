@@ -1,35 +1,35 @@
+import configparser
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import final
-import configparser
 
-
+import pipmaster as pm
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
-import logging
-from ..utils import logger
 from ..base import BaseGraphStorage
-from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
-import pipmaster as pm
+from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+from ..utils import logger
 
 if not pm.is_installed("neo4j"):
     pm.install("neo4j")
 
+from dotenv import load_dotenv
 from neo4j import (  # type: ignore
-    AsyncGraphDatabase,
-    exceptions as neo4jExceptions,
     AsyncDriver,
+    AsyncGraphDatabase,
     AsyncManagedTransaction,
 )
-
-from dotenv import load_dotenv
+from neo4j import (
+    exceptions as neo4jExceptions,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -992,6 +992,52 @@ class Neo4JStorage(BaseGraphStorage):
 
             await result.consume()  # Ensure results are fully consumed
             return edges_dict
+
+    @READ_RETRY
+    async def get_temporal_edges_for_nodes(
+        self, node_ids: list[str], keywords: list[str] | None = None
+    ) -> list[dict]:
+        """
+        Retrieve temporal edges (e.g., SUPERSEDES, AMENDS) adjacent to the given nodes.
+
+        Args:
+            node_ids: List of node IDs (entity_id) for which to retrieve temporal edges.
+            keywords: List of temporal keywords to match in edge properties (case-insensitive).
+
+        Returns:
+            A list of dicts: {"src": str, "tgt": str, "keywords": str | None, "description": str | None}
+        """
+        if keywords is None:
+            keywords = ["SUPERSEDES", "AMENDS"]
+
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            # Use UNWIND to expand node_ids and filter edges by keywords
+            query = f"""
+                UNWIND $node_ids AS id
+                MATCH (n:`{workspace_label}` {{entity_id: id}})-[r:DIRECTED]-(m:`{workspace_label}`)
+                WITH n, m, r, toUpper(COALESCE(r.keywords, '')) AS kw
+                WHERE any(k IN $kw_list WHERE kw CONTAINS k)
+                RETURN n.entity_id AS src, m.entity_id AS tgt, properties(r) AS props
+            """
+            result = await session.run(
+                query, node_ids=node_ids, kw_list=[k.upper() for k in keywords]
+            )
+            temporal_edges = []
+            async for record in result:
+                props = dict(record["props"]) if record.get("props") is not None else {}
+                temporal_edges.append(
+                    {
+                        "src": record["src"],
+                        "tgt": record["tgt"],
+                        "keywords": props.get("keywords"),
+                        "description": props.get("description"),
+                    }
+                )
+            await result.consume()
+            return temporal_edges
 
     @retry(
         stop=stop_after_attempt(3),
