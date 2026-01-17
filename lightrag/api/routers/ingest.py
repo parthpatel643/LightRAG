@@ -27,6 +27,9 @@ class ManifestItem(BaseModel):
     # Optional hints; ingestion will infer when missing
     effectiveDate: Optional[datetime] = None
     docType: Optional[str] = None
+    # Optional explicit sequence within a batch (1-based). When provided,
+    # backend will respect this order to assign order_index.
+    sequence: Optional[int] = Field(default=None, ge=1)
     skipSSLVerify: Optional[bool] = Field(
         default=False, description="Skip SSL verification for internal URLs"
     )
@@ -177,7 +180,8 @@ def create_ingest_routes(rag: LightRAG, api_key: Optional[str] = None):
         # Map uploads by filename for quick lookup
         upload_map = {f.filename: f for f in (files or []) if f and f.filename}
 
-        documents: List[DocumentInput] = []
+        # Collect documents and their ordering hints
+        doc_records: List[tuple[DocumentInput, Optional[int], Optional[datetime]]] = []
         errors: List[str] = []
 
         # Build documents from manifest
@@ -249,18 +253,29 @@ def create_ingest_routes(rag: LightRAG, api_key: Optional[str] = None):
                 effective_periods=periods if periods else None,
                 source_url=file_path_hint,
             )
-            documents.append(DocumentInput(text=clean_text, metadata=metadata))
+            doc = DocumentInput(text=clean_text, metadata=metadata)
+            doc_records.append((doc, item.sequence, primary_eff))
 
-        if not documents:
+        if not doc_records:
             raise HTTPException(status_code=400, detail="No valid documents to ingest")
 
-        # Assign internal order_index by ascending primary effective_date per batch
-        # Do not expose order_index in headers; used only for internal temporal labeling
-        # Fallback: None effective_date items go last
-        def _primary_eff(doc: DocumentInput):
-            return doc.metadata.effective_date or datetime.max
+        # Assign internal order_index:
+        # - Prefer explicit 'sequence' from manifest when provided
+        # - Fallback to ascending primary effective_date per batch
+        has_explicit_seq = any(seq is not None for (_, seq, _) in doc_records)
+        if has_explicit_seq:
+            # Sort by sequence; items without sequence go last, keeping their relative order via effective_date
+            doc_records.sort(
+                key=lambda rec: (
+                    rec[1] if rec[1] is not None else float("inf"),
+                    rec[2] or datetime.max,
+                )
+            )
+        else:
+            # Fallback: sort by primary effective_date, None goes last
+            doc_records.sort(key=lambda rec: (rec[2] or datetime.max))
 
-        documents.sort(key=_primary_eff)
+        documents: List[DocumentInput] = [rec[0] for rec in doc_records]
         for idx, d in enumerate(documents, start=1):
             d.metadata.order_index = idx
 

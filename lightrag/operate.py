@@ -4661,10 +4661,11 @@ async def _find_related_text_unit_from_entities(
                 elif eff is not None:
                     eff_dt = eff
                 if qd is not None:
-                    # Keep semantics: status CURRENT if unknown or <= query_date AND max order per file
-                    chunk_data_copy["temporal_status"] = (
+                    # Base labeling by effective_date relative to query_date
+                    base_status = (
                         "CURRENT" if (eff_dt is None or eff_dt <= qd) else "OBSOLETE"
                     )
+                    chunk_data_copy["temporal_status"] = base_status
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided
@@ -4674,6 +4675,70 @@ async def _find_related_text_unit_from_entities(
                     "frequency": chunk_occurrence_count.get(chunk_id, 1),
                     "order": i + 1,  # 1-based order in final entity-related results
                 }
+
+    # Apply fallback recency rules for entity chunks under temporal_hybrid
+    if getattr(query_param, "mode", "mix") == "temporal_hybrid":
+        # Group by file_path to compute per-file max doc_order_index
+        by_path: dict[str, list[dict]] = {}
+        for ch in result_chunks:
+            fp = ch.get("file_path", "unknown_source")
+            by_path.setdefault(fp, []).append(ch)
+
+        # If query_date provided: refine labeling using doc_order_index fallback
+        if getattr(query_param, "query_date", None):
+            for fp, arr in by_path.items():
+                max_order = None
+                for ch in arr:
+                    oi = ch.get("doc_order_index")
+                    if isinstance(oi, int):
+                        max_order = (
+                            oi if (max_order is None or oi > max_order) else max_order
+                        )
+                if max_order is not None:
+                    for ch in arr:
+                        oi = ch.get("doc_order_index")
+                        # If effective_date is missing, fall back to order_index for recency labeling
+                        eff = ch.get("effective_date")
+                        eff_dt = None
+                        if isinstance(eff, str):
+                            try:
+                                from datetime import datetime
+
+                                eff_dt = datetime.fromisoformat(eff)
+                            except Exception:
+                                eff_dt = None
+                        elif eff is not None:
+                            eff_dt = eff
+                        if eff_dt is None:
+                            ch["temporal_status"] = (
+                                "CURRENT"
+                                if isinstance(oi, int) and oi == max_order
+                                else "OBSOLETE"
+                            )
+        # Latest-only when no query_date: keep only max order per file
+        elif getattr(query_param, "latest_only", True):
+            filtered_latest: list[dict] = []
+            for fp, arr in by_path.items():
+                max_order = None
+                for ch in arr:
+                    oi = ch.get("doc_order_index")
+                    if isinstance(oi, int):
+                        max_order = (
+                            oi if (max_order is None or oi > max_order) else max_order
+                        )
+                for ch in arr:
+                    oi = ch.get("doc_order_index")
+                    if max_order is not None and isinstance(oi, int):
+                        if oi == max_order:
+                            ch["temporal_status"] = "CURRENT"
+                            filtered_latest.append(ch)
+                        else:
+                            ch["temporal_status"] = "OBSOLETE"
+                    else:
+                        # No order available: treat as CURRENT
+                        ch["temporal_status"] = "CURRENT"
+                        filtered_latest.append(ch)
+            result_chunks = filtered_latest
 
     return result_chunks
 

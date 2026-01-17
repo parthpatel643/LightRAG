@@ -3,7 +3,7 @@
  */
 
 import * as React from 'react'
-import { FileText, Upload, X } from 'lucide-react'
+import { FileText, Upload, X, ArrowUp, ArrowDown } from 'lucide-react'
 import Dropzone, { type DropzoneProps, type FileRejection } from 'react-dropzone'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
@@ -107,6 +107,12 @@ interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
   disabled?: boolean
 
   description?: string
+
+  /**
+   * Optional renderer for per-file extra controls (e.g., metadata inputs)
+   * Rendered under each file card; receives file and index.
+   */
+  renderFileExtras?: (file: File, index: number) => React.ReactNode
 }
 
 function formatBytes(
@@ -143,6 +149,7 @@ function FileUploader(props: FileUploaderProps) {
     disabled = false,
     description,
     className,
+    renderFileExtras,
     ...dropzoneProps
   } = props
 
@@ -234,6 +241,26 @@ function FileUploader(props: FileUploaderProps) {
   function onRemove(index: number) {
     if (!files) return
     const newFiles = files.filter((_, i) => i !== index)
+    setFiles(newFiles)
+    onValueChange?.(newFiles)
+  }
+
+  function onMoveUp(index: number) {
+    if (!files || index <= 0) return
+    const newFiles = [...files]
+    const tmp = newFiles[index - 1]
+    newFiles[index - 1] = newFiles[index]
+    newFiles[index] = tmp
+    setFiles(newFiles)
+    onValueChange?.(newFiles)
+  }
+
+  function onMoveDown(index: number) {
+    if (!files || index >= files.length - 1) return
+    const newFiles = [...files]
+    const tmp = newFiles[index + 1]
+    newFiles[index + 1] = newFiles[index]
+    newFiles[index] = tmp
     setFiles(newFiles)
     onValueChange?.(newFiles)
   }
@@ -358,8 +385,11 @@ function FileUploader(props: FileUploaderProps) {
                 key={index}
                 file={file}
                 onRemove={() => onRemove(index)}
+                onMoveUp={() => onMoveUp(index)}
+                onMoveDown={() => onMoveDown(index)}
                 progress={progresses?.[file.name]}
                 error={fileErrors?.[file.name]}
+                extras={renderFileExtras ? renderFileExtras(file, index) : undefined}
               />
             ))}
           </div>
@@ -394,11 +424,14 @@ function Progress({ value, error }: ProgressProps) {
 interface FileCardProps {
   file: File
   onRemove: () => void
+  onMoveUp: () => void
+  onMoveDown: () => void
   progress?: number
   error?: string
+  extras?: React.ReactNode
 }
 
-function FileCard({ file, progress, error, onRemove }: FileCardProps) {
+function FileCard({ file, progress, error, onRemove, onMoveUp, onMoveDown, extras }: FileCardProps) {
   const { t } = useTranslation()
   return (
     <div className="relative flex items-center gap-2.5">
@@ -410,7 +443,7 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
         )}
         <div className="flex w-full flex-col gap-2">
           <div className="flex flex-col gap-px">
-            <p className="text-foreground/80 line-clamp-1 text-sm font-medium">{file.name}</p>
+            <p className="text-foreground/80 break-words whitespace-normal text-sm font-medium">{file.name}</p>
             <p className="text-muted-foreground text-xs">{formatBytes(file.size)}</p>
           </div>
           {error ? (
@@ -423,9 +456,22 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
           ) : (
             progress ? <Progress value={progress} /> : null
           )}
+          {extras ? (
+            <div className="mt-2">
+              {extras}
+            </div>
+          ) : null}
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <Button type="button" variant="outline" size="icon" className="size-7" onClick={onMoveUp}>
+          <ArrowUp className="size-4" aria-hidden="true" />
+          <span className="sr-only">{t('documentPanel.uploadDocuments.fileUploader.moveUp')}</span>
+        </Button>
+        <Button type="button" variant="outline" size="icon" className="size-7" onClick={onMoveDown}>
+          <ArrowDown className="size-4" aria-hidden="true" />
+          <span className="sr-only">{t('documentPanel.uploadDocuments.fileUploader.moveDown')}</span>
+        </Button>
         <Button type="button" variant="outline" size="icon" className="size-7" onClick={onRemove}>
           <X className="size-4" aria-hidden="true" />
           <span className="sr-only">{t('documentPanel.uploadDocuments.fileUploader.removeFile')}</span>

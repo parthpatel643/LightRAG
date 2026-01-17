@@ -284,6 +284,29 @@ export type LoginResponse = {
   webui_description?: string
 }
 
+// Ingest API types
+export type IngestManifestItem = {
+  id: string
+  name: string
+  type: 'file' | 'url'
+  url?: string
+  effectiveDate?: string // ISO date string, optional
+  docType?: string
+  // Optional explicit sequence index (1-based) to influence server-side order_index
+  sequence?: number
+  skipSSLVerify?: boolean
+}
+
+export type IngestManifest = {
+  items: IngestManifestItem[]
+}
+
+export type IngestResponse = {
+  status: 'success' | 'partial_success' | 'failure'
+  message: string
+  track_id: string
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -841,6 +864,37 @@ export const batchUploadDocuments = async (
       })
     })
   )
+}
+
+/**
+ * Ingest a batch of files with a manifest via /ingest/batch.
+ * The backend will infer effective dates and assign order_index per batch.
+ */
+export const ingestBatch = async (
+  files: File[],
+  manifest: IngestManifest,
+  onUploadProgress?: (percentCompleted: number) => void
+): Promise<IngestResponse> => {
+  const formData = new FormData()
+  // Append files under the "files" field (FastAPI expects files: List[UploadFile])
+  for (const f of files) {
+    formData.append('files', f, f.name)
+  }
+  formData.append('manifest', JSON.stringify(manifest))
+
+  const response = await axiosInstance.post('/ingest/batch', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress:
+      onUploadProgress !== undefined
+        ? (progressEvent) => {
+            const total = progressEvent.total ?? 0
+            const loaded = progressEvent.loaded ?? 0
+            const percentCompleted = total > 0 ? Math.round((loaded * 100) / total) : 0
+            onUploadProgress(percentCompleted)
+          }
+        : undefined,
+  })
+  return response.data
 }
 
 export const clearDocuments = async (): Promise<DocActionResponse> => {

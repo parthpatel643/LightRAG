@@ -12,7 +12,7 @@ import {
 import FileUploader from '@/components/ui/FileUploader'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
-import { uploadDocument } from '@/api/lightrag'
+import { ingestBatch, IngestManifest } from '@/api/lightrag'
 
 import { UploadIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +27,14 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const [files, setFiles] = useState<File[]>([])
+  // Optional overrides for batch manifest
+  const [docTypeOverride, setDocTypeOverride] = useState<string>('')
+  const [effDateOverride, setEffDateOverride] = useState<string>('')
+  // Per-file overrides keyed by a stable file key
+  const [perFileOverrides, setPerFileOverrides] = useState<Record<string, { docType?: string; effectiveDate?: string }>>({})
+
+  const getFileKey = useCallback((f: File) => `${f.name}|${f.size}|${(f as any).lastModified ?? ''}`,[ ])
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -77,76 +85,92 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         // Track errors locally to ensure we have the final state
         const uploadErrors: Record<string, string> = {}
 
-        // Create a collator that supports Chinese sorting
-        const collator = new Intl.Collator(['zh-CN', 'en'], {
-          sensitivity: 'accent',  // consider basic characters, accents, and case
-          numeric: true           // enable numeric sorting, e.g., "File 10" will be after "File 2"
-        });
-        const sortedFiles = [...filesToUpload].sort((a, b) =>
-          collator.compare(a.name, b.name)
-        );
+        // Preserve current visual order from the uploader for sequence
+        const sortedFiles = [...filesToUpload]
 
-        // Upload files in sequence, not parallel
-        for (const file of sortedFiles) {
-          try {
-            // Initialize upload progress
-            setProgresses((pre) => ({
-              ...pre,
-              [file.name]: 0
-            }))
-
-            const result = await uploadDocument(file, (percentCompleted: number) => {
-              console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
-              setProgresses((pre) => ({
-                ...pre,
-                [file.name]: percentCompleted
-              }))
-            })
-
-            if (result.status === 'duplicated') {
-              uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-              setFileErrors(prev => ({
-                ...prev,
-                [file.name]: t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-              }))
-            } else if (result.status !== 'success') {
-              uploadErrors[file.name] = result.message
-              setFileErrors(prev => ({
-                ...prev,
-                [file.name]: result.message
-              }))
-            } else {
-              // Mark that we had at least one successful upload
-              hasSuccessfulUpload = true
-            }
-          } catch (err) {
-            console.error(`Upload failed for ${file.name}:`, err)
-
-            // Handle HTTP errors, including 400 errors
-            let errorMsg = errorMessage(err)
-
-            // If it's an axios error with response data, try to extract more detailed error info
-            if (err && typeof err === 'object' && 'response' in err) {
-              const axiosError = err as { response?: { status: number, data?: { detail?: string } } }
-              if (axiosError.response?.status === 400) {
-                // Extract specific error message from backend response
-                errorMsg = axiosError.response.data?.detail || errorMsg
-              }
-
-              // Set progress to 100% to display error message
-              setProgresses((pre) => ({
-                ...pre,
-                [file.name]: 100
-              }))
-            }
-
-            // Record error message in both local tracking and state
-            uploadErrors[file.name] = errorMsg
-            setFileErrors(prev => ({
-              ...prev,
-              [file.name]: errorMsg
-            }))
+        // Initialize per-file progress to 0
+        setProgresses((pre) => {
+          const next = { ...pre }
+          for (const f of sortedFiles) {
+            next[f.name] = 0
           }
+          return next
+        })
+
+        // Build manifest for batch ingestion (minimal: id, name, type)
+        const manifest: IngestManifest = {
+          items: sortedFiles.map((f, idx) => {
+            const key = getFileKey(f)
+            const per = perFileOverrides[key] || {}
+            return {
+              id: `${idx + 1}`,
+              name: f.name,
+              type: 'file' as const,
+              sequence: idx + 1,
+              ...(docTypeOverride ? { docType: docTypeOverride } : {}),
+              ...(effDateOverride ? { effectiveDate: effDateOverride } : {}),
+              ...(per.docType ? { docType: per.docType } : {}),
+              ...(per.effectiveDate ? { effectiveDate: per.effectiveDate } : {}),
+            }
+          }),
+        }
+
+        try {
+          const result = await ingestBatch(sortedFiles, manifest, (percentCompleted: number) => {
+            // Update all file progresses uniformly since this is a single batch request
+            setProgresses((pre) => {
+              const next = { ...pre }
+              for (const f of sortedFiles) {
+                next[f.name] = percentCompleted
+              }
+              return next
+            })
+          })
+
+          if (result.status === 'failure') {
+            // Mark errors for all files on failure
+            const message = result.message || t('documentPanel.uploadDocuments.batch.error')
+            for (const f of sortedFiles) {
+              uploadErrors[f.name] = message
+            }
+            setFileErrors(prev => {
+              const next = { ...prev }
+              for (const f of sortedFiles) {
+                next[f.name] = message
+              }
+              return next
+            })
+          } else {
+            // success or partial_success: mark completed
+            hasSuccessfulUpload = true
+            setProgresses((pre) => {
+              const next = { ...pre }
+              for (const f of sortedFiles) {
+                next[f.name] = 100
+              }
+              return next
+            })
+          }
+        } catch (err) {
+          // Handle HTTP errors (e.g., auth, network)
+          let errorMsg = errorMessage(err)
+          // Set each file to 100% to display error message
+          setProgresses((pre) => {
+            const next = { ...pre }
+            for (const f of sortedFiles) {
+              next[f.name] = 100
+            }
+            return next
+          })
+          // Record error message for each file
+          setFileErrors(prev => {
+            const next = { ...prev }
+            for (const f of sortedFiles) {
+              next[f.name] = errorMsg
+              uploadErrors[f.name] = errorMsg
+            }
+            return next
+          })
         }
 
         // Check if any files failed to upload using our local tracking
@@ -197,23 +221,85 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
           <UploadIcon /> {t('documentPanel.uploadDocuments.button')}
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
+      <DialogContent className="sm:max-w-3xl" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{t('documentPanel.uploadDocuments.title')}</DialogTitle>
           <DialogDescription>
             {t('documentPanel.uploadDocuments.description')}
           </DialogDescription>
         </DialogHeader>
+        {/* Optional temporal overrides for batch ingestion */}
+        <div className="grid grid-cols-1 gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <label htmlFor="docTypeOverride" className="text-sm whitespace-nowrap">Document Type (optional)</label>
+            <input
+              id="docTypeOverride"
+              type="text"
+              value={docTypeOverride}
+              onChange={(e) => setDocTypeOverride(e.target.value)}
+              className="flex-1 h-9 rounded-md border px-2 text-sm"
+              placeholder="e.g., amendment, addendum, rate-sheet"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="effDateOverride" className="text-sm whitespace-nowrap">Effective Date (optional)</label>
+            <input
+              id="effDateOverride"
+              type="date"
+              value={effDateOverride}
+              onChange={(e) => setEffDateOverride(e.target.value)}
+              className="flex-1 h-9 rounded-md border px-2 text-sm"
+            />
+          </div>
+        </div>
         <FileUploader
+          value={files}
+          onValueChange={setFiles}
           maxFileCount={Infinity}
           maxSize={200 * 1024 * 1024}
           description={t('documentPanel.uploadDocuments.fileTypes')}
-          onUpload={handleDocumentsUpload}
           onReject={handleRejectedFiles}
           progresses={progresses}
           fileErrors={fileErrors}
           disabled={isUploading}
+          renderFileExtras={(file) => {
+            const key = getFileKey(file)
+            const cur = perFileOverrides[key] || {}
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs whitespace-nowrap">Doc Type (optional)</label>
+                  <input
+                    type="text"
+                    value={cur.docType || ''}
+                    onChange={(e) => setPerFileOverrides(prev => ({ ...prev, [key]: { ...prev[key], docType: e.target.value } }))}
+                    className="flex-1 h-8 rounded-md border px-2 text-xs"
+                    placeholder="e.g., amendment"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs whitespace-nowrap">Effective Date (optional)</label>
+                  <input
+                    type="date"
+                    value={cur.effectiveDate || ''}
+                    onChange={(e) => setPerFileOverrides(prev => ({ ...prev, [key]: { ...prev[key], effectiveDate: e.target.value } }))}
+                    className="flex-1 h-8 rounded-md border px-2 text-xs"
+                  />
+                </div>
+              </div>
+            )
+          }}
         />
+        <div className="mt-4 flex justify-end gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            disabled={isUploading || files.length === 0}
+            onClick={() => handleDocumentsUpload(files)}
+          >
+            <UploadIcon /> {t('documentPanel.uploadDocuments.batch.startUpload')}
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   )
