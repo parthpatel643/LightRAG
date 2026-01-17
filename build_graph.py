@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import List
@@ -172,9 +173,9 @@ Examples:
         working_dir=str(working_dir),
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
-        entity_extract_max_gleaning=3,
-        # chunk_token_size=int(os.getenv("CHUNK_SIZE", 2000)),
-        # chunk_overlap_token_size=int(os.getenv("CHUNK_OVERLAP_SIZE", 200)),
+        entity_extract_max_gleaning=5,
+        chunk_token_size=int(os.getenv("CHUNK_SIZE", 2000)),
+        chunk_overlap_token_size=int(os.getenv("CHUNK_OVERLAP_SIZE", 200)),
         enable_llm_cache=False,
     )
 
