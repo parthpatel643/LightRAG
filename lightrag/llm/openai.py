@@ -1,41 +1,40 @@
-from ..utils import verbose_debug, VERBOSE_DEBUG
-import os
 import logging
-
+import os
 from collections.abc import AsyncIterator
 
 import pipmaster as pm
 import tiktoken
 
+from ..utils import VERBOSE_DEBUG, verbose_debug
+
 # install specific modules
 if not pm.is_installed("openai"):
     pm.install("openai")
 
-from openai import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
-)
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    safe_unicode_decode,
-    logger,
-)
-
-from lightrag.types import GPTKeywordExtractionFormat
-from lightrag.api import __api_version__
-
-import numpy as np
 import base64
 from typing import Any, Union
 
+import numpy as np
 from dotenv import load_dotenv
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from lightrag.api import __api_version__
+from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.utils import (
+    logger,
+    safe_unicode_decode,
+    wrap_embedding_func_with_attrs,
+)
 
 # Try to import Langfuse for LLM observability (optional)
 # Falls back to standard OpenAI client if not available
@@ -722,6 +721,7 @@ async def openai_embed(
     embedding_dim: int | None = None,
     max_token_size: int | None = None,
     client_configs: dict[str, Any] | None = None,
+    extra_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
     use_azure: bool = False,
     azure_deployment: str | None = None,
@@ -821,6 +821,7 @@ async def openai_embed(
             "model": api_model,
             "input": texts,
             "encoding_format": "base64",
+            **(extra_configs or {}),
         }
 
         # Add dimensions parameter only if embedding_dim is provided

@@ -47,7 +47,7 @@ async def ingest_documents(
 
             logger.info("Using ContractSequencer for metadata extraction...")
             sequencer = ContractSequencer(
-                files=[str(p) for p in file_paths], order=[str(p) for p in file_paths]
+                files=[str(p) for p in file_paths], order=[p.name for p in file_paths]
             )
             sequenced_docs = sequencer.prepare_for_ingestion()
 
@@ -185,6 +185,7 @@ Examples:
         use_sequencer=args.use_sequencer,
     )
 
+    await rag.finalize_storages()
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("INGESTION COMPLETE")
