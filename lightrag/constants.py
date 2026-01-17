@@ -26,7 +26,6 @@ DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
-    "Creature",
     "Organization",
     "Location",
     "Event",
@@ -35,7 +34,14 @@ DEFAULT_ENTITY_TYPES = [
     "Content",
     "Data",
     "Artifact",
-    "NaturalObject",
+    "Service",
+    "Aircraft",
+    "Rate",
+    "Vendor",
+    "SLA",
+    "Penalty",
+    "ContractTerm",
+    "Equipment",
 ]
 
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
@@ -43,7 +49,7 @@ GRAPH_FIELD_SEP = "<SEP>"
 
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
-DEFAULT_CHUNK_TOP_K = 20
+DEFAULT_CHUNK_TOP_K = 60  # Increased for better tabular data coverage
 DEFAULT_MAX_ENTITY_TOKENS = 6000
 DEFAULT_MAX_RELATION_TOKENS = 8000
 DEFAULT_MAX_TOTAL_TOKENS = 30000

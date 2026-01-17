@@ -164,8 +164,7 @@ Examples:
         logger.info(f"  {idx}. {fp.name}")
 
     # Initialize LightRAG
-    working_dir = Path(args.working_dir)
-    working_dir.mkdir(parents=True, exist_ok=True)
+    working_dir = os.getenv("WORKING_DIR", args.working_dir)
 
     logger.info(f"\nInitializing LightRAG (working_dir: {working_dir})...")
 
