@@ -3,6 +3,12 @@ Data Preprocessing Module for Temporal RAG System
 
 This module provides utilities for sequencing contract documents
 and preparing them for ingestion into LightRAG with temporal metadata.
+
+Sprint 6 Update: Implements "Soft Tagging" for effective dates.
+Instead of extracting a single date per document, this module now:
+1. Scans each paragraph for date patterns
+2. Wraps found dates with XML tags: <EFFECTIVE_DATE confidence="high">YYYY-MM-DD</EFFECTIVE_DATE>
+3. Preserves dates as part of content (not hidden metadata) for LLM interpretation
 """
 
 import re
@@ -15,16 +21,40 @@ class ContractSequencer:
     """
     Sequences contract files with temporal metadata for RAG ingestion.
 
-    Assigns incrementing sequence indices and extracts effective dates
-    from document content to enable temporal retrieval.
+    Assigns incrementing sequence indices and injects effective date tags
+    directly into content for LLM interpretation (Sprint 6: Soft Tagging).
+
+    Instead of extracting dates as hidden metadata, this class now:
+    - Identifies date patterns at paragraph level
+    - Wraps dates with <EFFECTIVE_DATE> tags in the content
+    - Allows LLM to interpret temporal confidence during generation
     """
 
-    # Common date patterns to extract from documents
-    DATE_PATTERNS = [
-        r"(?:effective|date|dated|as of)[\s:]+(\d{4}-\d{2}-\d{2})",  # YYYY-MM-DD
-        r"(?:effective|date|dated|as of)[\s:]+(\d{1,2}[/-]\d{1,2}[/-]\d{4})",  # MM/DD/YYYY or DD-MM-YYYY
-        r"(\d{4}-\d{2}-\d{2})",  # Standalone YYYY-MM-DD
-        r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})",  # Standalone MM/DD/YYYY
+    # Comprehensive date patterns with context markers
+    DATE_PATTERNS_WITH_CONTEXT = [
+        # High-confidence patterns (explicit temporal markers)
+        (
+            r"(?:effective|commencing|beginning|starting|valid from)\s+(?:as of\s+)?(\d{4}-\d{2}-\d{2})",
+            "high",
+        ),
+        (
+            r"(?:effective|commencing|beginning|starting|valid from)\s+(?:as of\s+)?(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+            "high",
+        ),
+        (
+            r"(?:shall take effect on|becomes effective on|effective date is)\s+(\d{4}-\d{2}-\d{2})",
+            "high",
+        ),
+        (
+            r"(?:shall take effect on|becomes effective on|effective date is)\s+(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+            "high",
+        ),
+        # Medium-confidence patterns (contextual dates)
+        (r"(?:dated|as of|on|from)\s+(\d{4}-\d{2}-\d{2})", "medium"),
+        (r"(?:dated|as of|on|from)\s+(\d{1,2}[/-]\d{1,2}[/-]\d{4})", "medium"),
+        # Low-confidence patterns (standalone dates)
+        (r"\b(\d{4}-\d{2}-\d{2})\b", "low"),
+        (r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{4})\b", "low"),
     ]
 
     def __init__(self, files: List[Union[str, Path]], order: List[str]):
@@ -50,7 +80,10 @@ class ContractSequencer:
 
     def _extract_date(self, content: str) -> str:
         """
-        Extract effective date from the first 10 lines of content.
+        Extract first effective date from the first 10 lines (legacy method).
+
+        NOTE: Sprint 6 deprecates this for hard filtering.
+        Now used only for display/logging purposes.
 
         Args:
             content: Document content as string
@@ -61,7 +94,7 @@ class ContractSequencer:
         lines = content.split("\n")[:10]
         search_text = "\n".join(lines).lower()
 
-        for pattern in self.DATE_PATTERNS:
+        for pattern, confidence in self.DATE_PATTERNS_WITH_CONTEXT:
             match = re.search(pattern, search_text, re.IGNORECASE)
             if match:
                 date_str = match.group(1)
@@ -141,19 +174,73 @@ class ContractSequencer:
         # Default to unknown for unknown patterns
         return "unknown"
 
+    def _inject_soft_tags(self, content: str) -> str:
+        """
+        Inject <EFFECTIVE_DATE> tags around date patterns in content.
+
+        Sprint 6: Soft Tagging Implementation
+        Instead of extracting dates as metadata, we wrap them with XML tags
+        so the LLM can interpret temporal confidence during generation.
+
+        Algorithm:
+        1. Split content into paragraphs
+        2. For each paragraph, scan for date patterns
+        3. If found, wrap with: <EFFECTIVE_DATE confidence="X">DATE</EFFECTIVE_DATE>
+        4. Avoid duplicate tagging (track already-tagged dates)
+
+        Args:
+            content: Original document content
+
+        Returns:
+            Content with <EFFECTIVE_DATE> tags injected
+        """
+        tagged_content = content
+        tagged_dates = set()  # Avoid duplicate tagging
+
+        # Process each date pattern (high to low confidence)
+        for pattern, confidence in self.DATE_PATTERNS_WITH_CONTEXT:
+            # Find all matches in the current content
+            for match in re.finditer(pattern, tagged_content, re.IGNORECASE):
+                date_str = match.group(1)
+
+                # Normalize date
+                normalized_date = self._normalize_date(date_str)
+
+                # Skip if already tagged (avoid double-tagging)
+                if normalized_date in tagged_dates:
+                    continue
+
+                # Create soft tag
+                soft_tag = f'<EFFECTIVE_DATE confidence="{confidence}">{normalized_date}</EFFECTIVE_DATE>'
+
+                # Replace the date with tagged version
+                # Use word boundaries to avoid partial replacements
+                tagged_content = re.sub(
+                    rf"\b{re.escape(date_str)}\b", soft_tag, tagged_content, count=1
+                )
+
+                tagged_dates.add(normalized_date)
+
+        return tagged_content
+
     def prepare_for_ingestion(self) -> List[Dict[str, Any]]:
         """
         Prepare documents for ingestion with temporal metadata.
 
+        Sprint 6 Update:
+        - Injects <EFFECTIVE_DATE> tags directly into content
+        - sequence_index is the ONLY hard filter
+        - effective_date in metadata is for display only (not used in retrieval)
+
         Returns:
             List of dictionaries with content and metadata:
             {
-                "content": "Original content...",
+                "content": "Content with <EFFECTIVE_DATE>...</EFFECTIVE_DATE> tags",
                 "metadata": {
                     "source": "Base.md",
                     "sequence_index": 1,
                     "doc_type": "base",
-                    "date": "2023-01-01"
+                    "date": "2023-01-01"  # Display only, not used for filtering
                 }
             }
         """
@@ -172,18 +259,21 @@ class ContractSequencer:
             except Exception as e:
                 raise IOError(f"Failed to read file '{file_path}': {e}")
 
-            # Extract metadata
+            # Sprint 6: Inject soft tags into content
+            tagged_content = self._inject_soft_tags(content)
+
+            # Extract metadata (for display purposes)
             effective_date = self._extract_date(content)
             doc_type = self._infer_doc_type(content, filename)
 
             # Build result dictionary
             result = {
-                "content": content,
+                "content": tagged_content,  # Now contains <EFFECTIVE_DATE> tags
                 "metadata": {
                     "source": filename,
                     "sequence_index": idx,
                     "doc_type": doc_type,
-                    "date": effective_date,
+                    "date": effective_date,  # Display only - not used for retrieval
                 },
             }
 
