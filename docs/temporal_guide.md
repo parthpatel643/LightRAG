@@ -1104,6 +1104,18 @@ Scenario D - Multiple Effective Dates:
 → Distinguish which rates/clauses are active vs. scheduled
 ```
 
+**Citation & User Experience Updates:**
+- **NEVER** show version numbers (v1, v2, v3, v4) to users
+- Keep citations simple: document names and sections only
+- Remove duplicate/redundant references
+- No separate "Source" column in tables
+- Concise References section at the end
+→ Assume clause is active (became effective at document signing)
+
+Scenario D - Multiple Effective Dates:
+→ Distinguish which rates/clauses are active vs. scheduled
+```
+
 ### Implementation Details
 
 #### data_prep.py Changes
@@ -1211,21 +1223,15 @@ Summary:
 
 **Use Case 1: Future Effective Date**
 ```
-Amendment (v2): "Fee increases to $15 effective 2026-01-01"
 Query (2025): "What is the current fee?"
 
 Response:
 "The latest agreement specifies a fee of $15 per unit, which becomes 
-effective on 2026-01-01. As of 2025, this rate is not yet active. 
-[Refer to v1 for current rate: $10]"
+effective on 2026-01-01. As of 2025, this rate is not yet active."
 ```
 
 **Use Case 2: Mixed Effective Dates**
 ```
-Amendment (v3): 
-- "Parking fee increases to $200 effective 2025-01-01"
-- "Landing fee increases to $3000 effective 2027-01-01"
-
 Query (2026): "What are the current rates?"
 
 Response Table:
@@ -1233,18 +1239,34 @@ Response Table:
 |------|------|----------------|---------|
 | Parking Fee | $200 | 2025-01-01 | Active |
 | Landing Fee | $3000 | 2027-01-01 | Scheduled (Not Yet Active) |
+
+### References
+- Parking and Landing Fee Schedule, Section 4
 ```
 
-**Use Case 3: No Effective Date**
+**Use Case 3: Real-World Example**
 ```
-Amendment (v2): "Service area extended to Terminal 3"
-Query: "What areas are covered?"
+Query: "What are the latest rates for Boeing 787 flights that remain 
+       overnight and undergo cabin cleaning with lavatory service?"
 
-Response:
-"The latest agreement covers Terminals 1, 2, and 3. 
-The Terminal 3 extension was added in Amendment 1 (v2) 
-and is currently active."
+Response Table:
+| Item/Description | Rate/Value | Frequency/Unit | Effective Date |
+|------------------|------------|----------------|----------------|
+| Boeing 787 – RON Cabin Cleaning with Lavatory & Water Service | $384.08 | Per aircraft event | Current |
+
+### References
+
+**1. EXHIBIT B – SEA Cabin Cleaning**
+   - Section: Cabin Cleaning – Per Plane Event Bid
+   - Subsection: Aircraft Type "787"
+   - Details: Service Description "Ron w/lav & water"; Price/event $384.08; Effective January 1, 2025
 ```
+
+**Key Improvements:**
+- Structured reference format with document name, section, subsection, and details
+- Clear hierarchy and easy navigation
+- Professional presentation suitable for contract review
+- No internal version numbers or implementation details
 
 ### Modified Files
 
