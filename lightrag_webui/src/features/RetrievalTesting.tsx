@@ -178,7 +178,7 @@ export default function RetrievalTesting() {
       if (!inputValue.trim() || isLoading) return
 
       // Parse query mode prefix
-      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
+      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass', 'temporal']
       const prefixMatch = inputValue.match(/^\/(\w+)\s+([\s\S]+)/)
       let modeOverride: QueryMode | undefined = undefined
       let actualQuery = inputValue

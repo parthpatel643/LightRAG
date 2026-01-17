@@ -3,33 +3,37 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from functools import lru_cache
-from lightrag.utils import logger, get_pinyin_sort_key
-import aiofiles
 import shutil
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
+
+import aiofiles
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
+from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.utils import (
-    generate_track_id,
     compute_mdhash_id,
+    generate_track_id,
+    get_pinyin_sort_key,
+    logger,
     sanitize_text_for_encoding,
 )
-from lightrag.api.utils_api import get_combined_auth_dependency
+
 from ..config import global_args
 
 
@@ -1190,7 +1194,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, metadata: dict = None
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1198,6 +1202,7 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        metadata: Optional metadata dictionary (sequence_index, effective_date, doc_type)
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1559,7 +1564,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    metadata=metadata,
                 )
 
                 logger.info(
@@ -1643,17 +1651,20 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
-    """Index a file with track_id
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, track_id: str = None, metadata: dict = None
+):
+    """Index a file with track_id and optional metadata
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        metadata: Optional metadata dictionary (sequence_index, effective_date, doc_type)
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, metadata
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -2069,7 +2080,11 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        sequence_index: int = Form(0),
+        effective_date: str = Form("unknown"),
+        doc_type: str = Form("unknown"),
     ):
         """
         Upload a file to the input directory and index it.
@@ -2081,6 +2096,9 @@ def create_document_routes(
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            sequence_index (int): Optional versioning sequence number (0 = no versioning)
+            effective_date (str): Optional effective date (YYYY-MM-DD format)
+            doc_type (str): Optional document type (base, amendment, etc.)
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -2126,8 +2144,19 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            # Prepare metadata for insertion
+            metadata = None
+            if sequence_index > 0:
+                metadata = {
+                    "sequence_index": sequence_index,
+                    "effective_date": effective_date,
+                    "doc_type": doc_type,
+                }
+
+            # Add to background tasks with metadata
+            background_tasks.add_task(
+                pipeline_index_file, rag, file_path, track_id, metadata
+            )
 
             return InsertResponse(
                 status="success",
@@ -2526,9 +2555,9 @@ def create_document_routes(
         """
         try:
             from lightrag.kg.shared_storage import (
+                get_all_update_flags_status,
                 get_namespace_data,
                 get_namespace_lock,
-                get_all_update_flags_status,
             )
 
             pipeline_status = await get_namespace_data(

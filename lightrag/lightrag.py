@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import traceback
 import asyncio
 import configparser
 import inspect
 import os
 import time
+import traceback
 import warnings
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -15,105 +15,103 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Dict,
     Iterator,
-    cast,
-    final,
+    List,
     Literal,
     Optional,
-    List,
-    Dict,
     Union,
-)
-from lightrag.prompt import PROMPTS
-from lightrag.exceptions import PipelineCancelledException
-from lightrag.constants import (
-    DEFAULT_MAX_GLEANING,
-    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
-    DEFAULT_TOP_K,
-    DEFAULT_CHUNK_TOP_K,
-    DEFAULT_MAX_ENTITY_TOKENS,
-    DEFAULT_MAX_RELATION_TOKENS,
-    DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_COSINE_THRESHOLD,
-    DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_MIN_RERANK_SCORE,
-    DEFAULT_SUMMARY_MAX_TOKENS,
-    DEFAULT_SUMMARY_CONTEXT_SIZE,
-    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
-    DEFAULT_MAX_ASYNC,
-    DEFAULT_MAX_PARALLEL_INSERT,
-    DEFAULT_MAX_GRAPH_NODES,
-    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
-    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
-    DEFAULT_ENTITY_TYPES,
-    DEFAULT_SUMMARY_LANGUAGE,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
-    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-    DEFAULT_MAX_FILE_PATHS,
-    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
-)
-from lightrag.utils import get_env_value
-
-from lightrag.kg import (
-    STORAGES,
-    verify_storage_implementation,
+    cast,
+    final,
 )
 
-
-from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_data_init_lock,
-    get_default_workspace,
-    set_default_workspace,
-    get_namespace_lock,
-)
+from dotenv import load_dotenv
 
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DeletionResult,
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
+    OllamaServerInfos,
     QueryParam,
+    QueryResult,
     StorageNameSpace,
     StoragesStatus,
-    DeletionResult,
-    OllamaServerInfos,
-    QueryResult,
+)
+from lightrag.constants import (
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_FILE_PATHS,
+    DEFAULT_MAX_GLEANING,
+    DEFAULT_MAX_GRAPH_NODES,
+    DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
+    DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_TOP_K,
+    GRAPH_FIELD_SEP,
+)
+from lightrag.exceptions import PipelineCancelledException
+from lightrag.kg import (
+    STORAGES,
+    verify_storage_implementation,
+)
+from lightrag.kg.shared_storage import (
+    get_data_init_lock,
+    get_default_workspace,
+    get_namespace_data,
+    get_namespace_lock,
+    set_default_workspace,
 )
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_token_size,
     extract_entities,
-    merge_nodes_and_edges,
     kg_query,
+    merge_nodes_and_edges,
     naive_query,
     rebuild_knowledge_from_chunks,
 )
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.prompt import PROMPTS
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
-    Tokenizer,
-    TiktokenTokenizer,
     EmbeddingFunc,
+    TiktokenTokenizer,
+    Tokenizer,
     always_get_an_event_loop,
-    compute_mdhash_id,
-    lazy_external_import,
-    priority_limit_async_func_call,
-    get_content_summary,
-    sanitize_text_for_encoding,
     check_storage_env_vars,
-    generate_track_id,
+    compute_mdhash_id,
     convert_to_user_format,
+    generate_track_id,
+    get_content_summary,
+    get_env_value,
+    lazy_external_import,
     logger,
-    subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    priority_limit_async_func_call,
+    sanitize_text_for_encoding,
+    subtract_source_ids,
 )
-from lightrag.types import KnowledgeGraph
-from dotenv import load_dotenv
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -1119,6 +1117,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        metadata: dict | list[dict] | None = None,
     ) -> str:
         """Sync Insert documents with checkpoint support
 
@@ -1131,6 +1130,7 @@ class LightRAG:
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            metadata: single dict or list of dicts containing temporal metadata (sequence_index, effective_date, doc_type)
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1144,6 +1144,7 @@ class LightRAG:
                 ids,
                 file_paths,
                 track_id,
+                metadata,
             )
         )
 
@@ -1155,6 +1156,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        metadata: dict | list[dict] | None = None,
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -1167,6 +1169,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            metadata: single dict or list of dicts containing temporal metadata (sequence_index, effective_date, doc_type)
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1175,7 +1178,9 @@ class LightRAG:
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
+        await self.apipeline_enqueue_documents(
+            input, ids, file_paths, track_id, metadata
+        )
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -1260,6 +1265,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        metadata: dict | list[dict] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1274,6 +1280,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            metadata: single dict or list of dicts containing temporal metadata (sequence_index, effective_date, doc_type)
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1287,6 +1294,8 @@ class LightRAG:
             ids = [ids]
         if isinstance(file_paths, str):
             file_paths = [file_paths]
+        if isinstance(metadata, dict):
+            metadata = [metadata]
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -1300,6 +1309,22 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
+        # If metadata is provided, ensure it matches the number of documents
+        if metadata is not None:
+            if len(metadata) != len(input):
+                raise ValueError(
+                    "Number of metadata dicts must match the number of documents"
+                )
+        else:
+            # If no metadata provided, use defaults
+            metadata = [
+                {
+                    "sequence_index": 0,
+                    "effective_date": "unknown",
+                    "doc_type": "unknown",
+                }
+            ] * len(input)
+
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
             # Check if the number of IDs matches the number of documents
@@ -1312,31 +1337,32 @@ class LightRAG:
 
             # Generate contents dict and remove duplicates in one pass
             unique_contents = {}
-            for id_, doc, path in zip(ids, input, file_paths):
+            for id_, doc, path, meta in zip(ids, input, file_paths, metadata):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 if cleaned_content not in unique_contents:
-                    unique_contents[cleaned_content] = (id_, path)
+                    unique_contents[cleaned_content] = (id_, path, meta)
 
             # Reconstruct contents with unique content
             contents = {
-                id_: {"content": content, "file_path": file_path}
-                for content, (id_, file_path) in unique_contents.items()
+                id_: {"content": content, "file_path": file_path, "metadata": meta}
+                for content, (id_, file_path, meta) in unique_contents.items()
             }
         else:
             # Clean input text and remove duplicates in one pass
-            unique_content_with_paths = {}
-            for doc, path in zip(input, file_paths):
+            unique_content_with_paths_and_meta = {}
+            for doc, path, meta in zip(input, file_paths, metadata):
                 cleaned_content = sanitize_text_for_encoding(doc)
-                if cleaned_content not in unique_content_with_paths:
-                    unique_content_with_paths[cleaned_content] = path
+                if cleaned_content not in unique_content_with_paths_and_meta:
+                    unique_content_with_paths_and_meta[cleaned_content] = (path, meta)
 
-            # Generate contents dict of MD5 hash IDs and documents with paths
+            # Generate contents dict of MD5 hash IDs and documents with paths and metadata
             contents = {
                 compute_mdhash_id(content, prefix="doc-"): {
                     "content": content,
                     "file_path": path,
+                    "metadata": meta,
                 }
-                for content, path in unique_content_with_paths.items()
+                for content, (path, meta) in unique_content_with_paths_and_meta.items()
             }
 
         # 2. Generate document initial status (without content)
@@ -1391,6 +1417,7 @@ class LightRAG:
             doc_id: {
                 "content": contents[doc_id]["content"],
                 "file_path": contents[doc_id]["file_path"],
+                "metadata": contents[doc_id]["metadata"],
             }
             for doc_id in new_docs.keys()
         }
@@ -1806,6 +1833,14 @@ class LightRAG:
                                     f"Document content not found in full_docs for doc_id: {doc_id}"
                                 )
                             content = content_data["content"]
+                            doc_metadata = content_data.get(
+                                "metadata",
+                                {
+                                    "sequence_index": 0,
+                                    "effective_date": "unknown",
+                                    "doc_type": "unknown",
+                                },
+                            )
 
                             # Call chunking function, supporting both sync and async implementations
                             chunking_result = self.chunking_func(
@@ -1828,13 +1863,20 @@ class LightRAG:
                                     f"got {type(chunking_result)}"
                                 )
 
-                            # Build chunks dictionary
+                            # Build chunks dictionary with metadata
                             chunks: dict[str, Any] = {
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    "sequence_index": doc_metadata.get(
+                                        "sequence_index", 0
+                                    ),
+                                    "effective_date": doc_metadata.get(
+                                        "effective_date", "unknown"
+                                    ),
+                                    "doc_type": doc_metadata.get("doc_type", "unknown"),
                                 }
                                 for dp in chunking_result
                             }
@@ -2708,7 +2750,7 @@ class LightRAG:
         try:
             query_result = None
 
-            if param.mode in ["local", "global", "hybrid", "mix"]:
+            if param.mode in ["local", "global", "hybrid", "mix", "temporal"]:
                 query_result = await kg_query(
                     query.strip(),
                     self.chunk_entity_relation_graph,

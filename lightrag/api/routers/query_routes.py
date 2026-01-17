@@ -4,11 +4,13 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 from typing import Any, Dict, List, Literal, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.base import QueryParam
-from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
+
+from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.base import QueryParam
+from lightrag.utils import logger
 
 router = APIRouter(tags=["query"])
 
@@ -19,9 +21,11 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
-        default="mix",
-        description="Query mode",
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "temporal"] = (
+        Field(
+            default="mix",
+            description="Query mode",
+        )
     )
 
     only_need_context: Optional[bool] = Field(
@@ -93,6 +97,11 @@ class QueryRequest(BaseModel):
     enable_rerank: Optional[bool] = Field(
         default=None,
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
+    )
+
+    reference_date: Optional[str] = Field(
+        default=None,
+        description="Reference date for temporal mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='temporal'.",
     )
 
     include_references: Optional[bool] = Field(

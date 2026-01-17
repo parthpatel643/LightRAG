@@ -1,36 +1,38 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from enum import Enum
 import os
-from dotenv import load_dotenv
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import (
     Any,
-    Literal,
-    TypedDict,
-    TypeVar,
+    AsyncIterator,
     Callable,
-    Optional,
     Dict,
     List,
-    AsyncIterator,
+    Literal,
+    Optional,
+    TypedDict,
+    TypeVar,
 )
-from .utils import EmbeddingFunc
-from .types import KnowledgeGraph
+
+from dotenv import load_dotenv
+
 from .constants import (
-    DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
+    DEFAULT_HISTORY_TURNS,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_HISTORY_TURNS,
-    DEFAULT_OLLAMA_MODEL_NAME,
-    DEFAULT_OLLAMA_MODEL_TAG,
-    DEFAULT_OLLAMA_MODEL_SIZE,
     DEFAULT_OLLAMA_CREATED_AT,
     DEFAULT_OLLAMA_DIGEST,
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_SIZE,
+    DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_TOP_K,
 )
+from .types import KnowledgeGraph
+from .utils import EmbeddingFunc
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -76,6 +78,10 @@ class TextChunkSchema(TypedDict):
     content: str
     full_doc_id: str
     chunk_order_index: int
+    # Temporal metadata fields
+    sequence_index: int  # Versioning sequence number
+    effective_date: str  # Document effective date
+    doc_type: str  # Document type (base, amendment, etc.)
 
 
 T = TypeVar("T")
@@ -85,13 +91,16 @@ T = TypeVar("T")
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "temporal"] = (
+        "mix"
+    )
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
     - "hybrid": Combines local and global retrieval methods.
     - "naive": Performs a basic search without advanced techniques.
     - "mix": Integrates knowledge graph and vector retrieval.
+    - "temporal": Hybrid mode with version filtering based on reference_date.
     """
 
     only_need_context: bool = False
@@ -139,6 +148,13 @@ class QueryParam:
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
+    """
+
+    reference_date: str | None = None
+    """Reference date for temporal mode queries.
+    Used to filter versioned entities by their effective_date.
+    Format: 'YYYY-MM-DD' (e.g., '2024-01-01').
+    Only applicable when mode='temporal'.
     """
 
     # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM

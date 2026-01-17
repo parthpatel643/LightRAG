@@ -15,6 +15,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
+import StagingAreaDialog from '@/components/documents/StagingAreaDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
@@ -1188,6 +1189,7 @@ export default function DocumentManager() {
             ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
+            <StagingAreaDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
             <UploadDocumentsDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
             <PipelineStatusDialog
               open={showPipelineStatus}

@@ -95,7 +95,7 @@ export type LightragDocumentsScanProgress = {
  * - "mix": Integrates knowledge graph and vector retrieval.
  * - "bypass": Bypasses knowledge retrieval and directly uses the LLM.
  */
-export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
+export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass' | 'temporal'
 
 export type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -138,6 +138,8 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Reference date for temporal mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='temporal'. */
+  reference_date?: string
 }
 
 export type QueryResponse = {
@@ -791,10 +793,28 @@ export const insertTexts = async (texts: string[]): Promise<DocActionResponse> =
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  metadata?: {
+    sequence_index?: number
+    effective_date?: string
+    doc_type?: string
+  }
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  
+  // Add metadata fields if provided
+  if (metadata) {
+    if (metadata.sequence_index !== undefined) {
+      formData.append('sequence_index', metadata.sequence_index.toString())
+    }
+    if (metadata.effective_date) {
+      formData.append('effective_date', metadata.effective_date)
+    }
+    if (metadata.doc_type) {
+      formData.append('doc_type', metadata.doc_type)
+    }
+  }
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {

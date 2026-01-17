@@ -1,73 +1,74 @@
 from __future__ import annotations
-from functools import partial
-from pathlib import Path
 
 import asyncio
 import json
-import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+import time
 from collections import Counter, defaultdict
+from functools import partial
+from pathlib import Path
+from typing import Any, AsyncIterator, Literal, overload
 
-from lightrag.exceptions import (
-    PipelineCancelledException,
-    ChunkTokenLimitExceededError,
-)
-from lightrag.utils import (
-    logger,
-    compute_mdhash_id,
-    Tokenizer,
-    is_float_regex,
-    sanitize_and_normalize_extracted_text,
-    pack_user_ass_to_openai_messages,
-    split_string_by_multi_markers,
-    truncate_list_by_token_size,
-    compute_args_hash,
-    handle_cache,
-    save_to_cache,
-    CacheData,
-    use_llm_func_with_cache,
-    update_chunk_cache_list,
-    remove_think_tags,
-    pick_by_weighted_polling,
-    pick_by_vector_similarity,
-    process_chunks_unified,
-    safe_vdb_operation_with_exception,
-    create_prefixed_exception,
-    fix_tuple_delimiter_corruption,
-    convert_to_user_format,
-    generate_reference_list_from_chunks,
-    apply_source_ids_limit,
-    merge_source_ids,
-    make_relation_chunk_key,
-)
+import json_repair
+from dotenv import load_dotenv
+
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
-    TextChunkSchema,
+    QueryContextResult,
     QueryParam,
     QueryResult,
-    QueryContextResult,
+    TextChunkSchema,
 )
-from lightrag.prompt import PROMPTS
 from lightrag.constants import (
-    GRAPH_FIELD_SEP,
+    DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_FILE_PATHS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_KG_CHUNK_PICK_METHOD,
-    DEFAULT_ENTITY_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
-    SOURCE_IDS_LIMIT_METHOD_KEEP,
+    GRAPH_FIELD_SEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
-    DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
-    DEFAULT_MAX_FILE_PATHS,
-    DEFAULT_ENTITY_NAME_MAX_LENGTH,
+    SOURCE_IDS_LIMIT_METHOD_KEEP,
+)
+from lightrag.exceptions import (
+    ChunkTokenLimitExceededError,
+    PipelineCancelledException,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
-import time
-from dotenv import load_dotenv
+from lightrag.prompt import PROMPTS
+from lightrag.utils import (
+    CacheData,
+    Tokenizer,
+    apply_source_ids_limit,
+    compute_args_hash,
+    compute_mdhash_id,
+    convert_to_user_format,
+    create_prefixed_exception,
+    fix_tuple_delimiter_corruption,
+    generate_reference_list_from_chunks,
+    handle_cache,
+    is_float_regex,
+    logger,
+    make_relation_chunk_key,
+    merge_source_ids,
+    pack_user_ass_to_openai_messages,
+    pick_by_vector_similarity,
+    pick_by_weighted_polling,
+    process_chunks_unified,
+    remove_think_tags,
+    safe_vdb_operation_with_exception,
+    sanitize_and_normalize_extracted_text,
+    save_to_cache,
+    split_string_by_multi_markers,
+    truncate_list_by_token_size,
+    update_chunk_cache_list,
+    use_llm_func_with_cache,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2828,14 +2829,35 @@ async def extract_entities(
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 
+        # Extract temporal metadata for versioning
+        sequence_index = chunk_dp.get("sequence_index", 0)
+        effective_date = chunk_dp.get("effective_date", "unknown")
+        doc_type = chunk_dp.get("doc_type", "unknown")
+
         # Create cache keys collector for batch processing
         cache_keys_collector = []
 
         # Get initial extraction
-        # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**context_base)
+        # Format system prompt with versioning instruction
+        versioning_instruction = ""
+        if sequence_index > 0:
+            versioning_instruction = f"""
+
+**CRITICAL VERSIONING INSTRUCTION:**
+This document has sequence_index={sequence_index} (doc_type={doc_type}, effective_date={effective_date}).
+You MUST append ' [v{sequence_index}]' to EVERY entity name you extract to create versioned entities.
+For example:
+- If you extract "Parking Fee", output it as "Parking Fee [v{sequence_index}]"
+- If you extract "Company A", output it as "Company A [v{sequence_index}]"
+- Apply this suffix to ALL entity names without exception.
+"""
+
+        # Inject versioning instruction into system prompt
+        entity_extraction_system_prompt = (
+            PROMPTS["entity_extraction_system_prompt"].format(**context_base)
+            + versioning_instruction
+        )
+
         # Format user prompts with input_text for each chunk
         entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
@@ -3012,6 +3034,146 @@ async def extract_entities(
     return chunk_results
 
 
+async def filter_by_version(
+    entities: list[dict],
+    relations: list[dict],
+    reference_date: str,
+    text_chunks_db: BaseKVStorage,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Filter entities and relations by version based on reference_date.
+
+    For each base entity name (e.g., "Parking Fee"), keeps only the version
+    with the highest sequence_index where effective_date <= reference_date.
+
+    Args:
+        entities: List of entity dictionaries with 'entity_name' field
+        relations: List of relation dictionaries with 'src_id' and 'tgt_id' fields
+        reference_date: Date string in 'YYYY-MM-DD' format
+        text_chunks_db: Storage to retrieve chunk metadata for effective_date
+
+    Returns:
+        Tuple of (filtered_entities, filtered_relations)
+    """
+    import re
+    from datetime import datetime
+
+    # Parse reference date
+    try:
+        ref_dt = datetime.strptime(reference_date, "%Y-%m-%d")
+    except ValueError:
+        logger.warning(
+            f"Invalid reference_date format: {reference_date}. Expected YYYY-MM-DD. Returning unfiltered results."
+        )
+        return entities, relations
+
+    # Group entities by base name
+    entity_groups = {}  # {base_name: [entity_data, ...]}
+    version_pattern = re.compile(r"^(.*?)\s*\[v(\d+)\]$")
+
+    for entity in entities:
+        entity_name = entity.get("entity_name")
+        if not entity_name:
+            continue
+
+        # Parse entity name to extract base name and version
+        match = version_pattern.match(entity_name)
+        if match:
+            base_name = match.group(1).strip()
+            version_num = int(match.group(2))
+        else:
+            # No version suffix - treat as base entity
+            base_name = entity_name
+            version_num = 0
+
+        if base_name not in entity_groups:
+            entity_groups[base_name] = []
+        entity_groups[base_name].append(
+            {
+                "entity": entity,
+                "version": version_num,
+                "base_name": base_name,
+            }
+        )
+
+    # For each group, find the latest valid version
+    filtered_entities = []
+    valid_entity_names = set()
+
+    for base_name, versions in entity_groups.items():
+        # Get effective dates for each version
+        versions_with_dates = []
+        for v_data in versions:
+            entity = v_data["entity"]
+            version = v_data["version"]
+
+            # Get effective_date from chunk metadata
+            source_id = entity.get("source_id", "")
+            effective_date = "unknown"
+
+            if source_id and text_chunks_db:
+                # Get first chunk to extract metadata
+                chunk_ids = split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP])
+                if chunk_ids:
+                    chunk_data = await text_chunks_db.get_by_id(chunk_ids[0])
+                    if chunk_data:
+                        effective_date = chunk_data.get("effective_date", "unknown")
+
+            # Parse effective date
+            try:
+                if effective_date != "unknown":
+                    eff_dt = datetime.strptime(effective_date, "%Y-%m-%d")
+                else:
+                    # If unknown, assume very old date so it's always included
+                    eff_dt = datetime(1900, 1, 1)
+            except ValueError:
+                logger.warning(
+                    f"Invalid effective_date format: {effective_date} for entity {entity.get('entity_name')}. Skipping."
+                )
+                continue
+
+            versions_with_dates.append(
+                {
+                    "entity": entity,
+                    "version": version,
+                    "effective_date": eff_dt,
+                }
+            )
+
+        # Filter versions by reference_date and pick highest version
+        valid_versions = [
+            v for v in versions_with_dates if v["effective_date"] <= ref_dt
+        ]
+
+        if valid_versions:
+            # Sort by version number (highest first)
+            valid_versions.sort(key=lambda x: x["version"], reverse=True)
+            selected = valid_versions[0]
+            filtered_entities.append(selected["entity"])
+            valid_entity_names.add(selected["entity"].get("entity_name"))
+
+            logger.debug(
+                f"Selected {selected['entity'].get('entity_name')} "
+                f"(v{selected['version']}, date={selected['effective_date'].strftime('%Y-%m-%d')})"
+            )
+
+    # Filter relations: keep only if both src and tgt are in valid entities
+    filtered_relations = []
+    for relation in relations:
+        src_id = relation.get("src_id")
+        tgt_id = relation.get("tgt_id")
+
+        if src_id in valid_entity_names and tgt_id in valid_entity_names:
+            filtered_relations.append(relation)
+
+    logger.info(
+        f"Temporal filter: {len(entities)} -> {len(filtered_entities)} entities, "
+        f"{len(relations)} -> {len(filtered_relations)} relations (ref_date={reference_date})"
+    )
+
+    return filtered_entities, filtered_relations
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -3151,6 +3313,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        query_param.reference_date or "",  # Include reference_date for temporal mode
     )
 
     cached_result = await handle_cache(
@@ -3185,6 +3348,8 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "reference_date": query_param.reference_date
+                or "",  # Include for temporal mode
             }
             await save_to_cache(
                 hashing_kv,
@@ -4082,11 +4247,25 @@ async def _build_query_context(
     )
 
     if not search_result["final_entities"] and not search_result["final_relations"]:
-        if query_param.mode != "mix":
+        if query_param.mode not in ["mix", "temporal"]:
             return None
         else:
             if not search_result["chunk_tracking"]:
                 return None
+
+    # Stage 1.5: Apply temporal filtering if in temporal mode
+    if query_param.mode == "temporal" and query_param.reference_date:
+        logger.info(
+            f"Applying temporal filter with reference_date={query_param.reference_date}"
+        )
+        filtered_entities, filtered_relations = await filter_by_version(
+            search_result["final_entities"],
+            search_result["final_relations"],
+            query_param.reference_date,
+            text_chunks_db,
+        )
+        search_result["final_entities"] = filtered_entities
+        search_result["final_relations"] = filtered_relations
 
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(

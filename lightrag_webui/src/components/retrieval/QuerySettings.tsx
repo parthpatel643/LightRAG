@@ -142,6 +142,7 @@ export default function QuerySettings() {
                       <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
                       <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
                       <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
+                      <SelectItem value="temporal">{t('retrievePanel.querySettings.queryModeOptions.temporal', 'Temporal')}</SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
@@ -151,6 +152,31 @@ export default function QuerySettings() {
                 />
               </div>
             </>
+
+            {/* Reference Date - Only show when mode is temporal */}
+            {querySettings.mode === 'temporal' && (
+              <>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="reference_date" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.referenceDate', 'Reference Date')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.referenceDateTooltip', 'Filter versioned entities by their effective date. Returns entities valid on or before this date.')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Input
+                  id="reference_date"
+                  type="date"
+                  value={querySettings.reference_date || new Date().toISOString().split('T')[0]}
+                  onChange={(e) => handleChange('reference_date', e.target.value)}
+                  className="h-9"
+                />
+              </>
+            )}
 
             {/* Top K */}
             <>
