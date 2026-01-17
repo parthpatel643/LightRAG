@@ -1,46 +1,46 @@
 from __future__ import annotations
-import weakref
-
-import sys
 
 import asyncio
-import html
 import csv
+import html
 import inspect
 import json
 import logging
 import logging.handlers
 import os
 import re
+import sys
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
 from typing import (
-    Any,
-    Protocol,
-    Callable,
     TYPE_CHECKING,
+    Any,
+    Callable,
+    Collection,
+    Iterable,
     List,
     Optional,
-    Iterable,
+    Protocol,
     Sequence,
-    Collection,
 )
+
 import numpy as np
 from dotenv import load_dotenv
 
 from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
-    GRAPH_FIELD_SEP,
+    DEFAULT_LOG_MAX_BYTES,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
-    VALID_SOURCE_IDS_LIMIT_METHODS,
+    GRAPH_FIELD_SEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    VALID_SOURCE_IDS_LIMIT_METHODS,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -3162,6 +3162,23 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         )
 
 
+def _strip_version_tag(name: str) -> str:
+    """
+    Strip version tag [vN] from entity/relation names for LLM display.
+
+    Internal storage keeps version tags for filtering, but LLM context
+    should show clean names to avoid confusion.
+
+    Examples:
+        "Boeing 787 Cabin Cleaning [v4]" -> "Boeing 787 Cabin Cleaning"
+        "Parking Fee [v2]" -> "Parking Fee"
+    """
+    import re
+
+    version_pattern = re.compile(r"\s*\[v\d+\]$")
+    return version_pattern.sub("", name).strip()
+
+
 def convert_to_user_format(
     entities_context: list[dict],
     relations_context: list[dict],
@@ -3184,10 +3201,13 @@ def convert_to_user_format(
             original_entity = entity_id_to_original[entity_name]
 
         if original_entity:
-            # Use original database data
+            # Use original database data, but strip version tags for LLM display
+            clean_entity_name = _strip_version_tag(
+                original_entity.get("entity_name", entity_name)
+            )
             formatted_entities.append(
                 {
-                    "entity_name": original_entity.get("entity_name", entity_name),
+                    "entity_name": clean_entity_name,
                     "entity_type": original_entity.get("entity_type", "UNKNOWN"),
                     "description": original_entity.get("description", ""),
                     "source_id": original_entity.get("source_id", ""),
@@ -3196,10 +3216,11 @@ def convert_to_user_format(
                 }
             )
         else:
-            # Fallback to LLM context data (for backward compatibility)
+            # Fallback to LLM context data (for backward compatibility), strip version tags
+            clean_entity_name = _strip_version_tag(entity_name)
             formatted_entities.append(
                 {
-                    "entity_name": entity_name,
+                    "entity_name": clean_entity_name,
                     "entity_type": entity.get("type", "UNKNOWN"),
                     "description": entity.get("description", ""),
                     "source_id": entity.get("source_id", ""),
@@ -3221,11 +3242,13 @@ def convert_to_user_format(
             original_relation = relation_id_to_original[relation_key]
 
         if original_relation:
-            # Use original database data
+            # Use original database data, but strip version tags for LLM display
+            clean_src_id = _strip_version_tag(original_relation.get("src_id", entity1))
+            clean_tgt_id = _strip_version_tag(original_relation.get("tgt_id", entity2))
             formatted_relationships.append(
                 {
-                    "src_id": original_relation.get("src_id", entity1),
-                    "tgt_id": original_relation.get("tgt_id", entity2),
+                    "src_id": clean_src_id,
+                    "tgt_id": clean_tgt_id,
                     "description": original_relation.get("description", ""),
                     "keywords": original_relation.get("keywords", ""),
                     "weight": original_relation.get("weight", 1.0),
@@ -3235,11 +3258,13 @@ def convert_to_user_format(
                 }
             )
         else:
-            # Fallback to LLM context data (for backward compatibility)
+            # Fallback to LLM context data (for backward compatibility), strip version tags
+            clean_entity1 = _strip_version_tag(entity1)
+            clean_entity2 = _strip_version_tag(entity2)
             formatted_relationships.append(
                 {
-                    "src_id": entity1,
-                    "tgt_id": entity2,
+                    "src_id": clean_entity1,
+                    "tgt_id": clean_entity2,
                     "description": relation.get("description", ""),
                     "keywords": relation.get("keywords", ""),
                     "weight": relation.get("weight", 1.0),

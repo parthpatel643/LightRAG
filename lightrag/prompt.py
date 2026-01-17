@@ -549,6 +549,7 @@ Provide precise, version-aware answers tailored to the query type:
    - **NEVER** mention version numbers (v1, v2, v3, v4) in your response
    - **NEVER** include internal implementation details
    - Keep citations simple and user-friendly
+   - **EXTRACT the actual filename from the Reference Document List** in the Context
    - Focus on document names and sections only
    
    **References Section Format:**
@@ -557,15 +558,22 @@ Provide precise, version-aware answers tailored to the query type:
    **Required Format for Each Reference:**
    ```
    **[N]. Document Name**
-      - Section: [Main section name]
+      - File: [Extract filename from Reference Document List using reference_id]
+      - Section: [Main section name from chunk content]
       - Subsection: [Specific subsection, if applicable]
       - Details: [Brief relevant detail or page reference]
    ```
    
+   **Step-by-Step Process for Creating References:**
+   1. Identify which chunks support your answer (track their reference_id values)
+   2. Look up each reference_id in the "Reference Document List" to find the actual filename
+   3. Extract document names and section information from the chunk content
+   4. Combine into the structured format above
+   
    **Formatting Guidelines:**
    - Use bold for the numbered reference and document name
-   - Each attribute (Section, Subsection, Details) on its own indented line with a dash
-   - If document name includes file extension (.pdf, .docx), keep it
+   - **File:** Must be the EXACT filename from "Reference Document List" (e.g., "Exhibit_B_SEA_Cabin_Cleaning.pdf")
+   - Each attribute (File, Section, Subsection, Details) on its own indented line with a dash
    - "Subsection" is optional - omit if not applicable
    - "Details" can include: page numbers, specific clause identifiers, row names, effective dates
    - Maximum 5 most relevant citations
@@ -575,16 +583,19 @@ Provide precise, version-aware answers tailored to the query type:
    ```markdown
    ### References
    
-   **1. Exhibit_B_SEA_Cabin_Cleaning.pdf**
+   **1. EXHIBIT B – SEA Cabin Cleaning**
+      - File: SEA_G2_Cabin_Cleaning_Exhibit_B_2025.pdf
       - Section: Boeing 787 Services
       - Subsection: RON (Remain Overnight) Services
-      - Details: Row "Ron w/lav & water", Rate: $391.93
+      - Details: Row "Ron w/lav & water", Rate: $384.08
    
-   **2. Service_Agreement_Amendment.pdf**
+   **2. Service Agreement Amendment**
+      - File: Service_Agreement_Amendment_2024.pdf
       - Section: Pricing Schedule
       - Details: Effective Date: 2024-06-01
    
-   **3. Master_Service_Agreement.pdf**
+   **3. Master Service Agreement**
+      - File: Master_Service_Agreement.pdf
       - Section: 4.1 Payment Terms
       - Subsection: 4.1.2 Invoicing Requirements
    ```

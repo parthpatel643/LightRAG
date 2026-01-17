@@ -57,7 +57,11 @@ async def ingest_documents(
                     f"Ingesting: {doc_data['metadata']['source']} (v{doc_data['metadata']['sequence_index']})"
                 )
                 await rag.ainsert(
-                    input=doc_data["content"], metadata=doc_data["metadata"]
+                    input=doc_data["content"],
+                    file_paths=doc_data["metadata"][
+                        "source"
+                    ],  # Pass source filename for citations
+                    metadata=doc_data["metadata"],
                 )
 
         except ImportError:
@@ -168,6 +172,10 @@ Examples:
         working_dir=str(working_dir),
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
+        entity_extract_max_gleaning=3,
+        # chunk_token_size=int(os.getenv("CHUNK_SIZE", 2000)),
+        # chunk_overlap_token_size=int(os.getenv("CHUNK_OVERLAP_SIZE", 200)),
+        enable_llm_cache=False,
     )
 
     # Initialize storages

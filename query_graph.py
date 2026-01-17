@@ -260,6 +260,7 @@ Examples:
         working_dir=str(working_dir),
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
+        enable_llm_cache=False,
     )
 
     # Initialize storages
