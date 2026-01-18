@@ -3121,8 +3121,8 @@ async def filter_by_version(
         if src_id in valid_entity_names and tgt_id in valid_entity_names:
             filtered_relations.append(relation)
 
-    logger.info(
-        f"Temporal filter (Sprint 6 - Sequence Only): {len(entities)} -> {len(filtered_entities)} entities, "
+    logger.debug(
+        f"Temporal filter: {len(entities)} -> {len(filtered_entities)} entities, "
         f"{len(relations)} -> {len(filtered_relations)} relations"
     )
 
@@ -3628,7 +3628,7 @@ async def _perform_kg_search(
             )
 
         # Get vector chunks for mix mode
-        if query_param.mode == "mix" and chunks_vdb:
+        if query_param.mode in ["mix", "temporal"] and chunks_vdb:
             vector_chunks = await _get_vector_context(
                 query,
                 chunks_vdb,

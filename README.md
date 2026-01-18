@@ -178,6 +178,24 @@ uv pip install lightrag-hku
 # Or: pip install lightrag-hku
 ```
 
+## 📚 Documentation
+
+### Temporal RAG System
+
+LightRAG includes comprehensive temporal capabilities for version-aware knowledge management:
+
+- **[Architecture Guide](./docs/ARCHITECTURE.md)** - Learn about the Split-Node and Sequence-First architecture
+- **[Retrieval Logic](./docs/RETRIEVAL_LOGIC.md)** - Understand the Max-Sequence filtering algorithm
+- **[User Guide](./docs/USER_GUIDE.md)** - Step-by-step instructions for staging and querying
+- **[API Reference](./docs/API_CHANGES.md)** - FastAPI endpoints for temporal features
+
+### Additional Resources
+
+- **[Offline Deployment Guide](./docs/OfflineDeployment.md)** - Air-gapped environment setup
+- **[Docker Deployment](./docs/DockerDeployment.md)** - Container deployment instructions
+- **[Algorithm Details](./docs/Algorithm.md)** - Deep dive into LightRAG's core algorithms
+- **[Frontend Build Guide](./docs/FrontendBuildGuide.md)** - Web UI development setup
+
 ## Quick Start
 
 ### LLM and Technology Stack Requirements for LightRAG
