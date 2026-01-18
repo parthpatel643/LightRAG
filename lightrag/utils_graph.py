@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import time
 import asyncio
+import time
 from typing import Any, cast
 
-from .base import DeletionResult
-from .kg.shared_storage import get_storage_keyed_lock
+from .base import DeletionResult, StorageNameSpace
 from .constants import GRAPH_FIELD_SEP
+from .kg.shared_storage import get_storage_keyed_lock
 from .utils import compute_mdhash_id, logger
-from .base import StorageNameSpace
 
 
 async def _persist_graph_updates(
@@ -390,7 +389,7 @@ async def _edit_entity_impl(
     await entities_vdb.upsert(entity_data)
 
     if entity_chunks_storage is not None or relation_chunks_storage is not None:
-        from .utils import make_relation_chunk_key, compute_incremental_chunk_ids
+        from .utils import compute_incremental_chunk_ids, make_relation_chunk_key
 
         if entity_chunks_storage is not None:
             storage_key = original_entity_name if is_renaming else entity_name
@@ -812,8 +811,8 @@ async def aedit_relation(
             #    - relation_chunks_storage has no existing data (migration/initialization scenario)
             if relation_chunks_storage is not None:
                 from .utils import (
-                    make_relation_chunk_key,
                     compute_incremental_chunk_ids,
+                    make_relation_chunk_key,
                 )
 
                 storage_key = make_relation_chunk_key(source_entity, target_entity)
@@ -1277,10 +1276,14 @@ async def _merge_entities_impl(
     relation_chunk_tracking = {}  # key: storage_key, value: list of chunk_ids
     old_relation_keys_to_delete = []
 
-    for src, tgt, edge_data in all_relations:
-        relations_to_delete.append(compute_mdhash_id(src + tgt, prefix="rel-"))
-        relations_to_delete.append(compute_mdhash_id(tgt + src, prefix="rel-"))
+    # Pre-compute relation deletions using list comprehension
+    relations_to_delete.extend(
+        compute_mdhash_id(src + tgt, prefix="rel-")
+        for src, tgt, edge_data in all_relations
+        for src, tgt in [(src, tgt), (tgt, src)]
+    )
 
+    for src, tgt, edge_data in all_relations:
         # Collect old chunk tracking key for deletion
         if relation_chunks_storage is not None:
             from .utils import make_relation_chunk_key

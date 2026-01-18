@@ -118,7 +118,7 @@ from lightrag.utils import (
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-# TODO: TO REMOVE @Yannick
+# Legacy config.ini support - retained for backward compatibility
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
@@ -426,9 +426,13 @@ class LightRAG:
     # Storages Management
     # ---
 
-    # TODO: Deprecated (LightRAG will never initialize storage automatically on creation，and finalize should be call before destroying)
     auto_manage_storages_states: bool = field(default=False)
-    """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
+    """DEPRECATED: This field is no longer used and will be removed in a future version.
+    
+    Storage lifecycle should be managed explicitly through initialize_storages()
+    and finalize_storages() calls. This field is retained only for backward
+    compatibility and has no effect.
+    """
 
     cosine_better_than_threshold: float = field(
         default=float(os.getenv("COSINE_THRESHOLD", 0.2))
@@ -440,10 +444,53 @@ class LightRAG:
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
+        """Initialize LightRAG instance after dataclass construction.
+
+        This method performs critical initialization steps including:
+        - Storage backend verification and environment variable validation
+        - Tokenizer initialization with backward compatibility
+        - Embedding function configuration with rate limiting
+        - LLM model setup for entity extraction and summarization
+        - Storage adapters initialization (KV, Vector, Graph, Document status)
+        - Configuration validation and warning for suboptimal settings
+
+        The initialization follows a strict order to ensure dependencies are met:
+        1. Deprecated parameter warnings and cleanup
+        2. Storage implementation verification
+        3. Tokenizer setup
+        4. Embedding model initialization
+        5. LLM configuration
+        6. Storage backend connections
+
+        Raises:
+            ValueError: If storage implementation is incompatible or misconfigured
+            RuntimeError: If required environment variables are missing
+            Exception: If storage backend initialization fails
+
+        Notes:
+            - Creates working_dir if it doesn't exist
+            - Applies rate limiting decorators to embedding and LLM functions
+            - Validates configuration parameters and logs warnings for issues
+        """
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
 
+        self._handle_deprecated_parameters()
+        initialize_share_data()
+        self._setup_working_directory()
+        self._verify_and_validate_storage_config()
+        self._init_tokenizer()
+        self._init_ollama_config()
+        self._validate_config_parameters()
+        self._init_embedding_function()
+        self._init_storage_classes()
+        self._init_storage_instances()
+        self._init_llm_function()
+        self._storages_status = StoragesStatus.CREATED
+
+    def _handle_deprecated_parameters(self) -> None:
+        """Handle deprecated log_level and log_file_path parameters."""
         # Handle deprecated parameters
         if self.log_level is not None:
             warnings.warn(
@@ -464,13 +511,14 @@ class LightRAG:
         if hasattr(self, "log_file_path"):
             delattr(self, "log_file_path")
 
-        initialize_share_data()
-
+    def _setup_working_directory(self) -> None:
+        """Create working directory if it doesn't exist."""
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
 
-        # Verify storage implementation compatibility and environment variables
+    def _verify_and_validate_storage_config(self) -> None:
+        """Verify storage implementation compatibility and environment variables."""
         storage_configs = [
             ("KV_STORAGE", self.kv_storage),
             ("VECTOR_STORAGE", self.vector_storage),
@@ -490,6 +538,8 @@ class LightRAG:
             **self.vector_db_storage_cls_kwargs,
         }
 
+    def _init_tokenizer(self) -> None:
+        """Initialize tokenizer with backward compatibility support."""
         # Init Tokenizer
         # Post-initialization hook to handle backward compatabile tokenizer initialization based on provided parameters
         if self.tokenizer is None:
@@ -498,10 +548,14 @@ class LightRAG:
             else:
                 self.tokenizer = TiktokenTokenizer()
 
+    def _init_ollama_config(self) -> None:
+        """Initialize Ollama server configuration if not provided."""
         # Initialize ollama_server_infos if not provided
         if self.ollama_server_infos is None:
             self.ollama_server_infos = OllamaServerInfos()
 
+    def _validate_config_parameters(self) -> None:
+        """Validate configuration parameters and log warnings for suboptimal settings."""
         # Validate config
         if self.force_llm_summary_on_merge < 3:
             logger.warning(
@@ -516,6 +570,8 @@ class LightRAG:
                 f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
+    def _init_embedding_function(self) -> None:
+        """Initialize and configure embedding function with rate limiting."""
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
         original_embedding_func = self.embedding_func
@@ -548,6 +604,16 @@ class LightRAG:
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)
 
+    def _init_storage_classes(self) -> None:
+        """Initialize storage class references with global_config partial application."""
+        # Get global config for storage initialization
+        original_embedding_func = self.embedding_func
+        global_config = asdict(self)
+        global_config["embedding_func"] = original_embedding_func
+
+        _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
+        logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
+
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (
             self._get_storage_class(self.kv_storage)
@@ -570,6 +636,12 @@ class LightRAG:
 
         # Initialize document status storage
         self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
+
+    def _init_storage_instances(self) -> None:
+        """Create storage instances for all data types (KV, Vector, Graph, DocStatus)."""
+        # Get global_config for storage instances
+        global_config = asdict(self)
+        global_config["embedding_func"] = self.embedding_func
 
         self.llm_response_cache: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
             namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
@@ -647,6 +719,8 @@ class LightRAG:
             embedding_func=None,
         )
 
+    def _init_llm_function(self) -> None:
+        """Initialize LLM function with rate limiting and caching configuration."""
         # Directly use llm_response_cache, don't create a new object
         hashing_kv = self.llm_response_cache
 
@@ -662,8 +736,6 @@ class LightRAG:
                 **self.llm_model_kwargs,
             )
         )
-
-        self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
@@ -824,7 +896,31 @@ class LightRAG:
                 raise e
 
     async def _migrate_entity_relation_data(self, processed_docs: dict):
-        """Migrate existing entity and relation data to full_entities and full_relations storage"""
+        """Migrate entity and relation data to full_entities and full_relations storage.
+
+        This method creates document-level mappings of entities and relationships by:
+        1. Building chunk_id to doc_id reverse mapping from processed documents
+        2. Iterating through all graph nodes (entities) to identify document ownership
+        3. Iterating through all graph edges (relations) to identify document ownership
+        4. Storing entity and relation sets per document for efficient retrieval
+
+        Args:
+            processed_docs: Dictionary mapping doc_id to DocumentStatus objects.
+                           Each DocumentStatus contains chunks_list for reverse mapping.
+
+        Storage Updates:
+            - full_entities: Maps doc_id -> set of entity names belonging to that document
+            - full_relations: Maps doc_id -> set of (source, target) tuples for that document
+
+        Notes:
+            - Uses GRAPH_FIELD_SEP to split source_id into constituent chunk IDs
+            - Processes all nodes and edges in single pass for efficiency
+            - Only migrates entities/relations that have associated documents
+
+        Example:
+            If entity "Apple Inc" appears in chunks [chunk1, chunk2] from doc_A,
+            then full_entities["doc_A"] will contain "Apple Inc".
+        """
         logger.info(f"Starting data migration for {len(processed_docs)} documents")
 
         # Create mapping from chunk_id to doc_id
@@ -921,7 +1017,35 @@ class LightRAG:
         )
 
     async def _migrate_chunk_tracking_storage(self) -> None:
-        """Ensure entity/relation chunk tracking KV stores exist and are seeded."""
+        """Migrate and seed entity/relation chunk tracking storage.
+
+        This method ensures backward compatibility by populating chunk tracking stores
+        from existing graph data. It performs the following:
+
+        1. Check if entity_chunks and relation_chunks stores need migration (are empty)
+        2. Fetch all nodes (entities) and edges (relations) from graph storage
+        3. Process nodes/edges in batches to extract chunk_id associations
+        4. Store bidirectional mappings:
+           - entity_chunks: entity_name -> list of chunk_ids
+           - relation_chunks: (src_entity, tgt_entity) -> list of chunk_ids
+
+        Processing:
+            - Uses BATCH_SIZE=500 for memory-efficient processing
+            - Splits source_id by GRAPH_FIELD_SEP to extract individual chunk IDs
+            - Handles missing or malformed entity/relation identifiers gracefully
+
+        Raises:
+            Exception: Re-raises exceptions from storage check operations after logging
+
+        Notes:
+            - Safe to call multiple times; skips migration if stores are already populated
+            - Essential for document deletion and entity rebuilding operations
+            - Enables efficient chunk-level tracking for incremental updates
+
+        Storage Schema:
+            entity_chunks["Apple Inc"] = ["chunk1", "chunk2", ...]
+            relation_chunks["(Apple Inc, Tim Cook)"] = ["chunk5", ...]
+        """
 
         if not self.entity_chunks or not self.relation_chunks:
             return
@@ -1187,22 +1311,40 @@ class LightRAG:
 
         return track_id
 
-    # TODO: deprecated, use insert instead
     def insert_custom_chunks(
         self,
         full_text: str,
         text_chunks: list[str],
         doc_id: str | list[str] | None = None,
     ) -> None:
+        """DEPRECATED: Use insert() instead.
+
+        This method is retained for backward compatibility but will be removed
+        in a future version. Please migrate to insert() for new code.
+        """
+        warnings.warn(
+            "insert_custom_chunks() is deprecated, use insert() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         loop = always_get_an_event_loop()
         loop.run_until_complete(
             self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
         )
 
-    # TODO: deprecated, use ainsert instead
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
+        """DEPRECATED: Use ainsert() instead.
+
+        This method is retained for backward compatibility but will be removed
+        in a future version. Please migrate to ainsert() for new code.
+        """
+        warnings.warn(
+            "ainsert_custom_chunks() is deprecated, use ainsert() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         update_storage = False
         try:
             # Clean input texts

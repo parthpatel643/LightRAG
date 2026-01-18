@@ -174,19 +174,26 @@ async def safe_vdb_operation_with_exception(
 
 
 def get_env_value(
-    env_key: str, default: any, value_type: type = str, special_none: bool = False
-) -> any:
-    """
-    Get value from environment variable with type conversion
+    env_key: str, default: Any, value_type: type = str, special_none: bool = False
+) -> Any:
+    """Get value from environment variable with type conversion.
 
     Args:
-        env_key (str): Environment variable key
-        default (any): Default value if env variable is not set
-        value_type (type): Type to convert the value to
-        special_none (bool): If True, return None when value is "None"
+        env_key: Environment variable key
+        default: Default value if env variable is not set
+        value_type: Type to convert the value to (str, int, float, bool, list)
+        special_none: If True, return None when value is "None" string
 
     Returns:
-        any: Converted value from environment or default
+        Converted value from environment or default
+
+    Examples:
+        >>> get_env_value("MAX_TOKENS", 1000, int)
+        1000  # if MAX_TOKENS not set
+
+        >>> # With env: MAX_TOKENS=2048
+        >>> get_env_value("MAX_TOKENS", 1000, int)
+        2048
     """
     value = os.getenv(env_key)
     if value is None:
@@ -1616,13 +1623,13 @@ async def aexport_data(
 
     # --- Relationships (from VectorDB) ---
     all_relationships = await relationships_vdb.client_storage
-    for rel in all_relationships["data"]:
-        relationships_data.append(
-            {
-                "relationship_id": rel["__id__"],
-                "data": str(rel),  # Convert to string for compatibility
-            }
-        )
+    relationships_data.extend(
+        {
+            "relationship_id": rel["__id__"],
+            "data": str(rel),  # Convert to string for compatibility
+        }
+        for rel in all_relationships["data"]
+    )
 
     # Export based on format
     if file_format == "csv":
@@ -1865,7 +1872,24 @@ def export_data(
 
 
 def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any]:
-    """Lazily import a class from an external module based on the package of the caller."""
+    """Lazily import a class from an external module based on the package of the caller.
+
+    This function enables lazy importing to avoid circular dependencies and reduce
+    initial import overhead. The actual import is deferred until the returned
+    callable is invoked.
+
+    Args:
+        module_name: Fully qualified module name to import from
+        class_name: Name of the class to retrieve from the module
+
+    Returns:
+        Callable that when invoked, imports the module and instantiates the class
+        with the provided arguments.
+
+    Example:
+        >>> MyClass = lazy_external_import("my.module", "MyClass")
+        >>> instance = MyClass(arg1, arg2)  # Import happens here
+    """
     # Get the caller's module and package
     import inspect
 
@@ -3370,8 +3394,9 @@ def generate_reference_list_from_chunks(
         updated_chunks.append(chunk_copy)
 
     # 5. Build reference_list
-    reference_list = []
-    for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
+    reference_list = [
+        {"reference_id": str(i + 1), "file_path": file_path}
+        for i, file_path in enumerate(unique_file_paths)
+    ]
 
     return reference_list, updated_chunks

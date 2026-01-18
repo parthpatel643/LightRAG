@@ -157,9 +157,13 @@ class QueryParam:
     Only applicable when mode='temporal'.
     """
 
-    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
-    """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
+    """DEPRECATED: This field is no longer used in the codebase.
+    
+    All conversation_history messages are now sent to LLM directly without
+    turn-based filtering. This field is retained for backward compatibility
+    and has no effect on query processing.
+    """
 
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
@@ -651,10 +655,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges: List of edges to be deleted, each edge is a (source, target) tuple
         """
 
-    # TODO: deprecated
     @abstractmethod
     async def get_all_labels(self) -> list[str]:
         """Get all labels in the graph.
+
+        DEPRECATED: This method may be removed in a future version.
+        Implementations should be updated to avoid reliance on this method.
 
         Returns:
             A list of all node labels in the graph, sorted alphabetically

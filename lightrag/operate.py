@@ -105,6 +105,58 @@ def chunking_by_token_size(
     chunk_overlap_token_size: int = 100,
     chunk_token_size: int = 1200,
 ) -> list[dict[str, Any]]:
+    """Split text content into chunks based on token size with optional overlap.
+
+    Implements two chunking strategies:
+    1. Token-based sliding window (default): Chunks by token count with overlap
+    2. Character-based split: Splits by delimiter, validates/subdivides if needed
+
+    Args:
+        tokenizer: Tokenizer instance for encoding/decoding text
+        content: Text content to be chunked
+        split_by_character: Optional delimiter to split text (e.g., '\n\n', '\n')
+                           If None, uses pure token-based sliding window
+        split_by_character_only: If True, raises error when character-split chunks
+                                exceed token limit. If False, subdivides large chunks.
+        chunk_overlap_token_size: Number of overlapping tokens between consecutive chunks
+                                 (default: 100). Only used in sliding window mode.
+        chunk_token_size: Maximum tokens per chunk (default: 1200)
+
+    Returns:
+        List of chunk dictionaries, each containing:
+        - 'tokens': Number of tokens in the chunk
+        - 'content': Chunk text content (stripped)
+        - 'chunk_order_index': Sequential index of the chunk (0-based)
+
+    Raises:
+        ChunkTokenLimitExceededError: When split_by_character_only=True and a
+                                     character-delimited chunk exceeds chunk_token_size
+
+    Behavior:
+        Character-based mode (split_by_character provided):
+        - Splits content by delimiter first
+        - If split_by_character_only=True: validates all chunks fit limit
+        - If split_by_character_only=False: subdivides oversized chunks with overlap
+
+        Token-based mode (split_by_character=None):
+        - Uses sliding window approach with overlap
+        - Ensures smooth transitions between chunks
+        - Last chunk may be smaller than chunk_token_size
+
+    Examples:
+        >>> tokenizer = TiktokenTokenizer()
+        >>> chunks = chunking_by_token_size(
+        ...     tokenizer, "Long text...", chunk_token_size=500
+        ... )
+        >>> len(chunks[0]['tokens']) <= 500
+        True
+
+        >>> # Character-based with validation
+        >>> chunks = chunking_by_token_size(
+        ...     tokenizer, "Para1\n\nPara2\n\nPara3",
+        ...     split_by_character="\n\n", split_by_character_only=True
+        ... )
+    """
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
@@ -140,14 +192,14 @@ def chunking_by_token_size(
                         )
                 else:
                     new_chunks.append((len(_tokens), chunk))
-        for index, (_len, chunk) in enumerate(new_chunks):
-            results.append(
-                {
-                    "tokens": _len,
-                    "content": chunk.strip(),
-                    "chunk_order_index": index,
-                }
-            )
+        results = [
+            {
+                "tokens": _len,
+                "content": chunk.strip(),
+                "chunk_order_index": index,
+            }
+            for index, (_len, chunk) in enumerate(new_chunks)
+        ]
     else:
         for index, start in enumerate(
             range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
@@ -299,14 +351,15 @@ async def _summarize_descriptions(
     description_type: str,
     description_name: str,
     description_list: list[str],
-    global_config: dict,
+    global_config: dict[str, Any],
     llm_response_cache: BaseKVStorage | None = None,
 ) -> str:
     """Helper function to summarize a list of descriptions using LLM.
 
     Args:
-        entity_or_relation_name: Name of the entity or relation being summarized
-        descriptions: List of description strings to summarize
+        description_type: Type of entity being summarized ("entity" or "relation")
+        description_name: Name of the entity or relation being summarized
+        description_list: List of description strings to summarize
         global_config: Global configuration containing LLM function and settings
         llm_response_cache: Optional cache for LLM responses
 
@@ -382,7 +435,44 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
-):
+) -> dict[str, object] | None:
+    """Extract and validate a single entity from LLM output.
+
+    Parses entity extraction records in the format:
+    ["entity", entity_name, entity_type, description]
+
+    Args:
+        record_attributes: List of 4 elements from LLM output representing an entity.
+                          Expected format: ["entity", name, type, description]
+        chunk_key: Unique identifier for the source text chunk
+        timestamp: Unix timestamp for temporal tracking
+        file_path: Source file path for provenance (default: "unknown_source")
+
+    Returns:
+        Dictionary with entity fields if extraction successful, None otherwise.
+        Success dict contains: entity_name, entity_type, description, source_id,
+                              file_path, timestamp
+
+    Validation:
+        - Ensures exactly 4 fields in correct format
+        - Sanitizes and normalizes entity name, type, and description
+        - Rejects empty names/descriptions after cleaning
+        - Validates entity type (no special characters, lowercased)
+        - Removes inner quotes and normalizes whitespace
+
+    Error Handling:
+        - Returns None for malformed input (logs warning)
+        - Returns None for validation failures (logs appropriate level)
+        - Catches UnicodeDecodeError for encoding issues
+        - Logs unexpected exceptions before returning None
+
+    Example:
+        >>> await _handle_single_entity_extraction(
+        ...     ["entity", "Apple Inc", "Organization", "Tech company"],
+        ...     "chunk_123", 1705622400, "doc.txt"
+        ... )
+        {'entity_name': 'Apple Inc', 'entity_type': 'organization', ...}
+    """
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
@@ -437,13 +527,18 @@ async def _handle_single_entity_extraction(
             timestamp=timestamp,
         )
 
-    except ValueError as e:
+    except (ValueError, UnicodeDecodeError) as e:
         logger.error(
-            f"Entity extraction failed due to encoding issues in chunk {chunk_key}: {e}"
+            f"Entity extraction failed due to encoding/value error in chunk {chunk_key}: {e}"
+        )
+        return None
+    except (KeyError, IndexError) as e:
+        logger.error(
+            f"Entity extraction failed due to malformed data structure in chunk {chunk_key}: {e}"
         )
         return None
     except Exception as e:
-        logger.error(
+        logger.exception(
             f"Entity extraction failed with unexpected error in chunk {chunk_key}: {e}"
         )
         return None
@@ -454,7 +549,47 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
-):
+) -> dict[str, object] | None:
+    """Extract and validate a single relationship from LLM output.
+
+    Parses relationship extraction records in the format:
+    ["relation", source_entity, target_entity, keywords, description, weight?]
+
+    Args:
+        record_attributes: List of 5+ elements from LLM output representing a relation.
+                          Expected format: ["relation", source, target, keywords, description]
+                          Optional 6th element: weight (float, defaults to 1.0)
+        chunk_key: Unique identifier for the source text chunk
+        timestamp: Unix timestamp for temporal tracking
+        file_path: Source file path for provenance (default: "unknown_source")
+
+    Returns:
+        Dictionary with relationship fields if extraction successful, None otherwise.
+        Success dict contains: src_id, tgt_id, weight, description, keywords,
+                              source_id, file_path, timestamp
+
+    Validation:
+        - Ensures at least 5 fields in correct format
+        - Sanitizes and normalizes source/target entity names
+        - Rejects empty entity names after cleaning
+        - Rejects self-loops (source == target)
+        - Normalizes keywords (converts Chinese commas to English)
+        - Parses optional weight field (defaults to 1.0)
+
+    Error Handling:
+        - Returns None for malformed input (logs warning)
+        - Returns None for validation failures (logs debug/info)
+        - Catches UnicodeDecodeError for encoding issues
+        - Catches ValueError for weight parsing failures
+        - Logs unexpected exceptions before returning None
+
+    Example:
+        >>> await _handle_single_relationship_extraction(
+        ...     ["relation", "Apple Inc", "Tim Cook", "CEO_OF", "Tim Cook is CEO"],
+        ...     "chunk_123", 1705622400, "doc.txt"
+        ... )
+        {'src_id': 'Apple Inc', 'tgt_id': 'Tim Cook', 'weight': 1.0, ...}
+    """
     if (
         len(record_attributes) != 5 or "relation" not in record_attributes[0]
     ):  # treat "relationship" and "relation" interchangeable
@@ -519,13 +654,18 @@ async def _handle_single_relationship_extraction(
             timestamp=timestamp,
         )
 
-    except ValueError as e:
+    except (ValueError, UnicodeDecodeError) as e:
         logger.warning(
-            f"Relationship extraction failed due to encoding issues in chunk {chunk_key}: {e}"
+            f"Relationship extraction failed due to encoding/value error in chunk {chunk_key}: {e}"
+        )
+        return None
+    except (KeyError, IndexError) as e:
+        logger.error(
+            f"Relationship extraction failed due to malformed data structure in chunk {chunk_key}: {e}"
         )
         return None
     except Exception as e:
-        logger.warning(
+        logger.exception(
             f"Relationship extraction failed with unexpected error in chunk {chunk_key}: {e}"
         )
         return None
@@ -665,11 +805,27 @@ async def rebuild_knowledge_from_chunks(
                             chunk_relationships[chunk_id][rel_key] = list(rel_list)
                         # Otherwise keep existing version
 
-        except Exception as e:
+        except (json.JSONDecodeError, ValueError) as e:
             status_message = (
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
             )
             logger.info(status_message)  # Per requirement, change to info
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
+            continue
+        except (KeyError, AttributeError) as e:
+            status_message = f"Malformed extraction data for chunk {chunk_id}: {e}"
+            logger.warning(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
+            continue
+        except Exception as e:
+            status_message = f"Unexpected error processing chunk {chunk_id}: {e}"
+            logger.exception(status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = status_message
@@ -789,6 +945,10 @@ async def rebuild_knowledge_from_chunks(
             else:
                 # Task completed successfully, retrieve result to mark as processed
                 task.result()
+        except (asyncio.CancelledError, PipelineCancelledException) as e:
+            # Cancellation exceptions should be prioritized
+            if first_exception is None:
+                first_exception = e
         except Exception as e:
             if first_exception is None:
                 first_exception = e
@@ -1135,9 +1295,13 @@ async def _rebuild_single_entity(
                 retry_delay=0.1,
             )
 
+        except (ValueError, KeyError) as e:
+            error_msg = f"Failed to update entity storage for `{entity_name}` - invalid data: {e}"
+            logger.error(error_msg)
+            raise  # Re-raise exception
         except Exception as e:
             error_msg = f"Failed to update entity storage for `{entity_name}`: {e}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             raise  # Re-raise exception
 
     # normalized_chunk_ids = merge_source_ids([], chunk_ids)
@@ -1537,9 +1701,13 @@ async def _rebuild_single_relationship(
         # Delete old vector records first (both directions to be safe)
         try:
             await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
-        except Exception as e:
+        except (KeyError, ValueError) as e:
             logger.debug(
-                f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
+                f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse} - records may not exist: {e}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Unexpected error deleting relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
 
         # Insert new vector record
@@ -2511,9 +2679,35 @@ async def merge_nodes_and_edges(
 
                     return entity_data
 
+                except PipelineCancelledException:
+                    # Re-raise cancellation immediately without wrapping
+                    raise
+                except (ValueError, KeyError) as e:
+                    error_msg = (
+                        f"Error processing entity `{entity_name}` - invalid data: {e}"
+                    )
+                    logger.error(error_msg)
+
+                    try:
+                        if (
+                            pipeline_status is not None
+                            and pipeline_status_lock is not None
+                        ):
+                            async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = error_msg
+                                pipeline_status["history_messages"].append(error_msg)
+                    except Exception as status_error:
+                        logger.error(
+                            f"Failed to update pipeline status: {status_error}"
+                        )
+
+                    prefixed_exception = create_prefixed_exception(
+                        e, f"`{entity_name}`"
+                    )
+                    raise prefixed_exception from e
                 except Exception as e:
                     error_msg = f"Error processing entity `{entity_name}`: {e}"
-                    logger.error(error_msg)
+                    logger.exception(error_msg)
 
                     # Try to update pipeline status, but don't let status update failure affect main exception
                     try:
@@ -4201,14 +4395,13 @@ async def _build_context_str(
 
     # Rebuild chunks_context with truncated chunks
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    chunks_context = []
-    for i, chunk in enumerate(truncated_chunks):
-        chunks_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
-        )
+    chunks_context = [
+        {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        for chunk in truncated_chunks
+    ]
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
@@ -4355,16 +4548,30 @@ async def _build_query_context(
             # Filter vector chunks to keep ONLY those from max sequence
             # Strict filtering: no fallback to ensure temporal accuracy
             original_count = len(search_result.get("vector_chunks", []))
-            filtered_vector_chunks = []
 
-            for chunk in search_result.get("vector_chunks", []):
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
-                if chunk_id:
-                    chunk_data = await text_chunks_db.get_by_id(chunk_id)
-                    if chunk_data:
-                        chunk_seq = chunk_data.get("sequence_index", 0)
-                        if chunk_seq == max_sequence:
-                            filtered_vector_chunks.append(chunk)
+            # Batch fetch all chunk data at once to reduce database queries
+            chunk_ids = [
+                chunk.get("chunk_id") or chunk.get("id")
+                for chunk in search_result.get("vector_chunks", [])
+                if chunk.get("chunk_id") or chunk.get("id")
+            ]
+
+            if chunk_ids:
+                # Batch retrieval - much faster than individual lookups
+                chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
+                chunk_data_map = {
+                    data.get("id"): data for data in chunk_data_list if data
+                }
+
+                filtered_vector_chunks = [
+                    chunk
+                    for chunk in search_result.get("vector_chunks", [])
+                    if (chunk_id := chunk.get("chunk_id") or chunk.get("id"))
+                    and (chunk_data := chunk_data_map.get(chunk_id))
+                    and chunk_data.get("sequence_index", 0) == max_sequence
+                ]
+            else:
+                filtered_vector_chunks = []
 
             search_result["vector_chunks"] = filtered_vector_chunks
             logger.info(
@@ -4401,20 +4608,37 @@ async def _build_query_context(
     ):
         # Filter merged chunks to keep ONLY those from max sequence
         original_merged_count = len(merged_chunks)
-        filtered_merged_chunks = []
 
-        # For debugging: track sequences
-        seq_counts = {}
+        # Batch fetch all chunk data at once
+        merged_chunk_ids = [
+            chunk.get("chunk_id") or chunk.get("id")
+            for chunk in merged_chunks
+            if chunk.get("chunk_id") or chunk.get("id")
+        ]
 
-        for chunk in merged_chunks:
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
-            if chunk_id:
-                chunk_data = await text_chunks_db.get_by_id(chunk_id)
-                if chunk_data:
+        if merged_chunk_ids:
+            # Batch retrieval - much faster than individual lookups
+            merged_chunk_data_list = await text_chunks_db.get_by_ids(merged_chunk_ids)
+            merged_chunk_data_map = {
+                data.get("_id") or data.get("id"): data
+                for data in merged_chunk_data_list
+                if data
+            }
+
+            # For debugging: track sequences
+            seq_counts = {}
+            filtered_merged_chunks = []
+
+            for chunk in merged_chunks:
+                chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                if chunk_id and (chunk_data := merged_chunk_data_map.get(chunk_id)):
                     chunk_seq = chunk_data.get("sequence_index", 0)
                     seq_counts[chunk_seq] = seq_counts.get(chunk_seq, 0) + 1
                     if chunk_seq == max_sequence:
                         filtered_merged_chunks.append(chunk)
+        else:
+            filtered_merged_chunks = []
+            seq_counts = {}
 
         merged_chunks = filtered_merged_chunks
         logger.info(
@@ -5198,14 +5422,13 @@ async def naive_query(
     }
 
     # Build chunks_context from processed chunks with reference IDs
-    chunks_context = []
-    for i, chunk in enumerate(processed_chunks_with_ref_ids):
-        chunks_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
-        )
+    chunks_context = [
+        {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        for chunk in processed_chunks_with_ref_ids
+    ]
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context

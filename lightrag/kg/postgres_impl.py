@@ -1,19 +1,18 @@
 import asyncio
+import configparser
+import datetime
 import hashlib
+import itertools
 import json
 import os
 import re
-import datetime
-from datetime import timezone
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, TypeVar, Union, final
-import numpy as np
-import configparser
 import ssl
-import itertools
+from dataclasses import dataclass, field
+from datetime import timezone
+from typing import Any, Awaitable, Callable, TypeVar, Union, final
 
-from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-
+import numpy as np
+import pipmaster as pm
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -24,6 +23,8 @@ from tenacity import (
     wait_fixed,
 )
 
+from lightrag.types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
+
 from ..base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -33,11 +34,9 @@ from ..base import (
     DocStatusStorage,
 )
 from ..exceptions import DataMigrationError
+from ..kg.shared_storage import get_data_init_lock
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
-from ..kg.shared_storage import get_data_init_lock
-
-import pipmaster as pm
 
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
@@ -46,9 +45,8 @@ if not pm.is_installed("pgvector"):
 
 import asyncpg  # type: ignore
 from asyncpg import Pool  # type: ignore
-from pgvector.asyncpg import register_vector  # type: ignore
-
 from dotenv import load_dotenv
+from pgvector.asyncpg import register_vector  # type: ignore
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2034,9 +2032,10 @@ class PGKVStorage(BaseKVStorage):
                 if row_id is not None:
                     id_map[str(row_id)] = row
 
-            ordered: list[dict[str, Any] | None] = []
-            for requested_id in ids:
-                ordered.append(id_map.get(str(requested_id)))
+            # Use list comprehension for better performance
+            ordered: list[dict[str, Any] | None] = [
+                id_map.get(str(requested_id)) for requested_id in ids
+            ]
             return ordered
 
         if results and is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
@@ -3140,9 +3139,10 @@ class PGVectorStorage(BaseVectorStorage):
                 if row_id is not None:
                     id_map[str(row_id)] = record_dict
 
-            ordered_results: list[dict[str, Any] | None] = []
-            for requested_id in ids:
-                ordered_results.append(id_map.get(str(requested_id)))
+            # Use list comprehension for better performance
+            ordered_results: list[dict[str, Any] | None] = [
+                id_map.get(str(requested_id)) for requested_id in ids
+            ]
             return ordered_results
         except Exception as e:
             logger.error(
