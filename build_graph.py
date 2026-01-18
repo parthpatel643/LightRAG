@@ -25,6 +25,7 @@ from typing import List
 
 from lightrag import LightRAG
 from lightrag.functions import embedding_func, llm_model_func
+from lightrag.hierarchical_chunker import create_hierarchical_chunking_func
 from lightrag.utils import logger
 
 
@@ -172,9 +173,11 @@ Examples:
         working_dir=str(working_dir),
         llm_model_func=llm_model_func,
         embedding_func=embedding_func,
+        chunking_func=create_hierarchical_chunking_func(
+            chunk_size=int(os.getenv("CHUNK_SIZE", 2000)),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP_SIZE", 200)),
+        ),
         entity_extract_max_gleaning=5,
-        chunk_token_size=int(os.getenv("CHUNK_SIZE", 2000)),
-        chunk_overlap_token_size=int(os.getenv("CHUNK_OVERLAP_SIZE", 200)),
         enable_llm_cache=False,
     )
 
