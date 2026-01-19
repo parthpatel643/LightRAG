@@ -21,28 +21,30 @@ When multiple versions of an entity exist in the knowledge graph:
 
 ```python
 def filter_temporal_results(candidates, reference_date=None):
+    """
+    Sequence-First Algorithm: Uses ONLY sequence_index for filtering.
+    reference_date is ignored during filtering (used only by LLM for interpretation).
+    """
     # Step 1: Group by canonical entity name
     entity_groups = {}
     for candidate in candidates:
         base_name = extract_base_name(candidate.name)  # "Parking Fee [v2]" → "Parking Fee"
         entity_groups.setdefault(base_name, []).append(candidate)
     
-    # Step 2: Select max sequence for each group
+    # Step 2: Select max sequence for each group (ONLY hard filtering rule)
     latest_versions = []
     for base_name, versions in entity_groups.items():
         latest = max(versions, key=lambda v: v.sequence_index)
         latest_versions.append(latest)
     
-    # Step 3: Filter by effective date if provided
-    if reference_date:
-        valid_versions = [
-            v for v in latest_versions
-            if v.effective_date <= reference_date
-        ]
-        return valid_versions
+    # Note: reference_date is NOT used for filtering.
+    # The LLM receives the latest version AND the <EFFECTIVE_DATE> tags
+    # The LLM interprets whether the rate is currently active based on the tags.
     
     return latest_versions
 ```
+
+**Key Change:** The algorithm filters ONLY by `sequence_index`. The `reference_date` parameter is passed to the LLM for interpretation via `<EFFECTIVE_DATE>` XML tags in the content.
 
 ---
 
@@ -111,26 +113,29 @@ sequenceDiagram
    - Strip version suffixes: `"Parking Fee [v2]"` → `"Parking Fee"`
    - Handle variations: "overnight parking", "parking fees" → same group
 
-2. **Sequence-Based Deduplication**
+2. **Sequence-Based Deduplication (ONLY hard filter)**
    - Group: `{"Parking Fee": [v1, v2]}`
-   - Select: `max([1, 2])` → `v2`
+   - Select: `max([1, 2])` → `v2` (highest sequence wins, always)
+   - The `reference_date` is NOT used for filtering at this stage
 
-3. **Effective Date Validation** (if `reference_date` provided)
-   - If query date is `2025-01-01` and `effective_date` is `2025-06-15`
-   - Mark as future-dated: Include in context but flag as "not yet effective"
+3. **Metadata Preservation**
+   - Preserve `<EFFECTIVE_DATE>` tags in content
+   - Pass `reference_date` to LLM for interpretation
+   - LLM will determine if rate is currently active based on tag comparison
 
-**Output:** Filtered list of latest versions:
+**Output:** Filtered list of latest versions (highest sequence):
 ```json
 [
   {
-    "content": "Parking fee updated to $100 per night...",
+    "content": "Parking fee updated to $100 per night <EFFECTIVE_DATE confidence='high'>2025-06-15</EFFECTIVE_DATE>...",
     "entity_name": "Parking Fee [v2]",
     "sequence_index": 2,
-    "effective_date": "2025-06-15",
-    "temporal_status": "future"
+    "effective_date": "2025-06-15"
   }
 ]
 ```
+
+**Important:** The query's `reference_date` is passed to the LLM to help it interpret whether the returned rate is currently active. The LLM is responsible for understanding temporal context.
 
 ### Step 3: Context Assembly
 **Input:** Filtered entities + user query  

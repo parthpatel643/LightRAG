@@ -146,7 +146,6 @@ class ContractSequencer:
         # Extract first page content (first 20 lines or ~500 chars)
         lines = content.split("\n")[:20]
         first_page = "\n".join(lines).lower()
-        filename_lower = filename.lower()
 
         # Check content patterns first (more reliable than filename)
         if any(

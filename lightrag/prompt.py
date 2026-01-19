@@ -15,10 +15,11 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 1.  **Entity Extraction & Output:**
     *   **Identification:** Identify clearly defined and meaningful entities in the input text. **IMPORTANT:** Extract entities from ALL formats including narrative text, tables, lists, YAML, JSON, and other structured data.
         *   **For Tables/Structured Data:** Extract service items, aircraft types, rate names, and other key elements as separate entities even if presented in tabular rows or key-value pairs.
+    *   **Domain Alignment (Aviation Procurement):** When the input includes ground handling agreements, catering contracts, fuel service agreements, or SGHA-like terms, treat service items, aircraft types, vendors, rates, SLAs, penalties, equipment requirements, and contract terms as candidate entities. Preserve currency symbols (e.g., `$`, `€`), units (e.g., `per event`, `per turn`, `per gallon`, `minutes`), aircraft designators (e.g., `B787`), and timing exactly as written.
         *   **Example:** In a pricing table row "Boeing 787 | RON w/lav & water | $540", extract entities: "Boeing 787" (Aircraft), "RON w/lav & water" (Service), "$540" (Rate).
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
+    *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}` (case-insensitive) and output the type in lowercase. If none of the provided entity types apply, do not add a new entity type; classify it as `other`.
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
     *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
@@ -32,6 +33,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
         *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
+  *   **Domain Keyword Taxonomy (Examples):** Prefer aviation procurement terms such as `service provision`, `rate applicability`, `sla compliance`, `penalty trigger`, `equipment requirement`, `contract enforcement`, `station location`, `aircraft type coverage`, `turnaround time`, `on-time performance`.
     *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
 
@@ -47,14 +49,17 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 5.  **Output Order & Prioritization:**
     *   Output all extracted entities first, followed by all extracted relationships.
     *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+  *   In aviation agreements, prioritize service-to-aircraft coverage, service-to-rate pricing, SLA-to-service compliance, and penalty triggers.
 
 6.  **Context & Objectivity:**
     *   Ensure all entity names and descriptions are written in the **third person**.
     *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+  *   Do not infer totals, convert currencies, or derive unmentioned metrics (e.g., effective hourly rates). Only reflect information explicitly stated in the text.
 
 7.  **Language & Proper Nouns:**
     *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
     *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+  *   Preserve numbers, percentages, currency symbols, and measurement units exactly as they appear; do not normalize or convert them.
 
 8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
 
@@ -70,6 +75,9 @@ Extract entities and relationships from the input text in Data to be Processed b
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
 4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+5.  **Domain & Numeric Fidelity:** Prefer aviation procurement terminology (e.g., service, rate, SLA, penalty, equipment, contract term, aircraft type). Preserve numbers, percentages, currency symbols, and measurement units exactly as written; do not normalize, convert, or infer totals.
+6.  **Type Normalization:** Match `{entity_types}` case-insensitively but output `entity_type` in lowercase. Use `other` when no type applies.
+7.  **Relationship Keywords:** Prefer domain keywords such as `service provision`, `rate applicability`, `sla compliance`, `penalty trigger`, `equipment requirement`, `contract enforcement`, `aircraft type coverage`, `turnaround time`, `on-time performance`.
 
 ---Data to be Processed---
 <Entity_types>
@@ -97,91 +105,14 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
 7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+8.  **Domain & Numeric Fidelity:** Prefer aviation procurement terminology. Preserve numbers, percentages, currency symbols, and measurement units exactly as written; do not normalize, convert, or infer totals.
+9.  **Type Normalization:** Match `{entity_types}` case-insensitively but output `entity_type` in lowercase. Use `other` when no type applies.
+10. **Relationship Keywords:** Prefer domain keywords such as `service provision`, `rate applicability`, `sla compliance`, `penalty trigger`, `equipment requirement`, `contract enforcement`, `aircraft type coverage`, `turnaround time`, `on-time performance`.
 
 <Output>
 """
 
 PROMPTS["entity_extraction_examples"] = [
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
-<Input Text>
-```
-while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
-
-Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
-
-The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
-
-It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
-```
-
-<Output>
-entity{tuple_delimiter}Alex{tuple_delimiter}person{tuple_delimiter}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{tuple_delimiter}Taylor{tuple_delimiter}person{tuple_delimiter}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device, indicating a change in perspective.
-entity{tuple_delimiter}Jordan{tuple_delimiter}person{tuple_delimiter}Jordan shares a commitment to discovery and has a significant interaction with Taylor regarding a device.
-entity{tuple_delimiter}Cruz{tuple_delimiter}person{tuple_delimiter}Cruz is associated with a vision of control and order, influencing the dynamics among other characters.
-entity{tuple_delimiter}The Device{tuple_delimiter}equipment{tuple_delimiter}The Device is central to the story, with potential game-changing implications, and is revered by Taylor.
-relation{tuple_delimiter}Alex{tuple_delimiter}Taylor{tuple_delimiter}power dynamics, observation{tuple_delimiter}Alex observes Taylor's authoritarian behavior and notes changes in Taylor's attitude toward the device.
-relation{tuple_delimiter}Alex{tuple_delimiter}Jordan{tuple_delimiter}shared goals, rebellion{tuple_delimiter}Alex and Jordan share a commitment to discovery, which contrasts with Cruz's vision.)
-relation{tuple_delimiter}Taylor{tuple_delimiter}Jordan{tuple_delimiter}conflict resolution, mutual respect{tuple_delimiter}Taylor and Jordan interact directly regarding the device, leading to a moment of mutual respect and an uneasy truce.
-relation{tuple_delimiter}Jordan{tuple_delimiter}Cruz{tuple_delimiter}ideological conflict, rebellion{tuple_delimiter}Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order.
-relation{tuple_delimiter}Taylor{tuple_delimiter}The Device{tuple_delimiter}reverence, technological significance{tuple_delimiter}Taylor shows reverence towards the device, indicating its importance and potential impact.
-{completion_delimiter}
-
-""",
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
-<Input Text>
-```
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4% in midday trading. Analysts attribute the selloff to investor concerns over rising interest rates and regulatory uncertainty.
-
-Among the hardest hit, nexon technologies saw its stock plummet by 7.8% after reporting lower-than-expected quarterly earnings. In contrast, Omega Energy posted a modest 2.1% gain, driven by rising oil prices.
-
-Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
-
-Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
-```
-
-<Output>
-entity{tuple_delimiter}Global Tech Index{tuple_delimiter}category{tuple_delimiter}The Global Tech Index tracks the performance of major technology stocks and experienced a 3.4% decline today.
-entity{tuple_delimiter}Nexon Technologies{tuple_delimiter}organization{tuple_delimiter}Nexon Technologies is a tech company that saw its stock decline by 7.8% after disappointing earnings.
-entity{tuple_delimiter}Omega Energy{tuple_delimiter}organization{tuple_delimiter}Omega Energy is an energy company that gained 2.1% in stock value due to rising oil prices.
-entity{tuple_delimiter}Gold Futures{tuple_delimiter}product{tuple_delimiter}Gold futures rose by 1.5%, indicating increased investor interest in safe-haven assets.
-entity{tuple_delimiter}Crude Oil{tuple_delimiter}product{tuple_delimiter}Crude oil prices rose to $87.60 per barrel due to supply constraints and strong demand.
-entity{tuple_delimiter}Market Selloff{tuple_delimiter}category{tuple_delimiter}Market selloff refers to the significant decline in stock values due to investor concerns over interest rates and regulations.
-entity{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}category{tuple_delimiter}The Federal Reserve's upcoming policy announcement is expected to impact investor confidence and market stability.
-entity{tuple_delimiter}3.4% Decline{tuple_delimiter}category{tuple_delimiter}The Global Tech Index experienced a 3.4% decline in midday trading.
-relation{tuple_delimiter}Global Tech Index{tuple_delimiter}Market Selloff{tuple_delimiter}market performance, investor sentiment{tuple_delimiter}The decline in the Global Tech Index is part of the broader market selloff driven by investor concerns.
-relation{tuple_delimiter}Nexon Technologies{tuple_delimiter}Global Tech Index{tuple_delimiter}company impact, index movement{tuple_delimiter}Nexon Technologies' stock decline contributed to the overall drop in the Global Tech Index.
-relation{tuple_delimiter}Gold Futures{tuple_delimiter}Market Selloff{tuple_delimiter}market reaction, safe-haven investment{tuple_delimiter}Gold prices rose as investors sought safe-haven assets during the market selloff.
-relation{tuple_delimiter}Federal Reserve Policy Announcement{tuple_delimiter}Market Selloff{tuple_delimiter}interest rate impact, financial regulation{tuple_delimiter}Speculation over Federal Reserve policy changes contributed to market volatility and investor selloff.
-{completion_delimiter}
-
-""",
-    """<Entity_types>
-["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
-
-<Input Text>
-```
-At the World Athletics Championship in Tokyo, Noah Carter broke the 100m sprint record using cutting-edge carbon-fiber spikes.
-```
-
-<Output>
-entity{tuple_delimiter}World Athletics Championship{tuple_delimiter}event{tuple_delimiter}The World Athletics Championship is a global sports competition featuring top athletes in track and field.
-entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the host city of the World Athletics Championship.
-entity{tuple_delimiter}Noah Carter{tuple_delimiter}person{tuple_delimiter}Noah Carter is a sprinter who set a new record in the 100m sprint at the World Athletics Championship.
-entity{tuple_delimiter}100m Sprint Record{tuple_delimiter}category{tuple_delimiter}The 100m sprint record is a benchmark in athletics, recently broken by Noah Carter.
-entity{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}equipment{tuple_delimiter}Carbon-fiber spikes are advanced sprinting shoes that provide enhanced speed and traction.
-entity{tuple_delimiter}World Athletics Federation{tuple_delimiter}organization{tuple_delimiter}The World Athletics Federation is the governing body overseeing the World Athletics Championship and record validations.
-relation{tuple_delimiter}World Athletics Championship{tuple_delimiter}Tokyo{tuple_delimiter}event location, international competition{tuple_delimiter}The World Athletics Championship is being hosted in Tokyo.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}100m Sprint Record{tuple_delimiter}athlete achievement, record-breaking{tuple_delimiter}Noah Carter set a new 100m sprint record at the championship.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}Carbon-Fiber Spikes{tuple_delimiter}athletic equipment, performance boost{tuple_delimiter}Noah Carter used carbon-fiber spikes to enhance performance during the race.
-relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championship{tuple_delimiter}athlete participation, competition{tuple_delimiter}Noah Carter is competing at the World Athletics Championship.
-{completion_delimiter}
-
-""",
     """<Entity_types>
 ["Person","Organization","Location","Event","Service","Aircraft","Rate","Vendor","SLA","Penalty","ContractTerm","Equipment"]
 
@@ -241,6 +172,234 @@ relation{tuple_delimiter}Potable Water Truck{tuple_delimiter}Boeing 787{tuple_de
 {completion_delimiter}
 
 """,
+    """<Entity_types>
+["Person","Organization","Location","Event","Service","Aircraft","Rate","Vendor","SLA","Penalty","ContractTerm","Equipment","NaturalObject","Concept"]
+
+<Input Text>
+```
+Fuel Service Agreement – John F. Kennedy International Airport (JFK)
+
+Service Provider: SkyFuel Services Inc. shall provide into-plane fueling for Boeing 787 operations at JFK. Fuel type: Jet A-1.
+
+Pricing Schedule:
+- Throughput fee: $0.015 per gallon
+- Call-out fee (off-hours): $95.00 per call-out
+
+Service Level Agreement (SLA):
+- Fueling start within 25 minutes of block-on
+- Max fueling completion time: 45 minutes
+- On-time performance requirement: 97% monthly average
+
+Penalties:
+- Delay beyond SLA: $100 per 10-minute increment
+- Performance below 97%: $400 penalty per percentage point
+
+Contract Terms:
+- Appendix B.4 details dispute resolution for fueling delays
+
+Equipment Requirements:
+- Hydrant dispenser with differential pressure gauge must be available
+- Bonding cable must be attached before fueling commences
+```
+
+<Output>
+entity{tuple_delimiter}SkyFuel Services Inc.{tuple_delimiter}vendor{tuple_delimiter}SkyFuel Services Inc. is the service provider responsible for into-plane fueling at JFK for Boeing 787 operations.
+entity{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft{tuple_delimiter}Boeing 787 is the aircraft type covered by the fueling service at JFK.
+entity{tuple_delimiter}John F. Kennedy International Airport (JFK){tuple_delimiter}location{tuple_delimiter}JFK is the airport location where into-plane fueling services are provided.
+entity{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}service{tuple_delimiter}Into-plane fueling involves delivering Jet A-1 fuel directly to the aircraft at the gate in accordance with the fueling agreement.
+entity{tuple_delimiter}Jet A-1{tuple_delimiter}naturalobject{tuple_delimiter}Jet A-1 is the fuel type specified for Boeing 787 operations in the fueling agreement.
+entity{tuple_delimiter}$0.015 Per Gallon Throughput Fee{tuple_delimiter}rate{tuple_delimiter}The throughput fee is $0.015 per gallon of fuel delivered.
+entity{tuple_delimiter}$95.00 Call-Out Fee{tuple_delimiter}rate{tuple_delimiter}The call-out fee applies to off-hours fueling requests and is $95.00 per call-out.
+entity{tuple_delimiter}25-Minute Start SLA{tuple_delimiter}sla{tuple_delimiter}Fueling must start within 25 minutes of block-on time.
+entity{tuple_delimiter}45-Minute Completion SLA{tuple_delimiter}sla{tuple_delimiter}Fueling must be completed within 45 minutes.
+entity{tuple_delimiter}97% On-Time Requirement{tuple_delimiter}sla{tuple_delimiter}The service provider must maintain a 97% monthly average on-time performance.
+entity{tuple_delimiter}Delay Beyond SLA Penalty{tuple_delimiter}penalty{tuple_delimiter}Delays beyond the SLA incur a $100 penalty per 10-minute increment.
+entity{tuple_delimiter}Performance Below 97% Penalty{tuple_delimiter}penalty{tuple_delimiter}Performance below 97% incurs a $400 penalty per percentage point below the threshold.
+entity{tuple_delimiter}Appendix B.4{tuple_delimiter}contractterm{tuple_delimiter}Appendix B.4 describes dispute resolution procedures related to fueling delays.
+entity{tuple_delimiter}Hydrant Dispenser{tuple_delimiter}equipment{tuple_delimiter}A hydrant dispenser equipped with a differential pressure gauge must be available for fueling operations.
+entity{tuple_delimiter}Bonding Cable{tuple_delimiter}equipment{tuple_delimiter}A bonding cable must be attached prior to fueling to ensure safety.
+relation{tuple_delimiter}SkyFuel Services Inc.{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}service provision{tuple_delimiter}SkyFuel Services Inc. provides into-plane fueling services.
+relation{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft type coverage{tuple_delimiter}Into-plane fueling is performed for Boeing 787 operations.
+relation{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}Jet A-1{tuple_delimiter}fuel type{tuple_delimiter}Into-plane fueling uses Jet A-1 fuel.
+relation{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}$0.015 Per Gallon Throughput Fee{tuple_delimiter}rate applicability{tuple_delimiter}The throughput fee applies to fuel delivered during into-plane fueling.
+relation{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}$95.00 Call-Out Fee{tuple_delimiter}rate applicability{tuple_delimiter}Off-hours fueling requests are subject to the call-out fee.
+relation{tuple_delimiter}25-Minute Start SLA{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}sla compliance{tuple_delimiter}Fueling must start within 25 minutes of block-on.
+relation{tuple_delimiter}45-Minute Completion SLA{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}turnaround time{tuple_delimiter}Fueling must be completed within 45 minutes.
+relation{tuple_delimiter}Delay Beyond SLA Penalty{tuple_delimiter}25-Minute Start SLA{tuple_delimiter}penalty trigger{tuple_delimiter}Delays beyond the start SLA trigger the delay penalty.
+relation{tuple_delimiter}Performance Below 97% Penalty{tuple_delimiter}97% On-Time Requirement{tuple_delimiter}penalty trigger{tuple_delimiter}Monthly performance below 97% triggers the performance penalty.
+relation{tuple_delimiter}Appendix B.4{tuple_delimiter}Delay Beyond SLA Penalty{tuple_delimiter}contract enforcement{tuple_delimiter}Appendix B.4 governs dispute resolution for fueling delays and related penalties.
+relation{tuple_delimiter}Hydrant Dispenser{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}equipment requirement{tuple_delimiter}A hydrant dispenser is required for fueling operations.
+relation{tuple_delimiter}Bonding Cable{tuple_delimiter}Into-Plane Fueling{tuple_delimiter}equipment requirement{tuple_delimiter}A bonding cable must be attached before fueling begins.
+{completion_delimiter}
+
+""",
+    """<Entity_types>
+["Person","Organization","Location","Event","Service","Aircraft","Rate","Vendor","SLA","Penalty","ContractTerm","Equipment","NaturalObject","Concept"]
+
+<Input Text>
+```
+Catering Service Agreement – London Heathrow (LHR)
+
+Service Provider: AeroCater Ltd shall provide catering uplift and waste removal for Boeing 787 and Airbus A350 operations at LHR.
+
+Pricing Schedule:
+- Meal uplift: $9.80 per passenger
+- Special meal handling: $3.50 per special meal
+- Waste removal: $85.00 per event
+- Dry ice supply: $1.20 per kilogram
+- Galley cart exchange: $12.00 per cart
+
+Service Level Agreement (SLA):
+- Uplift complete 40 minutes before STD
+- Waste removal within 20 minutes of block-on
+- Special meal confirmation 6 hours prior to STD
+- On-time performance requirement: 98% monthly average
+
+Penalties:
+- Late uplift beyond SLA: $75 per 10-minute increment
+- Missed special meal: $250 per flight
+- Performance below 98%: $300 penalty per percentage point
+
+Contract Terms:
+- Schedule C Section 7 covers allergen handling procedures
+- Annex D.2 governs waste segregation (recyclable vs general)
+
+Equipment Requirements:
+- Waste compactor must be available at the stand
+- Galley carts must meet Atlas standard dimensions
+- Dry ice gloves must be used when handling
+```
+
+<Output>
+entity{tuple_delimiter}AeroCater Ltd{tuple_delimiter}vendor{tuple_delimiter}AeroCater Ltd is the service provider responsible for catering uplift and waste removal at LHR for Boeing 787 and Airbus A350 operations.
+entity{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft{tuple_delimiter}Boeing 787 is an aircraft type covered by the catering and waste services.
+entity{tuple_delimiter}Airbus A350{tuple_delimiter}aircraft{tuple_delimiter}Airbus A350 is an aircraft type covered by the catering and waste services.
+entity{tuple_delimiter}London Heathrow (LHR){tuple_delimiter}location{tuple_delimiter}LHR is the airport location where catering uplift and waste removal services are provided.
+entity{tuple_delimiter}Catering Uplift{tuple_delimiter}service{tuple_delimiter}Catering uplift involves loading meals and beverages onto aircraft in accordance with service requirements.
+entity{tuple_delimiter}Waste Removal{tuple_delimiter}service{tuple_delimiter}Waste removal involves the collection and disposal of aircraft cabin waste following flights.
+entity{tuple_delimiter}Special Meal Handling{tuple_delimiter}service{tuple_delimiter}Special meal handling covers confirmation and provision of meals with specific dietary requirements.
+entity{tuple_delimiter}Galley Cart Exchange{tuple_delimiter}service{tuple_delimiter}Galley cart exchange involves replacing or swapping galley carts that meet Atlas standard dimensions.
+entity{tuple_delimiter}Dry Ice{tuple_delimiter}naturalobject{tuple_delimiter}Dry ice is a consumable used for keeping catering items chilled and is supplied per kilogram.
+entity{tuple_delimiter}$9.80 Meal Uplift Rate{tuple_delimiter}rate{tuple_delimiter}The rate for meal uplift is $9.80 per passenger.
+entity{tuple_delimiter}$3.50 Special Meal Handling Rate{tuple_delimiter}rate{tuple_delimiter}The rate for special meal handling is $3.50 per special meal.
+entity{tuple_delimiter}$85.00 Waste Removal Rate{tuple_delimiter}rate{tuple_delimiter}The rate for waste removal is $85.00 per event.
+entity{tuple_delimiter}$1.20/kg Dry Ice Rate{tuple_delimiter}rate{tuple_delimiter}The rate for dry ice supply is $1.20 per kilogram.
+entity{tuple_delimiter}$12.00 Galley Cart Exchange Rate{tuple_delimiter}rate{tuple_delimiter}The rate for galley cart exchange is $12.00 per cart.
+entity{tuple_delimiter}40-Minute Pre-STD Uplift SLA{tuple_delimiter}sla{tuple_delimiter}Catering uplift must be completed 40 minutes before scheduled time of departure (STD).
+entity{tuple_delimiter}20-Minute Waste Removal SLA{tuple_delimiter}sla{tuple_delimiter}Waste removal must be completed within 20 minutes of block-on.
+entity{tuple_delimiter}6-Hour Special Meal Confirmation SLA{tuple_delimiter}sla{tuple_delimiter}Special meals must be confirmed 6 hours prior to scheduled time of departure.
+entity{tuple_delimiter}98% On-Time Requirement{tuple_delimiter}sla{tuple_delimiter}The service provider must maintain a 98% monthly average on-time performance.
+entity{tuple_delimiter}Late Uplift Penalty{tuple_delimiter}penalty{tuple_delimiter}Late catering uplift beyond SLA incurs a $75 penalty per 10-minute increment.
+entity{tuple_delimiter}Missed Special Meal Penalty{tuple_delimiter}penalty{tuple_delimiter}A missed special meal incurs a $250 penalty per flight.
+entity{tuple_delimiter}Performance Penalty{tuple_delimiter}penalty{tuple_delimiter}Performance below 98% incurs a $300 penalty per percentage point below the threshold.
+entity{tuple_delimiter}Schedule C Section 7{tuple_delimiter}contractterm{tuple_delimiter}Schedule C Section 7 covers allergen handling procedures for catering services.
+entity{tuple_delimiter}Annex D.2{tuple_delimiter}contractterm{tuple_delimiter}Annex D.2 governs waste segregation requirements (recyclable vs general).
+entity{tuple_delimiter}Waste Compactor{tuple_delimiter}equipment{tuple_delimiter}A waste compactor must be available at the stand for cabin waste processing.
+entity{tuple_delimiter}Atlas Standard Galley Cart{tuple_delimiter}equipment{tuple_delimiter}Galley carts must meet Atlas standard dimensions.
+entity{tuple_delimiter}Dry Ice Gloves{tuple_delimiter}equipment{tuple_delimiter}Dry ice gloves must be used when handling dry ice for safety.
+relation{tuple_delimiter}AeroCater Ltd{tuple_delimiter}Catering Uplift{tuple_delimiter}service provision{tuple_delimiter}AeroCater Ltd provides catering uplift services.
+relation{tuple_delimiter}AeroCater Ltd{tuple_delimiter}Waste Removal{tuple_delimiter}service provision{tuple_delimiter}AeroCater Ltd provides waste removal services.
+relation{tuple_delimiter}AeroCater Ltd{tuple_delimiter}Special Meal Handling{tuple_delimiter}service provision{tuple_delimiter}AeroCater Ltd manages special meal handling and confirmations.
+relation{tuple_delimiter}Catering Uplift{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft type coverage{tuple_delimiter}Catering uplift is performed for Boeing 787 operations at LHR.
+relation{tuple_delimiter}Catering Uplift{tuple_delimiter}Airbus A350{tuple_delimiter}aircraft type coverage{tuple_delimiter}Catering uplift is performed for Airbus A350 operations at LHR.
+relation{tuple_delimiter}Catering Uplift{tuple_delimiter}$9.80 Meal Uplift Rate{tuple_delimiter}rate applicability{tuple_delimiter}Meal uplift is billed at $9.80 per passenger.
+relation{tuple_delimiter}Special Meal Handling{tuple_delimiter}$3.50 Special Meal Handling Rate{tuple_delimiter}rate applicability{tuple_delimiter}Special meal handling is billed at $3.50 per special meal.
+relation{tuple_delimiter}Waste Removal{tuple_delimiter}$85.00 Waste Removal Rate{tuple_delimiter}rate applicability{tuple_delimiter}Waste removal is billed at $85.00 per event.
+relation{tuple_delimiter}Dry Ice{tuple_delimiter}$1.20/kg Dry Ice Rate{tuple_delimiter}rate applicability{tuple_delimiter}Dry ice supply is billed at $1.20 per kilogram.
+relation{tuple_delimiter}Galley Cart Exchange{tuple_delimiter}$12.00 Galley Cart Exchange Rate{tuple_delimiter}rate applicability{tuple_delimiter}Galley cart exchange is billed at $12.00 per cart.
+relation{tuple_delimiter}40-Minute Pre-STD Uplift SLA{tuple_delimiter}Catering Uplift{tuple_delimiter}sla compliance{tuple_delimiter}Catering uplift must be complete 40 minutes before STD.
+relation{tuple_delimiter}20-Minute Waste Removal SLA{tuple_delimiter}Waste Removal{tuple_delimiter}turnaround time{tuple_delimiter}Waste removal must be completed within 20 minutes of block-on.
+relation{tuple_delimiter}6-Hour Special Meal Confirmation SLA{tuple_delimiter}Special Meal Handling{tuple_delimiter}sla compliance{tuple_delimiter}Special meals must be confirmed 6 hours prior to STD.
+relation{tuple_delimiter}Late Uplift Penalty{tuple_delimiter}40-Minute Pre-STD Uplift SLA{tuple_delimiter}penalty trigger{tuple_delimiter}Late uplift beyond the SLA triggers the late uplift penalty.
+relation{tuple_delimiter}Missed Special Meal Penalty{tuple_delimiter}6-Hour Special Meal Confirmation SLA{tuple_delimiter}penalty trigger{tuple_delimiter}Failure to confirm special meals on time triggers the missed special meal penalty.
+relation{tuple_delimiter}Performance Penalty{tuple_delimiter}98% On-Time Requirement{tuple_delimiter}penalty trigger{tuple_delimiter}Performance below 98% triggers the monthly performance penalty.
+relation{tuple_delimiter}Schedule C Section 7{tuple_delimiter}Special Meal Handling{tuple_delimiter}contract enforcement{tuple_delimiter}Allergen handling procedures apply to special meal handling.
+relation{tuple_delimiter}Annex D.2{tuple_delimiter}Waste Removal{tuple_delimiter}contract enforcement{tuple_delimiter}Waste segregation requirements apply to waste removal services.
+relation{tuple_delimiter}Waste Compactor{tuple_delimiter}Waste Removal{tuple_delimiter}equipment requirement{tuple_delimiter}A waste compactor must be available for cabin waste processing.
+relation{tuple_delimiter}Atlas Standard Galley Cart{tuple_delimiter}Galley Cart Exchange{tuple_delimiter}equipment requirement{tuple_delimiter}Galley carts must meet Atlas standard dimensions.
+relation{tuple_delimiter}Dry Ice Gloves{tuple_delimiter}Catering Uplift{tuple_delimiter}equipment requirement{tuple_delimiter}Dry ice gloves must be used when handling dry ice during catering uplift.
+{completion_delimiter}
+
+""",
+    """<Entity_types>
+["Person","Organization","Location","Event","Service","Aircraft","Rate","Vendor","SLA","Penalty","ContractTerm","Equipment","NaturalObject","Concept"]
+
+<Input Text>
+```
+Deicing Service Agreement – Denver International Airport (DEN)
+
+Service Provider: FrostJet Services shall provide Type I deicing and Type IV anti-icing for Boeing 787 operations at DEN.
+
+Pricing Schedule:
+- Type I fluid application: $2.75 per gallon
+- Type IV fluid application: $4.20 per gallon
+- Call-out fee (off-hours): $180.00 per call-out
+- Pad occupancy: $35.00 per 10-minute increment
+
+Service Level Agreement (SLA):
+- Deicing start within 15 minutes of request
+- Max deicing completion time: 30 minutes
+- Holdover time calculation per SAE tables
+- On-time performance requirement: 97% monthly average
+
+Penalties:
+- Delay beyond SLA: $120 per 10-minute increment
+- Incorrect holdover time computation: $500 per event
+- Performance below 97%: $400 penalty per percentage point
+
+Contract Terms:
+- Exhibit E defines fluid dilution ratios and environmental discharge limits
+
+Equipment Requirements:
+- Heated spray rigs with viscosity monitors must be used
+- Glycol recovery systems are required on the pad
+- Safety cones and marshallers must be present during operations
+```
+
+<Output>
+entity{tuple_delimiter}FrostJet Services{tuple_delimiter}vendor{tuple_delimiter}FrostJet Services is the provider of deicing and anti-icing services at DEN for Boeing 787 operations.
+entity{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft{tuple_delimiter}Boeing 787 is the aircraft type covered by the deicing agreement.
+entity{tuple_delimiter}Denver International Airport (DEN){tuple_delimiter}location{tuple_delimiter}DEN is the airport location where deicing services are provided.
+entity{tuple_delimiter}Type I Deicing{tuple_delimiter}service{tuple_delimiter}Type I deicing involves applying heated fluid to remove frost, ice, and snow from aircraft surfaces.
+entity{tuple_delimiter}Type IV Anti-Icing{tuple_delimiter}service{tuple_delimiter}Type IV anti-icing involves applying fluid to delay ice accretion after deicing.
+entity{tuple_delimiter}Type I Fluid{tuple_delimiter}naturalobject{tuple_delimiter}Type I deicing fluid is used to remove contamination and is billed per gallon.
+entity{tuple_delimiter}Type IV Fluid{tuple_delimiter}naturalobject{tuple_delimiter}Type IV anti-icing fluid is used to prevent re-accumulation and is billed per gallon.
+entity{tuple_delimiter}$2.75 Type I Rate{tuple_delimiter}rate{tuple_delimiter}The application rate for Type I fluid is $2.75 per gallon.
+entity{tuple_delimiter}$4.20 Type IV Rate{tuple_delimiter}rate{tuple_delimiter}The application rate for Type IV fluid is $4.20 per gallon.
+entity{tuple_delimiter}$180.00 Call-Out Fee{tuple_delimiter}rate{tuple_delimiter}The off-hours call-out fee is $180.00 per call-out.
+entity{tuple_delimiter}$35.00 Pad Occupancy Fee{tuple_delimiter}rate{tuple_delimiter}Pad occupancy is billed at $35.00 per 10-minute increment.
+entity{tuple_delimiter}15-Minute Start SLA{tuple_delimiter}sla{tuple_delimiter}Deicing must start within 15 minutes of the service request.
+entity{tuple_delimiter}30-Minute Completion SLA{tuple_delimiter}sla{tuple_delimiter}Deicing must be completed within 30 minutes.
+entity{tuple_delimiter}Holdover Time Compliance{tuple_delimiter}sla{tuple_delimiter}Holdover time must be calculated according to SAE tables.
+entity{tuple_delimiter}97% On-Time Requirement{tuple_delimiter}sla{tuple_delimiter}The provider must maintain a 97% monthly average on-time performance.
+entity{tuple_delimiter}Delay Penalty{tuple_delimiter}penalty{tuple_delimiter}Delays beyond the SLA incur a $120 penalty per 10-minute increment.
+entity{tuple_delimiter}Holdover Computation Penalty{tuple_delimiter}penalty{tuple_delimiter}Incorrect holdover time computation incurs a $500 penalty per event.
+entity{tuple_delimiter}Performance Penalty{tuple_delimiter}penalty{tuple_delimiter}Performance below 97% incurs a $400 penalty per percentage point below the threshold.
+entity{tuple_delimiter}Exhibit E{tuple_delimiter}contractterm{tuple_delimiter}Exhibit E defines fluid dilution ratios and environmental discharge limits for deicing operations.
+entity{tuple_delimiter}Heated Spray Rig{tuple_delimiter}equipment{tuple_delimiter}A heated spray rig equipped with viscosity monitors must be used during deicing.
+entity{tuple_delimiter}Glycol Recovery System{tuple_delimiter}equipment{tuple_delimiter}A glycol recovery system is required on the pad to collect runoff.
+entity{tuple_delimiter}Safety Cones{tuple_delimiter}equipment{tuple_delimiter}Safety cones and marshallers must be present during deicing operations for safety.
+relation{tuple_delimiter}FrostJet Services{tuple_delimiter}Type I Deicing{tuple_delimiter}service provision{tuple_delimiter}FrostJet Services provides Type I deicing.
+relation{tuple_delimiter}FrostJet Services{tuple_delimiter}Type IV Anti-Icing{tuple_delimiter}service provision{tuple_delimiter}FrostJet Services provides Type IV anti-icing.
+relation{tuple_delimiter}Type I Deicing{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft type coverage{tuple_delimiter}Type I deicing is performed for Boeing 787 operations.
+relation{tuple_delimiter}Type IV Anti-Icing{tuple_delimiter}Boeing 787{tuple_delimiter}aircraft type coverage{tuple_delimiter}Type IV anti-icing is performed for Boeing 787 operations.
+relation{tuple_delimiter}Type I Deicing{tuple_delimiter}$2.75 Type I Rate{tuple_delimiter}rate applicability{tuple_delimiter}Type I fluid application is billed at $2.75 per gallon.
+relation{tuple_delimiter}Type IV Anti-Icing{tuple_delimiter}$4.20 Type IV Rate{tuple_delimiter}rate applicability{tuple_delimiter}Type IV fluid application is billed at $4.20 per gallon.
+relation{tuple_delimiter}Type I Deicing{tuple_delimiter}$180.00 Call-Out Fee{tuple_delimiter}rate applicability{tuple_delimiter}Off-hours deicing requests are subject to the call-out fee.
+relation{tuple_delimiter}Pad Occupancy{tuple_delimiter}$35.00 Pad Occupancy Fee{tuple_delimiter}rate applicability{tuple_delimiter}Pad occupancy during deicing is billed per 10-minute increment.
+relation{tuple_delimiter}15-Minute Start SLA{tuple_delimiter}Type I Deicing{tuple_delimiter}sla compliance{tuple_delimiter}Deicing must start within 15 minutes of request.
+relation{tuple_delimiter}30-Minute Completion SLA{tuple_delimiter}Type I Deicing{tuple_delimiter}turnaround time{tuple_delimiter}Deicing must be completed within 30 minutes.
+relation{tuple_delimiter}Holdover Time Compliance{tuple_delimiter}Type IV Anti-Icing{tuple_delimiter}sla compliance{tuple_delimiter}Holdover time must be calculated according to SAE tables when applying Type IV.
+relation{tuple_delimiter}Delay Penalty{tuple_delimiter}15-Minute Start SLA{tuple_delimiter}penalty trigger{tuple_delimiter}Delay beyond the start SLA triggers the delay penalty.
+relation{tuple_delimiter}Holdover Computation Penalty{tuple_delimiter}Holdover Time Compliance{tuple_delimiter}penalty trigger{tuple_delimiter}Incorrect holdover calculations trigger the penalty.
+relation{tuple_delimiter}Performance Penalty{tuple_delimiter}97% On-Time Requirement{tuple_delimiter}penalty trigger{tuple_delimiter}Monthly performance below 97% triggers the performance penalty.
+relation{tuple_delimiter}Exhibit E{tuple_delimiter}Type I Deicing{tuple_delimiter}contract enforcement{tuple_delimiter}Fluid dilution ratios and environmental limits govern deicing operations.
+relation{tuple_delimiter}Heated Spray Rig{tuple_delimiter}Type I Deicing{tuple_delimiter}equipment requirement{tuple_delimiter}Heated spray rigs with viscosity monitors must be used during deicing.
+relation{tuple_delimiter}Glycol Recovery System{tuple_delimiter}Type I Deicing{tuple_delimiter}equipment requirement{tuple_delimiter}Glycol recovery systems must be used to collect runoff.
+relation{tuple_delimiter}Safety Cones{tuple_delimiter}Type I Deicing{tuple_delimiter}safety requirement{tuple_delimiter}Safety cones and marshallers must be present during operations.
+{completion_delimiter}
+
+""",
 ]
 
 PROMPTS["summarize_entity_descriptions"] = """---Role---
@@ -265,6 +424,8 @@ Your task is to synthesize a list of descriptions of a given entity or relation 
 8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
   - The entire output must be written in {language}.
   - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+  - Preserve numbers, percentages, currency symbols, and measurement units exactly as written; do not convert, normalize, or infer values beyond the provided descriptions.
+9. Grounding: Use only information present in the description list; do not introduce external knowledge or assumptions.
 
 ---Input---
 {description_type} Name: {description_name}
@@ -305,6 +466,9 @@ Consider the conversation history if provided to maintain conversational flow an
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
   - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+  - Preserve currency symbols, percentages, and measurement units exactly as written; do not convert or compute totals unless explicitly provided.
+  - When asked for “latest” or “current” information, prefer entries with the most recent effective dates, revision markers, amendment references, or version identifiers that appear in the **Context**. If multiple apply, list each with its validity window.
+  - Clarify scope and applicability (e.g., RON vs Turn, aircraft type coverage, station-specific rates) based strictly on the **Context**.
 
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.

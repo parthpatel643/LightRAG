@@ -146,31 +146,57 @@ Each versioned node contains:
 
 ---
 
-## Advantages of This Architecture
+## Design Philosophy
+
+This architecture follows these core design principles:
+
+**1. Sequence-First Approach**
+- Sequence index is the primary ordering mechanism
+- Higher sequence = more recent information
+- Simple, deterministic version resolution
+
+**2. Soft Tagging for Temporal Context**
+- Effective dates are embedded in content as `<EFFECTIVE_DATE>` tags
+- LLM interprets dates during generation, not during retrieval
+- Preserves nuance: "This rate is agreed but not yet active"
+
+**3. Split-Node Strategy**
+- Each document version creates separate entity nodes
+- No data loss from overwrites or merges
+- Complete audit trail through SUPERSEDES relationships
+
+**4. Content-Centric Storage**
+- All temporal information lives in content or tags
+- No external temporal metadata engines required
+- Scales with standard vector databases
+
+---
 
 ### 1. Time-Travel Queries
 Users can query the knowledge base as it existed at any point in time:
 ```
-"What was the parking fee in 2023?" → Returns v1
+"What was the parking fee on 2023-01-01?" → Returns v1
 "What is the current parking fee?" → Returns v2
 ```
 
-### 2. Change Tracking
+### 2. Complete Audit Trails
 The SUPERSEDES graph enables:
-- Audit logs of all changes
+- Historical records of all changes
 - Diff visualization between versions
-- Compliance verification
+- Compliance verification with timestamps
 
 ### 3. Conflict Resolution
 When multiple documents update the same entity:
-- Higher sequence ID wins by default
-- Effective dates provide secondary sorting
+- Highest sequence ID is authoritative
+- Soft tags preserve future-dated clauses
 - Manual override available via API
 
 ### 4. Scalability
-- Append-only writes (no updates)
+- Append-only writes (no updates, no deletes)
 - Efficient vector search on latest versions
-- Historical versions stored separately (cold storage)
+- Historical versions available but not hot in index
+
+---
 
 ---
 

@@ -37,6 +37,7 @@ dependencies = [
     "pypinyin",
     "python-dotenv",
     "pyyaml>=6.0.3",
+    "ruff>=0.14.6",
     "setuptools",
     "tenacity",
     "tiktoken",
