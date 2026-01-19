@@ -4,7 +4,7 @@ Data Preprocessing Module for Temporal RAG System
 This module provides utilities for sequencing contract documents
 and preparing them for ingestion into LightRAG with temporal metadata.
 
-Sprint 6 Update: Implements "Soft Tagging" for effective dates.
+
 Instead of extracting a single date per document, this module now:
 1. Scans each paragraph for date patterns
 2. Wraps found dates with XML tags: <EFFECTIVE_DATE confidence="high">YYYY-MM-DD</EFFECTIVE_DATE>
@@ -22,7 +22,7 @@ class ContractSequencer:
     Sequences contract files with temporal metadata for RAG ingestion.
 
     Assigns incrementing sequence indices and injects effective date tags
-    directly into content for LLM interpretation (Sprint 6: Soft Tagging).
+    directly into content for LLM interpretation (Soft Tagging).
 
     Instead of extracting dates as hidden metadata, this class now:
     - Identifies date patterns at paragraph level
@@ -82,7 +82,7 @@ class ContractSequencer:
         """
         Extract first effective date from the first 10 lines (legacy method).
 
-        NOTE: Sprint 6 deprecates this for hard filtering.
+        NOTE: This is deprecated for hard filtering.
         Now used only for display/logging purposes.
 
         Args:
@@ -178,7 +178,7 @@ class ContractSequencer:
         """
         Inject <EFFECTIVE_DATE> tags around date patterns in content.
 
-        Sprint 6: Soft Tagging Implementation
+        Soft Tagging Implementation
         Instead of extracting dates as metadata, we wrap them with XML tags
         so the LLM can interpret temporal confidence during generation.
 
@@ -227,7 +227,7 @@ class ContractSequencer:
         """
         Prepare documents for ingestion with temporal metadata.
 
-        Sprint 6 Update:
+
         - Injects <EFFECTIVE_DATE> tags directly into content
         - sequence_index is the ONLY hard filter
         - effective_date in metadata is for display only (not used in retrieval)
@@ -259,7 +259,7 @@ class ContractSequencer:
             except Exception as e:
                 raise IOError(f"Failed to read file '{file_path}': {e}")
 
-            # Sprint 6: Inject soft tags into content
+            # Inject soft tags into content
             tagged_content = self._inject_soft_tags(content)
 
             # Extract metadata (for display purposes)

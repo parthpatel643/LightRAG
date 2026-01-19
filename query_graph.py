@@ -231,8 +231,8 @@ Examples:
     parser.add_argument(
         "--working-dir",
         type=str,
-        default="./rag_storage",
-        help="LightRAG working directory (default: ./rag_storage)",
+        default="data/output/sea-cabin-cleaning",
+        help="LightRAG working directory (default: ./data/output/sea-cabin-cleaning)",
     )
 
     args = parser.parse_args()

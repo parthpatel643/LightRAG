@@ -3238,19 +3238,6 @@ async def filter_by_version(
     """
     Filter entities and relations by version based on sequence_index ONLY.
 
-    Sprint 6 Update: REMOVED effective_date filtering.
-    Now uses STRICT SEQUENCE LOGIC WITH GLOBAL VERSION LOOKUP:
-    - Extract base names from retrieved entities
-    - Query storage to find ALL versions of each base name globally
-    - Keep ONLY the version with the HIGHEST sequence number
-    - Ignore effective_date completely (dates are now soft tags in content)
-
-    Why this change?
-    - Vector search may not retrieve all versions (e.g., finds v1 but not v4)
-    - Need to ensure we always select the globally highest version
-    - Amendments can have multiple effective dates for different sections
-    - LLM now interprets <EFFECTIVE_DATE> tags during generation
-
     Args:
         entities: List of entity dictionaries with 'entity_name' field (from vector search)
         relations: List of relation dictionaries with 'src_id' and 'tgt_id' fields
@@ -3267,19 +3254,6 @@ async def filter_by_version(
         return [], []
 
     version_pattern = re.compile(r"^(.*?)\s*\[v(\d+)\]$")
-
-    # Step 0: Find globally maximum sequence number from all retrieved entities
-    max_global_version = 0
-    for entity in entities:
-        entity_name = entity.get("entity_name")
-        if not entity_name:
-            continue
-        match = version_pattern.match(entity_name)
-        if match:
-            version_num = int(match.group(2))
-            max_global_version = max(max_global_version, version_num)
-
-    logger.info(f"[Temporal Filter] Global max version detected: v{max_global_version}")
 
     # Step 1: Extract unique base names from retrieved entities
     base_names = set()
@@ -3304,13 +3278,12 @@ async def filter_by_version(
     valid_entity_names = set()
 
     if knowledge_graph_inst:
-        # Query all versions from storage
+        # Query all versions from storage and pick the highest per base_name
         for base_name in base_names:
-            # Find all version candidates: base_name [v1], [v2], [v3], [v4], etc.
-            # We'll check v1 through v10 (reasonable upper limit)
             version_candidates = []
 
-            for v in range(1, 11):  # Check v1 through v10
+            # Probe a reasonable range of versions; storage usually small discrete set
+            for v in range(1, 21):  # v1..v20 safety window
                 candidate_name = f"{base_name} [v{v}]"
                 try:
                     node_data = await knowledge_graph_inst.get_node(candidate_name)
@@ -3322,58 +3295,29 @@ async def filter_by_version(
                                 "data": node_data,
                             }
                         )
-                except:
-                    # Entity doesn't exist, skip
+                except Exception:
                     pass
 
-            # Also check unversioned base name
+            # Also check unversioned base name as fallback
             try:
                 node_data = await knowledge_graph_inst.get_node(base_name)
                 if node_data:
                     version_candidates.append(
                         {"entity_name": base_name, "version": 0, "data": node_data}
                     )
-            except:
+            except Exception:
                 pass
 
-            # Select highest version
             if version_candidates:
                 version_candidates.sort(key=lambda x: x["version"], reverse=True)
                 selected = version_candidates[0]
-
-                # STRICT FILTER: Only include if version matches global max OR if no max version exists for this base name
-                # This prevents mixing old entities (v1, v2) with new entities (v4) in the same context
-                if (
-                    selected["version"] == max_global_version
-                    or selected["version"] == 0
-                ):
-                    # Include max version entities or unversioned entities
-                    filtered_entities.append(
-                        {"entity_name": selected["entity_name"], **selected["data"]}
-                    )
-                    valid_entity_names.add(selected["entity_name"])
-
-                    logger.debug(
-                        f"[Temporal Filter] Selected {selected['entity_name']} (v{selected['version']}) "
-                        f"from {len(version_candidates)} versions - Latest signed version"
-                    )
-                elif len(version_candidates) == 1:
-                    # This entity only exists in one version - include it even if not max
-                    filtered_entities.append(
-                        {"entity_name": selected["entity_name"], **selected["data"]}
-                    )
-                    valid_entity_names.add(selected["entity_name"])
-
-                    logger.debug(
-                        f"[Temporal Filter] Included {selected['entity_name']} (v{selected['version']}) "
-                        f"- only version available (global max is v{max_global_version})"
-                    )
-                else:
-                    # Skip lower versions when higher versions exist globally
-                    logger.debug(
-                        f"[Temporal Filter] Skipped {selected['entity_name']} (v{selected['version']}) "
-                        f"- lower than global max v{max_global_version}"
-                    )
+                filtered_entities.append(
+                    {"entity_name": selected["entity_name"], **selected["data"]}
+                )
+                valid_entity_names.add(selected["entity_name"])
+                logger.debug(
+                    f"[Temporal Filter] Selected {selected['entity_name']} (v{selected['version']}) - latest per base"
+                )
     else:
         # Fallback: use only retrieved entities (old behavior)
         logger.warning(
@@ -4517,10 +4461,10 @@ async def _build_query_context(
             if not search_result["chunk_tracking"]:
                 return None
 
-    # Stage 1.5: Apply temporal filtering if in temporal mode
-    if query_param.mode == "temporal" and query_param.reference_date:
+    # Stage 1.5: Apply temporal filtering if in temporal mode (sequence-first, no date required)
+    if query_param.mode == "temporal":
         logger.info(
-            f"Applying temporal filter with reference_date={query_param.reference_date}"
+            f"Applying temporal filter (sequence-first). reference_date ignored={bool(query_param.reference_date)}"
         )
         filtered_entities, filtered_relations = await filter_by_version(
             search_result["final_entities"],
@@ -4601,11 +4545,7 @@ async def _build_query_context(
     )
 
     # Stage 3.5: Apply temporal filtering to merged chunks if in temporal mode
-    if (
-        query_param.mode == "temporal"
-        and query_param.reference_date
-        and max_sequence > 0
-    ):
+    if query_param.mode == "temporal" and max_sequence > 0:
         # Filter merged chunks to keep ONLY those from max sequence
         original_merged_count = len(merged_chunks)
 
