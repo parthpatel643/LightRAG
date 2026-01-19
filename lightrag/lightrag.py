@@ -1282,7 +1282,11 @@ class LightRAG:
         track_id: str | None = None,
         metadata: dict | list[dict] | None = None,
     ) -> str:
-        """Async Insert documents with checkpoint support
+        """Async Insert documents with automatic versioning.
+
+        Versioning is handled automatically - each document receives a unique
+        sequence_index (v1, v2, v3, ...) internally without user intervention.
+        The metadata parameter is ignored; versioning is fully managed internally.
 
         Args:
             input: Single document string or list of document strings
@@ -1293,7 +1297,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
-            metadata: single dict or list of dicts containing temporal metadata (sequence_index, effective_date, doc_type)
+            metadata: (Deprecated) parameter is ignored. Versioning is handled automatically.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1401,6 +1405,40 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
+    async def _get_next_sequence_index(self) -> int:
+        """Get the next sequence index for automatic versioning.
+
+        Retrieves the current sequence counter from KV storage, increments it,
+        and returns the new value. Works atomically for each insertion.
+
+        Returns:
+            int: Next sequence index (1-based for versioned documents)
+        """
+        counter_key = "_lightrag_metadata:sequence_counter"
+        try:
+            # Try to get existing counter
+            counter_data = await self.full_docs.get_by_id(counter_key)
+            if counter_data is None:
+                current_index = 0
+            else:
+                current_index = counter_data.get("last_index", 0)
+        except (KeyError, AttributeError):
+            current_index = 0
+
+        next_index = current_index + 1
+
+        # Persist updated counter
+        await self.full_docs.upsert(
+            {
+                counter_key: {
+                    "last_index": next_index,
+                    "updated_at": str(__import__("datetime").datetime.now()),
+                }
+            }
+        )
+
+        return next_index
+
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
@@ -1410,19 +1448,20 @@ class LightRAG:
         metadata: dict | list[dict] | None = None,
     ) -> str:
         """
-        Pipeline for Processing Documents
+        Pipeline for Processing Documents with Automatic Versioning
 
         1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
-        2. Generate document initial status
-        3. Filter out already processed documents
-        4. Enqueue document in status
+        2. Auto-assign sequence_index to each document for versioning
+        3. Generate document initial status
+        4. Filter out already processed documents
+        5. Enqueue document in status
 
         Args:
             input: Single document string or list of document strings
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
-            metadata: single dict or list of dicts containing temporal metadata (sequence_index, effective_date, doc_type)
+            metadata: (Deprecated) parameter is ignored. Versioning is handled automatically internally.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1451,21 +1490,18 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
-        # If metadata is provided, ensure it matches the number of documents
-        if metadata is not None:
-            if len(metadata) != len(input):
-                raise ValueError(
-                    "Number of metadata dicts must match the number of documents"
-                )
-        else:
-            # If no metadata provided, use defaults
-            metadata = [
+        # Always auto-assign sequence_index for each document
+        # Versioning is internalized and managed automatically
+        metadata = []
+        for _ in range(len(input)):
+            next_idx = await self._get_next_sequence_index()
+            metadata.append(
                 {
-                    "sequence_index": 0,
+                    "sequence_index": next_idx,
                     "effective_date": "unknown",
                     "doc_type": "unknown",
                 }
-            ] * len(input)
+            )
 
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:

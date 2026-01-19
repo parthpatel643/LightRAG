@@ -1,19 +1,20 @@
 #!/usr/bin/env python
 """
-build_graph.py - Data Ingestion Script for Temporal RAG
+build_graph.py - Data Ingestion Script for LightRAG with Automatic Versioning
 
-This script ingests versioned documents into LightRAG, creating a temporal knowledge graph.
-Documents are sequenced and processed with metadata to enable version-aware retrieval.
+This script ingests documents into LightRAG with fully automatic versioning. Each document
+automatically receives a unique version number (v1, v2, v3, ...) during ingestion. Users
+simply provide documents in order and versioning is handled transparently without requiring
+any metadata or configuration.
+
+Versioning is internalized in the graph and enables version-aware retrieval automatically.
 
 Usage:
-    # Ingest all files in a directory (auto-sequencing by filename)
-    python build_graph.py --input-dir ./test_temporal_ingest --working-dir ./rag_storage
+    # Ingest all files in a directory (auto-versioning)
+    python build_graph.py --input-dir ./contracts --working-dir ./rag_storage
 
-    # Ingest specific files in order
+    # Ingest specific files in order (auto-versioning)
     python build_graph.py --files Base.md Amendment1.md Amendment2.md --working-dir ./rag_storage
-
-    # Use data sequencer for automatic metadata extraction
-    python build_graph.py --input-dir ./contracts --use-sequencer --working-dir ./rag_storage
 """
 
 import argparse
@@ -32,74 +33,55 @@ from lightrag.utils import logger
 async def ingest_documents(
     rag: LightRAG,
     file_paths: List[Path],
-    use_sequencer: bool = False,
 ):
     """
-    Ingest documents into LightRAG with temporal metadata.
+    Ingest documents into LightRAG with automatic versioning.
+
+    Documents are ingested sequentially, and each automatically receives a unique
+    version number (v1, v2, v3, ...). Versioning is internalized in the graph
+    and transparent to the user.
 
     Args:
         rag: LightRAG instance
-        file_paths: List of file paths to ingest (in user-defined order)
-        use_sequencer: Whether to use ContractSequencer for metadata extraction
+        file_paths: List of file paths to ingest in order (sequence auto-assigned internally)
     """
-    if use_sequencer:
-        # Use ContractSequencer for automatic metadata extraction
-        try:
-            from data_prep import ContractSequencer
-
-            logger.info("Using ContractSequencer for metadata extraction...")
-            sequencer = ContractSequencer(
-                files=[str(p) for p in file_paths], order=[p.name for p in file_paths]
-            )
-            sequenced_docs = sequencer.prepare_for_ingestion()
-
-            # Insert documents with extracted metadata
-            for doc_data in sequenced_docs:
-                logger.info(
-                    f"Ingesting: {doc_data['metadata']['source']} (v{doc_data['metadata']['sequence_index']})"
-                )
-                await rag.ainsert(
-                    input=doc_data["content"],
-                    file_paths=doc_data["metadata"][
-                        "source"
-                    ],  # Pass source filename for citations
-                    metadata=doc_data["metadata"],
-                )
-
-        except ImportError:
-            logger.error("data_prep.py not found. Install or use --no-sequencer flag.")
-            sys.exit(1)
-    else:
-        # User-defined sequential ingestion
-        for idx, file_path in enumerate(file_paths, start=1):
-            logger.info(
-                f"Ingesting: {file_path.name} (sequence {idx}/{len(file_paths)})"
-            )
-
-            # Read file content
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            # Insert without metadata (or add minimal metadata)
-            await rag.ainsert(input=content)
-
+    await _ingest_files_sequentially(rag, file_paths)
     logger.info("✅ All documents ingested successfully!")
+
+
+async def _ingest_files_sequentially(rag: LightRAG, file_paths: List[Path]):
+    """
+    Ingest files sequentially with automatic sequence_index assignment.
+
+    Each document automatically receives a unique version number without
+    requiring explicit metadata from the user.
+
+    Args:
+        rag: LightRAG instance
+        file_paths: List of file paths to ingest in order
+    """
+    for file_path in file_paths:
+        logger.info(f"Ingesting: {file_path.name}")
+
+        # Read file content
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Insert without metadata - sequence_index will be auto-assigned
+        await rag.ainsert(input=content, file_paths=str(file_path))
 
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Ingest documents into LightRAG with temporal support",
+        description="Ingest documents into LightRAG with automatic versioning",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Ingest all markdown files in directory
+  # Ingest all markdown files in directory (auto-versioned)
   python build_graph.py --input-dir ./contracts
   
-  # Ingest specific files in order
+  # Ingest specific files in order (auto-versioned)
   python build_graph.py --files Base.md Amend1.md Amend2.md
-  
-  # Use ContractSequencer for metadata extraction
-  python build_graph.py --input-dir ./contracts --use-sequencer
   
   # Specify custom working directory
   python build_graph.py --input-dir ./contracts --working-dir ./custom_rag
@@ -126,11 +108,6 @@ Examples:
         type=str,
         default="./rag_storage",
         help="LightRAG working directory (default: ./rag_storage)",
-    )
-    parser.add_argument(
-        "--use-sequencer",
-        action="store_true",
-        help="Use ContractSequencer for automatic metadata extraction",
     )
 
     args = parser.parse_args()
@@ -193,7 +170,6 @@ Examples:
     await ingest_documents(
         rag=rag,
         file_paths=file_paths,
-        use_sequencer=args.use_sequencer,
     )
 
     await rag.finalize_storages()
