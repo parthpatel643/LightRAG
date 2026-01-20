@@ -72,15 +72,30 @@ class SafeStreamHandler(logging.StreamHandler):
             pass
 
 
-# Initialize logger with basic configuration
+# --- Logger initialization with LOG_LEVEL from environment ---
+def _get_log_level_from_env():
+    level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    # Accept synonyms
+    level_map = {
+        "WARN": "WARNING",
+        "WARNING": "WARNING",
+        "INFO": "INFO",
+        "DEBUG": "DEBUG",
+        "ERROR": "ERROR",
+        "CRITICAL": "CRITICAL",
+    }
+    return getattr(logging, level_map.get(level_str, "INFO"), logging.INFO)
+
+
+_LOG_LEVEL = _get_log_level_from_env()
 logger = logging.getLogger("lightrag")
 logger.propagate = False  # prevent log message send to root logger
-logger.setLevel(logging.INFO)
+logger.setLevel(_LOG_LEVEL)
 
 # Add console handler if no handlers exist
 if not logger.handlers:
     console_handler = SafeStreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(_LOG_LEVEL)
     formatter = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
