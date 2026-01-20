@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from lightrag import LightRAG, QueryParam
-from lightrag.functions import embedding_func, llm_model_func
+from lightrag.functions import embedding_func, llm_model_func, rerank_model_func
 from lightrag.utils import logger
 
 
@@ -191,6 +191,66 @@ async def interactive_mode(
 
 
 async def main():
+    # The main async logic remains here
+    # Validate arguments
+    if not args.interactive and not args.query:
+        parser.error("--query is required unless --interactive is specified")
+
+    if args.mode == "temporal" and not args.date and not args.interactive:
+        # Default to today's date for temporal mode
+        args.date = datetime.now().strftime("%Y-%m-%d")
+        logger.info(f"No --date specified, using today: {args.date}")
+
+    # Check working directory
+    working_dir = Path(args.working_dir)
+    if not working_dir.exists():
+        logger.error(f"Working directory not found: {working_dir}")
+        logger.error("Please run build_graph.py first to ingest documents")
+        sys.exit(1)
+
+    # Initialize LightRAG
+    logger.info(f"Initializing LightRAG (working_dir: {working_dir})...")
+
+    rag = LightRAG(
+        working_dir=str(working_dir),
+        llm_model_func=llm_model_func,
+        embedding_func=embedding_func,
+        rerank_model_func=rerank_model_func,
+        enable_llm_cache=False,
+    )
+
+    # Initialize storages
+    await rag.initialize_storages()
+    logger.info("✅ LightRAG initialized\n")
+
+    # Execute query or enter interactive mode
+    if args.interactive:
+        await interactive_mode(rag=rag, mode=args.mode, default_date=args.date)
+    else:
+        response = await query_rag(
+            rag=rag,
+            query=args.query,
+            mode=args.mode,
+            reference_date=args.date,
+            stream=args.stream,
+        )
+
+        if response is not None:
+            print("\n" + "=" * 60)
+            print("RESPONSE")
+            print("=" * 60)
+            print(response)
+            print("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+    import cProfile
+    import sys
+    from datetime import datetime
+    from pathlib import Path
+
     parser = argparse.ArgumentParser(
         description="Query LightRAG knowledge graph with temporal support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -209,7 +269,11 @@ Examples:
   python query_graph.py --query "What changed?" --mode temporal --date 2024-06-01 --stream
         """,
     )
-
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable cProfile profiling and save to profile_output.prof",
+    )
     # Query options
     parser.add_argument(
         "--query", type=str, help="Query string (required unless --interactive)"
@@ -239,55 +303,19 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate arguments
-    if not args.interactive and not args.query:
-        parser.error("--query is required unless --interactive is specified")
+    # Pass args to async main
+    async def main_with_args():
+        return await main()
 
-    if args.mode == "temporal" and not args.date and not args.interactive:
-        # Default to today's date for temporal mode
-        args.date = datetime.now().strftime("%Y-%m-%d")
-        logger.info(f"No --date specified, using today: {args.date}")
+    if args.profile:
 
-    # Check working directory
-    working_dir = Path(args.working_dir)
-    if not working_dir.exists():
-        logger.error(f"Working directory not found: {working_dir}")
-        logger.error("Please run build_graph.py first to ingest documents")
-        sys.exit(1)
+        def runner():
+            asyncio.run(main_with_args())
 
-    # Initialize LightRAG
-    logger.info(f"Initializing LightRAG (working_dir: {working_dir})...")
-
-    rag = LightRAG(
-        working_dir=str(working_dir),
-        llm_model_func=llm_model_func,
-        embedding_func=embedding_func,
-        enable_llm_cache=False,
-    )
-
-    # Initialize storages
-    await rag.initialize_storages()
-    logger.info("✅ LightRAG initialized\n")
-
-    # Execute query or enter interactive mode
-    if args.interactive:
-        await interactive_mode(rag=rag, mode=args.mode, default_date=args.date)
-    else:
-        response = await query_rag(
-            rag=rag,
-            query=args.query,
-            mode=args.mode,
-            reference_date=args.date,
-            stream=args.stream,
+        profile_file = "profile_output.prof"
+        cProfile.run("runner()", profile_file)
+        print(
+            f"Profile data saved to {profile_file}. To view, run: python -m pstats {profile_file}"
         )
-
-        if response is not None:
-            print("\n" + "=" * 60)
-            print("RESPONSE")
-            print("=" * 60)
-            print(response)
-            print("=" * 60 + "\n")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    else:
+        asyncio.run(main_with_args())
