@@ -193,6 +193,7 @@ async def generic_rerank_api(
     request_format: str = "standard",  # "standard" (Jina/Cohere) or "aliyun"
     enable_chunking: bool = False,
     max_tokens_per_doc: int = 480,
+    verify_ssl: bool = True,  # Set to False to disable SSL verification for self-signed certs
 ) -> List[Dict[str, Any]]:
     """
     Generic rerank API call for Jina/Cohere/Aliyun models.
@@ -291,8 +292,21 @@ async def generic_rerank_api(
     # Set timeout to prevent hanging (default 5 minutes for rerank which can be slow)
     timeout = aiohttp.ClientTimeout(total=300)
 
+    # Configure SSL verification
+    import ssl
+
+    ssl_context = None
+    if not verify_ssl:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        logger.warning("SSL verification disabled for rerank API")
+
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        connector = aiohttp.TCPConnector(ssl=ssl_context) if ssl_context else None
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector
+        ) as session:
             logger.debug(f"Sending POST to {base_url}")
             async with session.post(
                 base_url, headers=headers, json=payload
@@ -397,6 +411,7 @@ async def cohere_rerank(
     extra_body: Optional[Dict[str, Any]] = None,
     enable_chunking: bool = False,
     max_tokens_per_doc: int = 4096,
+    verify_ssl: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Rerank documents using Cohere API.
@@ -451,6 +466,7 @@ async def cohere_rerank(
         response_format="standard",
         enable_chunking=enable_chunking,
         max_tokens_per_doc=max_tokens_per_doc,
+        verify_ssl=verify_ssl,
     )
 
 

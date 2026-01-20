@@ -2688,6 +2688,7 @@ async def apply_rerank_if_enabled(
             query=query,
             documents=document_texts,
             top_n=top_n,
+            verify_ssl=False,  # Disable SSL verification for internal proxies with self-signed certs
         )
 
         # Process rerank results based on return format
