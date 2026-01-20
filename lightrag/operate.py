@@ -4523,6 +4523,33 @@ async def _build_query_context(
                 f"(keeping only sequence {max_sequence})"
             )
 
+    # Sort entities and relationships by latest version number (descending)
+    version_pattern = re.compile(r"\[v(\d+)\]$")
+
+    def extract_version(name: str) -> int:
+        """Extract version number from entity/relation name, return 0 if no version."""
+        match = version_pattern.search(name)
+        return int(match.group(1)) if match else 0
+
+    # Sort entities by version (latest first)
+    search_result["final_entities"] = sorted(
+        search_result["final_entities"],
+        key=lambda e: extract_version(e.get("entity_name", "")),
+        reverse=True,
+    )
+
+    # Sort relationships by version (latest first)
+    # Check both source_entity and target_entity for version numbers
+    search_result["final_relations"] = sorted(
+        search_result["final_relations"],
+        key=lambda r: max(
+            extract_version(r.get("src_id", "")), extract_version(r.get("tgt_id", ""))
+        ),
+        reverse=True,
+    )
+
+    logger.debug("Sorted entities and relationships by version number")
+
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(
         search_result,
