@@ -52,7 +52,9 @@ async def query_rag(
     """
     # Build query parameters
     param = QueryParam(
-        mode=mode, reference_date=reference_date if mode == "temporal" else None
+        mode=mode,
+        reference_date=reference_date if mode == "temporal" else None,
+        enable_rerank=True,
     )
 
     # Log query details

@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import os
+from typing import Any, Dict, List, Optional, Tuple
+
 import aiohttp
-from typing import Any, List, Dict, Optional, Tuple
+from dotenv import load_dotenv
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
-from .utils import logger
 
-from dotenv import load_dotenv
+from .utils import logger
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -287,82 +288,103 @@ async def generic_rerank_api(
         f"Rerank request: {len(documents)} documents, model: {model}, format: {response_format}"
     )
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(base_url, headers=headers, json=payload) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                content_type = response.headers.get("content-type", "").lower()
-                is_html_error = (
-                    error_text.strip().startswith("<!DOCTYPE html>")
-                    or "text/html" in content_type
-                )
-                if is_html_error:
-                    if response.status == 502:
-                        clean_error = "Bad Gateway (502) - Rerank service temporarily unavailable. Please try again in a few minutes."
-                    elif response.status == 503:
-                        clean_error = "Service Unavailable (503) - Rerank service is temporarily overloaded. Please try again later."
-                    elif response.status == 504:
-                        clean_error = "Gateway Timeout (504) - Rerank service request timed out. Please try again."
+    # Set timeout to prevent hanging (default 5 minutes for rerank which can be slow)
+    timeout = aiohttp.ClientTimeout(total=300)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            logger.debug(f"Sending POST to {base_url}")
+            async with session.post(
+                base_url, headers=headers, json=payload
+            ) as response:
+                logger.debug(f"Response status: {response.status}")
+
+                if response.status != 200:
+                    error_text = await response.text()
+                    content_type = response.headers.get("content-type", "").lower()
+                    is_html_error = (
+                        error_text.strip().startswith("<!DOCTYPE html>")
+                        or "text/html" in content_type
+                    )
+                    if is_html_error:
+                        if response.status == 502:
+                            clean_error = "Bad Gateway (502) - Rerank service temporarily unavailable. Please try again in a few minutes."
+                        elif response.status == 503:
+                            clean_error = "Service Unavailable (503) - Rerank service is temporarily overloaded. Please try again later."
+                        elif response.status == 504:
+                            clean_error = "Gateway Timeout (504) - Rerank service request timed out. Please try again."
+                        else:
+                            clean_error = f"HTTP {response.status} - Rerank service error. Please try again later."
                     else:
-                        clean_error = f"HTTP {response.status} - Rerank service error. Please try again later."
+                        clean_error = error_text
+                    logger.error(f"Rerank API error {response.status}: {clean_error}")
+                    raise aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=response.status,
+                        message=f"Rerank API error: {clean_error}",
+                    )
+
+                response_json = await response.json()
+                logger.debug("Response parsed successfully")
+
+                if response_format == "aliyun":
+                    # Aliyun format: {"output": {"results": [...]}}
+                    results = response_json.get("output", {}).get("results", [])
+                    if not isinstance(results, list):
+                        logger.warning(
+                            f"Expected 'output.results' to be list, got {type(results)}: {results}"
+                        )
+                        results = []
+                elif response_format == "standard":
+                    # Standard format: {"results": [...]}
+                    results = response_json.get("results", [])
+                    if not isinstance(results, list):
+                        logger.warning(
+                            f"Expected 'results' to be list, got {type(results)}: {results}"
+                        )
+                        results = []
                 else:
-                    clean_error = error_text
-                logger.error(f"Rerank API error {response.status}: {clean_error}")
-                raise aiohttp.ClientResponseError(
-                    request_info=response.request_info,
-                    history=response.history,
-                    status=response.status,
-                    message=f"Rerank API error: {clean_error}",
-                )
+                    raise ValueError(f"Unsupported response format: {response_format}")
 
-            response_json = await response.json()
+                if not results:
+                    logger.warning("Rerank API returned empty results")
+                    return []
 
-            if response_format == "aliyun":
-                # Aliyun format: {"output": {"results": [...]}}
-                results = response_json.get("output", {}).get("results", [])
-                if not isinstance(results, list):
-                    logger.warning(
-                        f"Expected 'output.results' to be list, got {type(results)}: {results}"
+                # Standardize return format
+                standardized_results = [
+                    {
+                        "index": result["index"],
+                        "relevance_score": result["relevance_score"],
+                    }
+                    for result in results
+                ]
+
+                # Aggregate chunk scores back to original documents if chunking was enabled
+                if enable_chunking and doc_indices:
+                    standardized_results = aggregate_chunk_scores(
+                        standardized_results,
+                        doc_indices,
+                        len(original_documents),
+                        aggregation="max",
                     )
-                    results = []
-            elif response_format == "standard":
-                # Standard format: {"results": [...]}
-                results = response_json.get("results", [])
-                if not isinstance(results, list):
-                    logger.warning(
-                        f"Expected 'results' to be list, got {type(results)}: {results}"
-                    )
-                    results = []
-            else:
-                raise ValueError(f"Unsupported response format: {response_format}")
+                    # Apply original top_n limit at document level (post-aggregation)
+                    # This preserves document-level semantics: top_n limits documents, not chunks
+                    if (
+                        original_top_n is not None
+                        and len(standardized_results) > original_top_n
+                    ):
+                        standardized_results = standardized_results[:original_top_n]
 
-            if not results:
-                logger.warning("Rerank API returned empty results")
-                return []
+                logger.debug(f"Returning {len(standardized_results)} results")
+                return standardized_results
 
-            # Standardize return format
-            standardized_results = [
-                {"index": result["index"], "relevance_score": result["relevance_score"]}
-                for result in results
-            ]
-
-            # Aggregate chunk scores back to original documents if chunking was enabled
-            if enable_chunking and doc_indices:
-                standardized_results = aggregate_chunk_scores(
-                    standardized_results,
-                    doc_indices,
-                    len(original_documents),
-                    aggregation="max",
-                )
-                # Apply original top_n limit at document level (post-aggregation)
-                # This preserves document-level semantics: top_n limits documents, not chunks
-                if (
-                    original_top_n is not None
-                    and len(standardized_results) > original_top_n
-                ):
-                    standardized_results = standardized_results[:original_top_n]
-
-            return standardized_results
+    except (aiohttp.ClientError, aiohttp.ClientResponseError) as e:
+        logger.error(f"Rerank request failed: {type(e).__name__}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in rerank: {type(e).__name__}: {e}")
+        raise
 
 
 async def cohere_rerank(
