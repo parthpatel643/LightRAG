@@ -27,6 +27,7 @@ from pathlib import Path
 
 from lightrag import LightRAG, QueryParam
 from lightrag.functions import embedding_func, llm_model_func, rerank_model_func
+from lightrag.profiling import TimingBreakdown
 from lightrag.utils import logger
 
 
@@ -36,6 +37,7 @@ async def query_rag(
     mode: str = "hybrid",
     reference_date: str = None,
     stream: bool = False,
+    timing: TimingBreakdown = None,
 ):
     """
     Query the LightRAG knowledge graph.
@@ -46,10 +48,14 @@ async def query_rag(
         mode: Query mode (local, global, hybrid, temporal, etc.)
         reference_date: Reference date for temporal mode (YYYY-MM-DD)
         stream: Whether to stream the response
+        timing: Optional TimingBreakdown object for profiling
 
     Returns:
         Query response string
     """
+    if timing:
+        timing.mark("query_prepare")
+
     # Build query parameters
     param = QueryParam(
         mode=mode,
@@ -67,20 +73,28 @@ async def query_rag(
     logger.info(f"Query: {query}")
     logger.info("=" * 60 + "\n")
 
+    if timing:
+        timing.mark("query_prepare")
+        timing.mark("query_execute")
+
     # Execute query
     if stream:
         logger.info("Streaming response:\n")
         async for chunk in rag.aquery_stream(query, param=param):
             print(chunk, end="", flush=True)
         print("\n")
-        return None
+        response = None
     else:
         response = await rag.aquery(query, param=param)
-        return response
+
+    if timing:
+        timing.mark("query_execute")
+
+    return response
 
 
 async def interactive_mode(
-    rag: LightRAG, mode: str = "hybrid", default_date: str = None
+    rag: LightRAG, mode: str = "hybrid", default_date: str = None, timing: TimingBreakdown = None
 ):
     """
     Interactive query mode - allows multiple queries in a session.
@@ -89,6 +103,7 @@ async def interactive_mode(
         rag: LightRAG instance
         mode: Default query mode
         default_date: Default reference date for temporal mode
+        timing: Optional TimingBreakdown object for profiling
     """
     print("\n" + "=" * 60)
     print("INTERACTIVE QUERY MODE")
@@ -173,6 +188,7 @@ async def interactive_mode(
                 mode=current_mode,
                 reference_date=current_date if current_mode == "temporal" else None,
                 stream=False,
+                timing=timing,
             )
 
             # Display response
@@ -201,6 +217,12 @@ async def main():
         args.date = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"No --date specified, using today: {args.date}")
 
+    # Initialize timing if requested
+    timing = TimingBreakdown("Query Phases") if args.timing else None
+
+    if timing:
+        timing.mark("initialization")
+
     # Check working directory
     working_dir = Path(args.working_dir)
     if not working_dir.exists():
@@ -223,9 +245,12 @@ async def main():
     await rag.initialize_storages()
     logger.info("✅ LightRAG initialized\n")
 
+    if timing:
+        timing.mark("initialization")
+
     # Execute query or enter interactive mode
     if args.interactive:
-        await interactive_mode(rag=rag, mode=args.mode, default_date=args.date)
+        await interactive_mode(rag=rag, mode=args.mode, default_date=args.date, timing=timing)
     else:
         response = await query_rag(
             rag=rag,
@@ -233,6 +258,7 @@ async def main():
             mode=args.mode,
             reference_date=args.date,
             stream=args.stream,
+            timing=timing,
         )
 
         if response is not None:
@@ -241,6 +267,9 @@ async def main():
             print("=" * 60)
             print(response)
             print("=" * 60 + "\n")
+
+    if timing:
+        timing.report()
 
 
 if __name__ == "__main__":
@@ -262,17 +291,22 @@ Examples:
   # Interactive mode
   python query_graph.py --interactive --mode temporal --date 2024-01-01
   
-  # Hybrid mode query
-  python query_graph.py --query "Summarize the contract" --mode hybrid
+  # Hybrid mode query with profiling
+  python query_graph.py --query "Summarize the contract" --mode hybrid --profile
   
-  # Stream response
-  python query_graph.py --query "What changed?" --mode temporal --date 2024-06-01 --stream
+  # Stream response with timing breakdown
+  python query_graph.py --query "What changed?" --mode temporal --date 2024-06-01 --stream --timing
         """,
     )
     parser.add_argument(
         "--profile",
         action="store_true",
         help="Enable cProfile profiling and save to profile_output.prof",
+    )
+    parser.add_argument(
+        "--timing",
+        action="store_true",
+        help="Enable detailed timing breakdown for query phases",
     )
     # Query options
     parser.add_argument(
@@ -315,7 +349,8 @@ Examples:
         profile_file = "profile_output.prof"
         cProfile.run("runner()", profile_file)
         print(
-            f"Profile data saved to {profile_file}. To view, run: python -m pstats {profile_file}"
+            f"\nProfile data saved to {profile_file}"
         )
+        print(f"View with: python -m pstats {profile_file}")
     else:
         asyncio.run(main_with_args())

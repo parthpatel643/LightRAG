@@ -39,7 +39,9 @@ Usage:
     # v4: Amendment3.md
 """
 
+import argparse
 import asyncio
+import cProfile
 import os
 import sys
 from pathlib import Path
@@ -54,6 +56,7 @@ from lightrag.constants import (
 )
 from lightrag.functions import embedding_func, llm_model_func
 from lightrag.hierarchical_chunker import create_hierarchical_chunking_func
+from lightrag.profiling import ProfileContext, TimingBreakdown
 from lightrag.utils import logger
 
 
@@ -102,14 +105,55 @@ async def main():
     """
     Main entry point. Configuration sourced from .env with fallback to constants.
     """
-    # Get configuration from .env or use defaults from constants
-    input_dir = os.getenv("INPUT_DIR", DEFAULT_INPUT_DIR)
-    working_dir = os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR)
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Ingest documents into LightRAG knowledge graph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Standard ingestion
+  python build_graph.py
+  
+  # With profiling
+  python build_graph.py --profile
+  
+  # Custom input/working directories
+  python build_graph.py --input-dir ./docs --working-dir ./rag_output
+        """,
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable cProfile profiling and save to profile_output.prof",
+    )
+    parser.add_argument(
+        "--timing",
+        action="store_true",
+        help="Enable detailed timing breakdown for each phase",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=str,
+        help="Input directory for documents (overrides INPUT_DIR env var)",
+    )
+    parser.add_argument(
+        "--working-dir",
+        type=str,
+        help="LightRAG working directory (overrides WORKING_DIR env var)",
+    )
+
+    args = parser.parse_args()
+
+    # Get configuration from args, .env, or use defaults
+    input_dir = args.input_dir or os.getenv("INPUT_DIR", DEFAULT_INPUT_DIR)
+    working_dir = args.working_dir or os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR)
     chunk_size = int(os.getenv("CHUNK_SIZE", DEFAULT_CHUNK_SIZE))
     chunk_overlap = int(os.getenv("CHUNK_OVERLAP_SIZE", DEFAULT_CHUNK_OVERLAP_SIZE))
     extract_gleaning = int(
         os.getenv("ENTITY_EXTRACT_MAX_GLEANING", DEFAULT_ENTITY_EXTRACT_MAX_GLEANING)
     )
+
+    timing = TimingBreakdown("Ingestion Phases") if args.timing else None
 
     logger.info("=" * 60)
     logger.info("LightRAG Document Ingestion")
@@ -118,6 +162,13 @@ async def main():
     logger.info(f"Working Directory: {working_dir}")
     logger.info(f"Chunk Size: {chunk_size}")
     logger.info(f"Chunk Overlap: {chunk_overlap}")
+    if args.profile:
+        logger.info("Profiling: ENABLED")
+    if args.timing:
+        logger.info("Timing: ENABLED")
+
+    if timing:
+        timing.mark("setup")
 
     # Gather file paths
     file_paths = []
@@ -183,6 +234,10 @@ async def main():
                 "Invalid input. Please enter numbers separated by spaces or commas"
             )
 
+    if timing:
+        timing.mark("setup")
+        timing.mark("initialization")
+
     # Initialize LightRAG
     logger.info(f"\nInitializing LightRAG (working_dir: {working_dir})...")
 
@@ -202,6 +257,10 @@ async def main():
     await rag.initialize_storages()
     logger.info("✅ LightRAG initialized")
 
+    if timing:
+        timing.mark("initialization")
+        timing.mark("ingestion")
+
     # Ingest documents
     logger.info("\n" + "=" * 60)
     logger.info("INGESTING DOCUMENTS")
@@ -212,7 +271,14 @@ async def main():
         file_paths=file_paths,
     )
 
+    if timing:
+        timing.mark("ingestion")
+        timing.mark("finalization")
+
     await rag.finalize_storages()
+
+    if timing:
+        timing.mark("finalization")
 
     # Summary
     logger.info("\n" + "=" * 60)
@@ -224,6 +290,68 @@ async def main():
     logger.info("  1. Use query_graph.py to query the knowledge graph")
     logger.info(f"  2. Example: python query_graph.py --working-dir {working_dir}")
 
+    if timing:
+        timing.report()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    import cProfile
+
+    parser = argparse.ArgumentParser(
+        description="Ingest documents into LightRAG knowledge graph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Standard ingestion
+  python build_graph.py
+  
+  # With profiling
+  python build_graph.py --profile
+  
+  # With timing breakdown
+  python build_graph.py --timing
+  
+  # Custom directories with profiling
+  python build_graph.py --profile --input-dir ./docs --working-dir ./rag_output
+        """,
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable cProfile profiling and save to profile_output.prof",
+    )
+    parser.add_argument(
+        "--timing",
+        action="store_true",
+        help="Enable detailed timing breakdown for each phase",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=str,
+        help="Input directory for documents",
+    )
+    parser.add_argument(
+        "--working-dir",
+        type=str,
+        help="LightRAG working directory",
+    )
+
+    args = parser.parse_args()
+
+    async def main_wrapper():
+        return await main()
+
+    if args.profile:
+
+        def runner():
+            asyncio.run(main_wrapper())
+
+        profile_file = "profile_output.prof"
+        cProfile.run("runner()", profile_file)
+        print(
+            f"\nProfile data saved to {profile_file}"
+        )
+        print(f"View with: python -m pstats {profile_file}")
+    else:
+        asyncio.run(main_wrapper())
