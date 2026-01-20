@@ -44,6 +44,7 @@ from lightrag.prompt import PROMPTS
 from lightrag.utils import (
     CacheData,
     Tokenizer,
+    apply_rerank_if_enabled,
     apply_source_ids_limit,
     compute_args_hash,
     compute_mdhash_id,
@@ -4233,6 +4234,24 @@ async def _merge_all_chunks(
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
+
+    # Apply reranking to merged chunks if enabled
+    if query_param.enable_rerank and query and merged_chunks and text_chunks_db:
+        logger.debug(f"Applying reranking to {len(merged_chunks)} merged chunks")
+
+        # Rerank merged chunks to improve relevance
+        rerank_top_k = query_param.chunk_top_k or len(merged_chunks)
+        merged_chunks = await apply_rerank_if_enabled(
+            query=query,
+            retrieved_docs=merged_chunks,
+            global_config=text_chunks_db.global_config,
+            enable_rerank=query_param.enable_rerank,
+            top_n=rerank_top_k,
+        )
+
+        logger.info(
+            f"Reranked merged chunks: {len(merged_chunks)} chunks retained after reranking"
+        )
 
     return merged_chunks
 
