@@ -2687,7 +2687,7 @@ async def apply_rerank_if_enabled(
         rerank_results = await rerank_func(
             query=query,
             documents=document_texts,
-            top_n=top_n,
+            top_n=min(top_n, len(retrieved_docs)),
             verify_ssl=False,  # Disable SSL verification for internal proxies with self-signed certs
         )
 
