@@ -1,29 +1,26 @@
 """
 Centralized configuration constants for LightRAG.
 
-This module defines default values for configuration constants used across
-different parts of the LightRAG system. Centralizing these values ensures
-consistency and makes maintenance easier.
+This module loads configuration from environment variables (see .env file) using python-dotenv.
+If a variable is not set in the environment, a default value is used.
 """
 
-# Default values for server settings
+# Server settings
 DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
 
-# Default values for extraction settings
-DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
+
+# Extraction settings
+DEFAULT_SUMMARY_LANGUAGE = "English"
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
 
-# Number of description fragments to trigger LLM summary
+
+# LLM summary and entity extraction
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
-# Max description token size to trigger LLM summary
 DEFAULT_SUMMARY_MAX_TOKENS = 1200
-# Recommended LLM summary output length in tokens
 DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
-# Maximum token size sent to LLM for summary
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
-# Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
     "Organization",
@@ -44,12 +41,14 @@ DEFAULT_ENTITY_TYPES = [
     "Equipment",
 ]
 
-# Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
+
+# Separator for: description, source_id and relation-key fields (Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
+
 
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
-DEFAULT_CHUNK_TOP_K = 60  # Increased for better tabular data coverage
+DEFAULT_CHUNK_TOP_K = 60
 DEFAULT_MAX_ENTITY_TOKENS = 6000
 DEFAULT_MAX_RELATION_TOKENS = 8000
 DEFAULT_MAX_TOTAL_TOKENS = 30000
@@ -57,7 +56,7 @@ DEFAULT_COSINE_THRESHOLD = 0.2
 DEFAULT_RELATED_CHUNK_NUMBER = 5
 DEFAULT_KG_CHUNK_PICK_METHOD = "VECTOR"
 
-# TODO: Deprated. All conversation_history messages is send to LLM.
+# TODO: Deprecated. All conversation_history messages is sent to LLM.
 DEFAULT_HISTORY_TURNS = 0
 
 # Rerank configuration defaults
