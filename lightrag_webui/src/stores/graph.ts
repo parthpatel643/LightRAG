@@ -98,6 +98,20 @@ interface GraphState {
   graphDataFetchAttempted: boolean
   labelsFetchAttempted: boolean
 
+  // Chunk storage for nodes and edges
+  nodeChunks: Record<string, Array<{
+    reference_id: string
+    file_path: string
+    content?: string[]
+    score?: number
+  }>>
+  edgeChunks: Record<string, Array<{
+    reference_id: string
+    file_path: string
+    content?: string[]
+    score?: number
+  }>>
+
   setSigmaInstance: (instance: any) => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
@@ -140,6 +154,12 @@ interface GraphState {
   // Methods for updating graph elements and UI state together
   updateNodeAndSelect: (nodeId: string, entityId: string, propertyName: string, newValue: string) => Promise<void>
   updateEdgeAndSelect: (edgeId: string, dynamicId: string, sourceId: string, targetId: string, propertyName: string, newValue: string) => Promise<void>
+
+  // Methods for managing chunk storage
+  setNodeChunks: (nodeId: string, chunks: any[]) => void
+  setEdgeChunks: (edgeId: string, chunks: any[]) => void
+  clearNodeChunks: (nodeId?: string) => void
+  clearEdgeChunks: (edgeId?: string) => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set, get) => ({
@@ -164,6 +184,9 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   typeColorMap: new Map<string, string>(),
 
   searchEngine: null,
+
+  nodeChunks: {},
+  edgeChunks: {},
 
   setGraphIsEmpty: (isEmpty: boolean) => set({ graphIsEmpty: isEmpty }),
   setLastSuccessfulQueryLabel: (label: string) => set({ lastSuccessfulQueryLabel: label }),
@@ -373,6 +396,49 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     } catch (error) {
       console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
       throw new Error('Failed to update edge in graph')
+    }
+  },
+
+  // Methods for managing chunk storage
+  setNodeChunks: (nodeId: string, chunks: any[]) => {
+    set((state) => ({
+      nodeChunks: {
+        ...state.nodeChunks,
+        [nodeId]: chunks
+      }
+    }))
+  },
+
+  setEdgeChunks: (edgeId: string, chunks: any[]) => {
+    set((state) => ({
+      edgeChunks: {
+        ...state.edgeChunks,
+        [edgeId]: chunks
+      }
+    }))
+  },
+
+  clearNodeChunks: (nodeId?: string) => {
+    if (nodeId) {
+      set((state) => {
+        const newNodeChunks = { ...state.nodeChunks }
+        delete newNodeChunks[nodeId]
+        return { nodeChunks: newNodeChunks }
+      })
+    } else {
+      set({ nodeChunks: {} })
+    }
+  },
+
+  clearEdgeChunks: (edgeId?: string) => {
+    if (edgeId) {
+      set((state) => {
+        const newEdgeChunks = { ...state.edgeChunks }
+        delete newEdgeChunks[edgeId]
+        return { edgeChunks: newEdgeChunks }
+      })
+    } else {
+      set({ edgeChunks: {} })
     }
   }
 }))

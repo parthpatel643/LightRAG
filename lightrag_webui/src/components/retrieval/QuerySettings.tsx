@@ -44,7 +44,10 @@ export default function QuerySettings() {
     chunk_top_k: 20,
     max_entity_tokens: 6000,
     max_relation_tokens: 8000,
-    max_total_tokens: 30000
+    max_total_tokens: 30000,
+    history_turns: 0,
+    hl_keywords: [],
+    ll_keywords: []
   }), [])
 
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
@@ -149,6 +152,119 @@ export default function QuerySettings() {
                 <ResetButton
                   onClick={() => handleReset('mode')}
                   title="Reset to default (Mix)"
+                />
+              </div>
+            </>
+
+            {/* Reference Date - Only show when mode is temporal */}
+            {querySettings.mode === 'temporal' && (
+              <>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="reference_date" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.referenceDate', 'Reference Date')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.referenceDateTooltip', 'Filter versioned entities by their effective date. Returns entities valid on or before this date.')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Input
+                  id="reference_date"
+                  type="date"
+                  value={querySettings.reference_date || new Date().toISOString().split('T')[0]}
+                  onChange={(e) => handleChange('reference_date', e.target.value)}
+                  className="h-9"
+                />
+              </>
+            )}
+
+            {/* High-Level Keywords */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="hl_keywords" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.hlKeywords', 'HL Keywords')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.hlKeywordsTooltip', 'High-level keywords to prioritize in retrieval. Leave empty to auto-generate.')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <Input
+                id="hl_keywords"
+                type="text"
+                value={(querySettings.hl_keywords || []).join(', ')}
+                onChange={(e) => handleChange('hl_keywords', e.target.value.split(',').map(k => k.trim()).filter(k => k))}
+                placeholder={t('retrievePanel.querySettings.keywordsPlaceholder', 'Comma-separated')}
+                className="h-9"
+              />
+            </>
+
+            {/* Low-Level Keywords */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="ll_keywords" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.llKeywords', 'LL Keywords')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.llKeywordsTooltip', 'Low-level keywords to refine retrieval focus. Leave empty to auto-generate.')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <Input
+                id="ll_keywords"
+                type="text"
+                value={(querySettings.ll_keywords || []).join(', ')}
+                onChange={(e) => handleChange('ll_keywords', e.target.value.split(',').map(k => k.trim()).filter(k => k))}
+                placeholder={t('retrievePanel.querySettings.keywordsPlaceholder', 'Comma-separated')}
+                className="h-9"
+              />
+            </>
+
+            {/* History Turns */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="history_turns" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.historyTurns', 'History Turns')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.historyTurnsTooltip', 'Number of conversation turns to include as context. 0 = disabled.')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div className="flex items-center gap-1">
+                <Input
+                  id="history_turns"
+                  type="number"
+                  value={querySettings.history_turns ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    handleChange('history_turns', value === '' ? 0 : parseInt(value) || 0)
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    if (value === '' || isNaN(parseInt(value))) {
+                      handleChange('history_turns', 0)
+                    }
+                  }}
+                  min={0}
+                  placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder', '0')}
+                  className="h-9 flex-1 pr-2 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [-moz-appearance:textfield]"
+                />
+                <ResetButton
+                  onClick={() => handleReset('history_turns')}
+                  title="Reset to default (0)"
                 />
               </div>
             </>
@@ -471,6 +587,49 @@ export default function QuerySettings() {
                   id="stream"
                   checked={querySettings.stream}
                   onCheckedChange={(checked) => handleChange('stream', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="include_references" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.includeReferences', 'Include References')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.includeReferencesTooltip', 'Include source references in query responses.')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="include_references"
+                  checked={querySettings.include_references !== false}
+                  onCheckedChange={(checked) => handleChange('include_references', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="include_chunk_content" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.includeChunkContent', 'Include Chunk Content')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.includeChunkContentTooltip', 'Include actual chunk text in references (requires include_references=true).')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="include_chunk_content"
+                  checked={querySettings.include_chunk_content}
+                  onCheckedChange={(checked) => handleChange('include_chunk_content', checked)}
+                  disabled={querySettings.include_references === false}
                 />
               </div>
             </>

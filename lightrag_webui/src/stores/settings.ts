@@ -133,7 +133,11 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
+        hl_keywords: [],
+        ll_keywords: [],
+        include_references: true,
+        include_chunk_content: false
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -189,11 +193,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
 
       updateQuerySettings: (settings: Partial<QueryRequest>) => {
-        // Filter out history_turns to prevent changes, always keep it as 0
-        const filteredSettings = { ...settings }
-        delete filteredSettings.history_turns
+        // Allow history_turns to be updated - it will be used for conversation context
         set((state) => ({
-          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 }
+          querySettings: { ...state.querySettings, ...settings }
         }))
       },
 
@@ -238,7 +240,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -326,9 +328,12 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.documentsPageSize = 10
         }
         if (version < 17) {
-          // Force history_turns to 0 for all users
+          // Remove the forced history_turns to 0, allow user configuration
           if (state.querySettings) {
-            state.querySettings.history_turns = 0
+            // Initialize to 0 if not present, but allow updates
+            if (!('history_turns' in state.querySettings)) {
+              state.querySettings.history_turns = 0
+            }
           }
         }
         if (version < 18) {
@@ -339,6 +344,15 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Remove deprecated response_type parameter
           if (state.querySettings) {
             delete state.querySettings.response_type
+          }
+        }
+        if (version < 20) {
+          // Add new query parameters for keyword support and references
+          if (state.querySettings) {
+            state.querySettings.hl_keywords = state.querySettings.hl_keywords || []
+            state.querySettings.ll_keywords = state.querySettings.ll_keywords || []
+            state.querySettings.include_references = state.querySettings.include_references !== false
+            state.querySettings.include_chunk_content = state.querySettings.include_chunk_content || false
           }
         }
         return state

@@ -20,6 +20,7 @@ import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
 import LegendButton from '@/components/graph/LegendButton'
+import ChunksPanel from '@/components/graph/ChunksPanel'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -173,15 +174,30 @@ const GraphViewer = () => {
   // in GraphControl was sufficient. This code was removed to simplify implementation
 
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
-    if (value === null) useGraphStore.getState().setFocusedNode(null)
-    else if (value.type === 'nodes') useGraphStore.getState().setFocusedNode(value.id)
+    if (value === null) {
+      useGraphStore.getState().setFocusedNode(null)
+      useGraphStore.getState().setFocusedEdge(null)
+    } else if (value.type === 'nodes') {
+      useGraphStore.getState().setFocusedNode(value.id)
+      useGraphStore.getState().setFocusedEdge(null)
+    } else if (value.type === 'edges') {
+      useGraphStore.getState().setFocusedEdge(value.id)
+      useGraphStore.getState().setFocusedNode(null)
+    }
   }, [])
 
   const onSearchSelect = useCallback((value: GraphSearchOption | null) => {
     if (value === null) {
       useGraphStore.getState().setSelectedNode(null)
+      useGraphStore.getState().setSelectedEdge(null)
     } else if (value.type === 'nodes') {
+      console.debug('[GraphViewer] Node selected:', value.id)
       useGraphStore.getState().setSelectedNode(value.id, true)
+      useGraphStore.getState().setSelectedEdge(null)
+    } else if (value.type === 'edges') {
+      console.debug('[GraphViewer] Edge selected:', value.id)
+      useGraphStore.getState().setSelectedEdge(value.id)
+      useGraphStore.getState().setSelectedNode(null)
     }
   }, [])
 
@@ -205,15 +221,21 @@ const GraphViewer = () => {
 
         <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-        <div className="absolute top-2 left-2 flex items-start gap-2">
-          <GraphLabels />
+        <div className="absolute top-2 left-2 flex items-start gap-2 z-20">
           {showNodeSearchBar && !isThemeSwitching && (
-            <GraphSearch
-              value={searchInitSelectedNode}
-              onFocus={onSearchFocus}
-              onChange={onSearchSelect}
-            />
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground px-2 font-semibold">Search Graph (Nodes & Edges)</label>
+              <GraphSearch
+                value={searchInitSelectedNode}
+                onFocus={onSearchFocus}
+                onChange={onSearchSelect}
+              />
+            </div>
           )}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-muted-foreground px-2 font-semibold">Load Different Graph</label>
+            <GraphLabels />
+          </div>
         </div>
 
         <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
@@ -226,8 +248,9 @@ const GraphViewer = () => {
         </div>
 
         {showPropertyPanel && (
-          <div className="absolute top-2 right-2 z-10">
+          <div className="absolute top-2 right-2 z-10 flex flex-col gap-2 max-w-96">
             <PropertiesView />
+            <ChunksPanel />
           </div>
         )}
 

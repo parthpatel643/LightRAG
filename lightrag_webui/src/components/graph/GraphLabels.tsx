@@ -15,6 +15,15 @@ import Button from '@/components/ui/Button'
 import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
 import { getPopularLabels, searchLabels } from '@/api/lightrag'
 
+export interface GraphLabelOption {
+  label: string
+  type: 'node_label' | 'edge'
+  edgeId?: string
+  edgeLabel?: string
+  sourceLabel?: string
+  targetLabel?: string
+}
+
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
@@ -117,18 +126,24 @@ const GraphLabels = () => {
   }, [])
 
   const fetchData = useCallback(
-    async (query?: string): Promise<string[]> => {
-      let results: string[] = [];
+    async (query?: string): Promise<GraphLabelOption[]> => {
+      let results: GraphLabelOption[] = [];
+      const graph = useGraphStore.getState().sigmaGraph
+      
       if (!query || query.trim() === '' || query.trim() === '*') {
-        // Empty query: return search history
-        results = SearchHistoryManager.getHistoryLabels(dropdownDisplayLimit)
+        // Empty query: return search history and some edges
+        const historyLabels = SearchHistoryManager.getHistoryLabels(dropdownDisplayLimit)
+        results = historyLabels.map(label => ({ label, type: 'node_label' as const }))
       } else {
-        // Non-empty query: call backend search API
+        // Non-empty query: call backend search API for labels + search current graph for edges
         try {
           const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit)
+          console.debug('[GraphLabels] Backend search results for query "' + query + '":', { totalResults: apiResults.length, sampleResults: apiResults.slice(0, 3) })
+          
+          // Add node labels from backend
           results = apiResults.length <= dropdownDisplayLimit
-            ? apiResults
-            : [...apiResults.slice(0, dropdownDisplayLimit), '...']
+            ? apiResults.map(label => ({ label, type: 'node_label' as const }))
+            : apiResults.slice(0, dropdownDisplayLimit).map(label => ({ label, type: 'node_label' as const }))
         } catch (error) {
           console.error('Search API failed, falling back to local history search:', error)
 
@@ -137,12 +152,59 @@ const GraphLabels = () => {
           const queryLower = query.toLowerCase().trim()
           results = history
             .filter(item => item.label.toLowerCase().includes(queryLower))
-            .map(item => item.label)
+            .map(item => ({ label: item.label, type: 'node_label' as const }))
             .slice(0, dropdownDisplayLimit)
         }
+        
+        // Also search for edges in the current graph
+        if (graph && graph.edges().length > 0) {
+          const queryLower = query.toLowerCase().trim()
+          const edgeResults = graph.edges()
+            .filter(edgeId => graph.hasEdge(edgeId))
+            .map(edgeId => {
+              const edgeData = graph.getEdgeAttributes(edgeId)
+              const sourceLabel = edgeData.source && graph.hasNode(edgeData.source) 
+                ? graph.getNodeAttribute(edgeData.source, 'label')
+                : edgeData.source
+              const targetLabel = edgeData.target && graph.hasNode(edgeData.target)
+                ? graph.getNodeAttribute(edgeData.target, 'label')
+                : edgeData.target
+              const edgeType = edgeData.label || edgeData.type || 'relationship'
+              
+              return {
+                sourceLabel,
+                targetLabel,
+                edgeLabel: edgeType,
+                edgeId,
+                matches: [sourceLabel, targetLabel, edgeType].join(' ').toLowerCase().includes(queryLower)
+              }
+            })
+            .filter(e => e.matches)
+            .slice(0, 5) // Limit edges to 5 results
+            .map(e => ({
+              label: `${e.sourceLabel} -[${e.edgeLabel}]-> ${e.targetLabel}`,
+              type: 'edge' as const,
+              edgeId: e.edgeId,
+              edgeLabel: e.edgeLabel,
+              sourceLabel: e.sourceLabel,
+              targetLabel: e.targetLabel
+            }))
+          
+          if (edgeResults.length > 0) {
+            console.debug('[GraphLabels] Found', edgeResults.length, 'matching edges')
+            results = [...results, ...edgeResults]
+          }
+        }
       }
-      // Always show '*' at the top, and remove duplicates
-      const finalResults = ['*', ...results.filter(label => label !== '*')];
+      
+      // Always show '*' at the top for node labels, and remove duplicates
+      const nodeResults = results.filter(r => r.type === 'node_label')
+      const edgeResults = results.filter(r => r.type === 'edge')
+      const finalResults: GraphLabelOption[] = [
+        { label: '*', type: 'node_label' },
+        ...nodeResults.filter(r => r.label !== '*'),
+        ...edgeResults
+      ];
       return finalResults;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,7 +315,7 @@ const GraphLabels = () => {
         <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
       </Button>
       <div className="w-full min-w-[280px] max-w-[500px]">
-        <AsyncSelect<string>
+        <AsyncSelect<GraphLabelOption>
           key={selectKey} // Force re-render when data changes
           className="min-w-[300px]"
           triggerClassName="max-h-8 w-full overflow-hidden"
@@ -262,14 +324,20 @@ const GraphLabels = () => {
           fetcher={fetchData}
           onBeforeOpen={handleDropdownBeforeOpen}
           renderOption={(item) => (
-            <div className="truncate" title={item}>
-              {item}
+            <div className="truncate text-sm">
+              {item.type === 'edge' ? (
+                <span className="text-xs text-blue-600 dark:text-blue-400 font-mono">
+                  {item.label}
+                </span>
+              ) : (
+                <span title={item.label}>{item.label}</span>
+              )}
             </div>
           )}
-          getOptionValue={(item) => item}
+          getOptionValue={(item) => item.label}
           getDisplayValue={(item) => (
-            <div className="min-w-0 flex-1 truncate text-left" title={item}>
-              {item}
+            <div className="min-w-0 flex-1 truncate text-left" title={item.label}>
+              {item.label}
             </div>
           )}
           notFound={<div className="py-6 text-center text-sm">{t('graphPanel.graphLabels.noLabels')}</div>}
@@ -278,17 +346,14 @@ const GraphLabels = () => {
           searchPlaceholder={t('graphPanel.graphLabels.placeholder')}
           noResultsMessage={t('graphPanel.graphLabels.noLabels')}
           value={label !== null ? label : '*'}
-          onChange={(newLabel) => {
-            const currentLabel = useSettingsStore.getState().queryLabel;
-
+          onChange={(selectedLabel) => {
             // select the last item means query all
-            if (newLabel === '...') {
-              newLabel = '*';
-            }
+            let newLabel = selectedLabel === '...' ? '*' : selectedLabel;
+            const currentLabel = useSettingsStore.getState().queryLabel;
 
             // Handle reselecting the same label
             if (newLabel === currentLabel && newLabel !== '*') {
-              newLabel = '*';
+              return;
             }
 
             // Add selected label to search history (except for special cases)

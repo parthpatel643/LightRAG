@@ -127,6 +127,10 @@ export type QueryRequest = {
   max_relation_tokens?: number
   /** Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt). */
   max_total_tokens?: number
+  /** List of high-level keywords to prioritize in retrieval. Leave empty to use the LLM to generate the keywords. */
+  hl_keywords?: string[]
+  /** List of low-level keywords to refine retrieval focus. Leave empty to use the LLM to generate the keywords. */
+  ll_keywords?: string[]
   /**
    * Stores past conversation history to maintain context.
    * Format: [{"role": "user/assistant", "content": "message"}].
@@ -140,10 +144,19 @@ export type QueryRequest = {
   enable_rerank?: boolean
   /** Reference date for temporal mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='temporal'. */
   reference_date?: string
+  /** If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references. */
+  include_references?: boolean
+  /** If True, includes actual chunk text content in references. Only applies when include_references=True. */
+  include_chunk_content?: boolean
 }
 
 export type QueryResponse = {
   response: string
+  references?: Array<{
+    reference_id: string
+    file_path: string
+    content?: string[]
+  }>
 }
 
 export type EntityUpdateResponse = {

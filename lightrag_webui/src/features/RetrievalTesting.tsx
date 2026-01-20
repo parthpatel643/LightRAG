@@ -6,6 +6,7 @@ import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useGraphStore } from '@/stores/graph'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
@@ -380,9 +381,46 @@ export default function RetrievalTesting() {
             }
             updateAssistantMessage(errorMessage, true)
           }
+          
+          // For streaming mode, also fetch references separately if available
+          if (state.querySettings.include_references) {
+            try {
+              // Make a non-streaming request to get the references
+              const refResponse = await queryText(queryParams)
+              if (refResponse.references && refResponse.references.length > 0) {
+                const selectedNode = useGraphStore.getState().selectedNode
+                const selectedEdge = useGraphStore.getState().selectedEdge
+                
+                if (selectedNode) {
+                  useGraphStore.getState().setNodeChunks(selectedNode, refResponse.references)
+                  console.debug('[RetrievalTesting] Stored chunks for streaming node:', selectedNode, 'Count:', refResponse.references.length)
+                } else if (selectedEdge) {
+                  useGraphStore.getState().setEdgeChunks(selectedEdge, refResponse.references)
+                  console.debug('[RetrievalTesting] Stored chunks for streaming edge:', selectedEdge, 'Count:', refResponse.references.length)
+                }
+              }
+            } catch (refError) {
+              console.debug('[RetrievalTesting] Could not fetch references for streaming:', refError)
+              // Don't fail the entire query if reference fetching fails
+            }
+          }
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
+          
+          // Store references/chunks in the graph store if available
+          if (response.references && response.references.length > 0) {
+            const selectedNode = useGraphStore.getState().selectedNode
+            const selectedEdge = useGraphStore.getState().selectedEdge
+            
+            if (selectedNode) {
+              useGraphStore.getState().setNodeChunks(selectedNode, response.references)
+              console.debug('[RetrievalTesting] Stored chunks for node:', selectedNode, 'Count:', response.references.length)
+            } else if (selectedEdge) {
+              useGraphStore.getState().setEdgeChunks(selectedEdge, response.references)
+              console.debug('[RetrievalTesting] Stored chunks for edge:', selectedEdge, 'Count:', response.references.length)
+            }
+          }
         }
       } catch (err) {
         // Handle error

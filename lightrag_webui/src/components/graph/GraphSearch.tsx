@@ -1,6 +1,5 @@
 import { FC, useCallback, useEffect } from 'react'
 import {
-  EdgeById,
   GraphSearchInputProps,
   GraphSearchContextProviderProps
 } from '@react-sigma/graph-search'
@@ -49,11 +48,44 @@ const NodeOption = ({ id }: { id: string }) => {
   )
 }
 
+const EdgeOption = ({ id }: { id: string }) => {
+  const graph = useGraphStore.use.sigmaGraph()
+
+  // Early return if no graph or edge doesn't exist
+  if (!graph?.hasEdge(id)) {
+    return null
+  }
+
+  // Safely get edge attributes
+  const edgeData = graph.getEdgeAttributes(id)
+  const source = edgeData.source || ''
+  const target = edgeData.target || ''
+  const label = edgeData.label || edgeData.type || 'Relationship'
+  const sourceLabel = source && graph.hasNode(source) ? 
+    (graph.getNodeAttribute(source, 'label') || source) : source
+  const targetLabel = target && graph.hasNode(target) ? 
+    (graph.getNodeAttribute(target, 'label') || target) : target
+  const color = edgeData.color || '#999'
+
+  // Edge display component showing source -> relation -> target
+  return (
+    <div className="flex items-center gap-2 p-2 text-sm max-w-md">
+      <div className="flex items-center gap-1 overflow-hidden">
+        <span className="truncate text-xs opacity-75">{sourceLabel}</span>
+        <span className="flex-shrink-0 mx-1 font-semibold text-xs px-1 py-0.5 rounded" style={{ backgroundColor: color, color: 'white' }}>
+          {label}
+        </span>
+        <span className="truncate text-xs opacity-75">{targetLabel}</span>
+      </div>
+    </div>
+  )
+}
+
 function OptionComponent(item: OptionItem) {
   return (
     <div>
       {item.type === 'nodes' && <NodeOption id={item.id} />}
-      {item.type === 'edges' && <EdgeById id={item.id} />}
+      {item.type === 'edges' && <EdgeOption id={item.id} />}
       {item.type === 'message' && <div>{item.message}</div>}
     </div>
   )
@@ -87,36 +119,72 @@ export const GraphSearchInput = ({
   useEffect(() => {
     // Skip if no graph, empty graph, or search engine already exists
     if (!graph || graph.nodes().length === 0 || searchEngine) {
+      console.debug('[GraphSearch] Skipping search engine creation:', {
+        hasGraph: !!graph,
+        graphNodesCount: graph?.nodes().length || 0,
+        hasSearchEngine: !!searchEngine
+      })
       return
     }
+
+    console.debug('[GraphSearch] Creating search engine with', graph.nodes().length, 'nodes and', graph.edges().length, 'edges')
 
     // Create new search engine
     const newSearchEngine = new MiniSearch({
       idField: 'id',
-      fields: ['label'],
+      fields: ['label', 'type'],
       searchOptions: {
         prefix: true,
         fuzzy: 0.2,
         boost: {
-          label: 2
+          label: 2,
+          type: 1
         }
       }
     })
 
     // Add nodes to search engine with safety checks
-    const documents = graph.nodes()
+    const nodeDocuments = graph.nodes()
       .filter(id => graph.hasNode(id)) // Ensure node exists before accessing attributes
       .map((id: string) => ({
         id: id,
-        label: graph.getNodeAttribute(id, 'label')
+        label: graph.getNodeAttribute(id, 'label'),
+        type: 'node',
+        entityType: 'node'
       }))
 
-    if (documents.length > 0) {
-      newSearchEngine.addAll(documents)
+    console.debug('[GraphSearch] Adding', nodeDocuments.length, 'nodes to search engine')
+    if (nodeDocuments.length > 0) {
+      newSearchEngine.addAll(nodeDocuments)
+    }
+
+    // Add edges to search engine with safety checks
+    const edgeDocuments = graph.edges()
+      .filter(id => graph.hasEdge(id))
+      .map((id: string) => {
+        const edgeData = graph.getEdgeAttributes(id)
+        const sourceLabel = edgeData.source && graph.hasNode(edgeData.source) ? 
+          graph.getNodeAttribute(edgeData.source, 'label') : edgeData.source
+        const targetLabel = edgeData.target && graph.hasNode(edgeData.target) ? 
+          graph.getNodeAttribute(edgeData.target, 'label') : edgeData.target
+        const label = `${sourceLabel} - ${edgeData.label || edgeData.type || 'link'} - ${targetLabel}`
+        
+        return {
+          id: id,
+          label: label,
+          type: edgeData.label || edgeData.type || 'relationship',
+          entityType: 'edge'
+        }
+      })
+
+    console.debug('[GraphSearch] Adding', edgeDocuments.length, 'edges to search engine', { sampleEdges: edgeDocuments.slice(0, 3) })
+    if (edgeDocuments.length > 0) {
+      newSearchEngine.addAll(edgeDocuments)
     }
 
     // Update search engine in store
     useGraphStore.getState().setSearchEngine(newSearchEngine)
+    console.debug('[GraphSearch] Search engine created successfully')
   }, [graph, searchEngine])
 
   /**
@@ -128,32 +196,52 @@ export const GraphSearchInput = ({
 
       // Safety checks to prevent crashes
       if (!graph || !searchEngine) {
+        console.debug('[GraphSearch] loadOptions: Missing graph or searchEngine', { hasGraph: !!graph, hasSearchEngine: !!searchEngine })
         return []
       }
 
       // Verify graph has nodes before proceeding
       if (graph.nodes().length === 0) {
+        console.debug('[GraphSearch] loadOptions: Graph has no nodes')
         return []
       }
 
-      // If no query, return some nodes for user to select
+      // If no query, return some nodes and edges for user to select
       if (!query) {
         const nodeIds = graph.nodes()
           .filter(id => graph.hasNode(id))
-          .slice(0, searchResultLimit)
-        return nodeIds.map(id => ({
-          id,
-          type: 'nodes'
-        }))
+          .slice(0, Math.floor(searchResultLimit / 2))
+        
+        const edgeIds = graph.edges()
+          .filter(id => graph.hasEdge(id))
+          .slice(0, Math.floor(searchResultLimit / 2))
+
+        const results: OptionItem[] = [
+          ...nodeIds.map(id => ({ id, type: 'nodes' as const })),
+          ...edgeIds.map(id => ({ id, type: 'edges' as const }))
+        ]
+        
+        console.debug('[GraphSearch] loadOptions: No query, returning defaults:', { nodes: nodeIds.length, edges: edgeIds.length })
+        return results.slice(0, searchResultLimit)
       }
 
-      // If has query, search nodes and verify they still exist
+      // If has query, search nodes and edges and verify they still exist
       let result: OptionItem[] = searchEngine.search(query)
-        .filter((r: { id: string }) => graph.hasNode(r.id))
-        .map((r: { id: string }) => ({
-          id: r.id,
-          type: 'nodes'
-        }))
+        .filter((r: { id: string, entityType?: string }) => {
+          if (r.entityType === 'edge') {
+            return graph.hasEdge(r.id)
+          }
+          return graph.hasNode(r.id)
+        })
+        .map((r: { id: string, entityType?: string }) => {
+          const type = r.entityType === 'edge' ? 'edges' : 'nodes'
+          return {
+            id: r.id,
+            type: type as 'nodes' | 'edges'
+          }
+        })
+
+      console.debug('[GraphSearch] loadOptions: Search results for query "' + query + '":', { totalResults: result.length, sampleResults: result.slice(0, 3) })
 
       // Add middle-content matching if results are few
       // This enables matching content in the middle of text, not just from the beginning
@@ -183,8 +271,31 @@ export const GraphSearchInput = ({
             type: 'nodes' as const
           }))
 
+        // Also match edges in the middle
+        const middleEdgeMatchResults = graph.edges()
+          .filter(id => {
+            // Skip already matched edges
+            if (matchedIds.has(id)) return false
+
+            // Ensure edge exists
+            if (!graph.hasEdge(id)) return false
+
+            // Get edge label
+            const edgeData = graph.getEdgeAttributes(id)
+            const label = edgeData.label || edgeData.type || ''
+            
+            return label &&
+                   typeof label === 'string' &&
+                   !label.toLowerCase().startsWith(query.toLowerCase()) &&
+                   label.toLowerCase().includes(query.toLowerCase())
+          })
+          .map(id => ({
+            id,
+            type: 'edges' as const
+          }))
+
         // Merge results
-        result = [...result, ...middleMatchResults]
+        result = [...result, ...middleMatchResults, ...middleEdgeMatchResults]
       }
 
       // prettier-ignore
@@ -210,10 +321,26 @@ export const GraphSearchInput = ({
       getOptionValue={(item) => item.id}
       value={value && value.type !== 'message' ? value.id : null}
       onChange={(id) => {
-        if (id !== messageId) onChange(id ? { id, type: 'nodes' } : null)
+        if (id !== messageId) {
+          // Determine if this is a node or edge
+          if (graph && graph.hasEdge(id)) {
+            console.debug('[GraphSearch] Edge selected:', id)
+            onChange(id ? { id, type: 'edges' } : null)
+          } else {
+            console.debug('[GraphSearch] Node selected:', id)
+            onChange(id ? { id, type: 'nodes' } : null)
+          }
+        }
       }}
       onFocus={(id) => {
-        if (id !== messageId && onFocus) onFocus(id ? { id, type: 'nodes' } : null)
+        if (id !== messageId && onFocus) {
+          // Determine if this is a node or edge
+          if (graph && graph.hasEdge(id)) {
+            onFocus(id ? { id, type: 'edges' } : null)
+          } else {
+            onFocus(id ? { id, type: 'nodes' } : null)
+          }
+        }
       }}
       ariaLabel={t('graphPanel.search.placeholder')}
       placeholder={t('graphPanel.search.placeholder')}
