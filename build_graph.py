@@ -56,7 +56,7 @@ from lightrag.constants import (
 )
 from lightrag.functions import embedding_func, llm_model_func
 from lightrag.hierarchical_chunker import create_hierarchical_chunking_func
-from lightrag.profiling import ProfileContext, TimingBreakdown
+from lightrag.profiling import TimingBreakdown
 from lightrag.utils import logger
 
 
@@ -349,9 +349,7 @@ Examples:
 
         profile_file = "profile_output.prof"
         cProfile.run("runner()", profile_file)
-        print(
-            f"\nProfile data saved to {profile_file}"
-        )
+        print(f"\nProfile data saved to {profile_file}")
         print(f"View with: python -m pstats {profile_file}")
     else:
         asyncio.run(main_wrapper())

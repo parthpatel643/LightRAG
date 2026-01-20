@@ -2,6 +2,8 @@
 
 This guide explains how to use the profiling and performance analysis tools available in LightRAG.
 
+> **Quick Start?** See [PROFILING_QUICK_REFERENCE.md](PROFILING_QUICK_REFERENCE.md) for one-liners and common tasks.
+
 ## Overview
 
 The profiling infrastructure provides three main capabilities:

@@ -8,16 +8,13 @@ This module provides profiling utilities including:
 - Profile statistics analysis and export
 """
 
-import asyncio
 import cProfile
 import io
 import pstats
-import sys
 import time
 from contextlib import contextmanager
 from functools import wraps
-from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from lightrag.utils import logger
 
@@ -73,9 +70,7 @@ class ProfileStats:
         if format_type == "prof":
             self.prof.dump_stats(output_file)
             logger.info(f"Profile data saved to {output_file}")
-            logger.info(
-                f"View with: python -m pstats {output_file}"
-            )
+            logger.info(f"View with: python -m pstats {output_file}")
         elif format_type == "txt":
             with open(output_file, "w") as f:
                 s = io.StringIO()
@@ -100,9 +95,7 @@ class ProfileStats:
         stats_list = []
         for func, stat in list(self.stats.stats.items())[:n]:
             filename, lineno, funcname = func
-            stats_list.append(
-                (filename, lineno, funcname, stat[0], stat[2], stat[3])
-            )
+            stats_list.append((filename, lineno, funcname, stat[0], stat[2], stat[3]))
         return stats_list
 
 
@@ -199,15 +192,11 @@ def profile_function(
 
                 # Display stats
                 profile_stats = ProfileStats(prof=prof)
-                profile_stats.print_stats(
-                    sort_by=sort_by, top_n=top_n, strip_dirs=True
-                )
+                profile_stats.print_stats(sort_by=sort_by, top_n=top_n, strip_dirs=True)
 
                 # Save if requested
                 if output_file:
-                    profile_stats.save_stats(
-                        output_file, format_type="prof"
-                    )
+                    profile_stats.save_stats(output_file, format_type="prof")
                     profile_stats.save_stats(
                         output_file.replace(".prof", ".txt"), format_type="txt"
                     )
@@ -248,15 +237,11 @@ def profile_async_function(
 
                 # Display stats
                 profile_stats = ProfileStats(prof=prof)
-                profile_stats.print_stats(
-                    sort_by=sort_by, top_n=top_n, strip_dirs=True
-                )
+                profile_stats.print_stats(sort_by=sort_by, top_n=top_n, strip_dirs=True)
 
                 # Save if requested
                 if output_file:
-                    profile_stats.save_stats(
-                        output_file, format_type="prof"
-                    )
+                    profile_stats.save_stats(output_file, format_type="prof")
                     profile_stats.save_stats(
                         output_file.replace(".prof", ".txt"), format_type="txt"
                     )

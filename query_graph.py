@@ -94,7 +94,10 @@ async def query_rag(
 
 
 async def interactive_mode(
-    rag: LightRAG, mode: str = "hybrid", default_date: str = None, timing: TimingBreakdown = None
+    rag: LightRAG,
+    mode: str = "hybrid",
+    default_date: str = None,
+    timing: TimingBreakdown = None,
 ):
     """
     Interactive query mode - allows multiple queries in a session.
@@ -250,7 +253,9 @@ async def main():
 
     # Execute query or enter interactive mode
     if args.interactive:
-        await interactive_mode(rag=rag, mode=args.mode, default_date=args.date, timing=timing)
+        await interactive_mode(
+            rag=rag, mode=args.mode, default_date=args.date, timing=timing
+        )
     else:
         response = await query_rag(
             rag=rag,
@@ -348,9 +353,7 @@ Examples:
 
         profile_file = "profile_output.prof"
         cProfile.run("runner()", profile_file)
-        print(
-            f"\nProfile data saved to {profile_file}"
-        )
+        print(f"\nProfile data saved to {profile_file}")
         print(f"View with: python -m pstats {profile_file}")
     else:
         asyncio.run(main_with_args())

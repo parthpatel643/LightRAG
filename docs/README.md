@@ -56,6 +56,19 @@ Welcome to LightRAG documentation. This folder contains comprehensive guides for
   - Migration from non-temporal API
 
 ### Advanced Topics
+- **[PROFILING_GUIDE.md](PROFILING_GUIDE.md)** - Performance analysis and profiling
+  - cProfile-based function profiling
+  - Timing breakdown analysis
+  - Memory profiling utilities
+  - Query and ingestion profiling examples
+  - Best practices for performance optimization
+
+- **[PROFILING_QUICK_REFERENCE.md](PROFILING_QUICK_REFERENCE.md)** - Quick profiling reference
+  - One-liner commands for common tasks
+  - Using profiling decorators and context managers
+  - Interpreting profiling output
+  - Pro tips and troubleshooting
+
 - **[LightRAG_concurrent_explain.md](LightRAG_concurrent_explain.md)** - Concurrency strategy
   - Document-level control
   - Chunk-level control
@@ -84,6 +97,7 @@ Welcome to LightRAG documentation. This folder contains comprehensive guides for
 - **Deploy LightRAG** → Read [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
 - **Understand the architecture** → Read [ARCHITECTURE.md](ARCHITECTURE.md)
 - **Integrate via API** → Check [API_REFERENCE.md](API_REFERENCE.md)
+- **Profile and optimize performance** → See [PROFILING_GUIDE.md](PROFILING_GUIDE.md) and [PROFILING_QUICK_REFERENCE.md](PROFILING_QUICK_REFERENCE.md)
 - **Optimize concurrency** → Review [LightRAG_concurrent_explain.md](LightRAG_concurrent_explain.md)
 - **Manage dependencies** → See [UV_LOCK_GUIDE.md](UV_LOCK_GUIDE.md)
 
@@ -97,12 +111,14 @@ Welcome to LightRAG documentation. This folder contains comprehensive guides for
 **System Architect**
 1. [ARCHITECTURE.md](ARCHITECTURE.md) - System design
 2. [RETRIEVAL_LOGIC.md](RETRIEVAL_LOGIC.md) - Algorithm details
-3. [LightRAG_concurrent_explain.md](LightRAG_concurrent_explain.md) - Performance tuning
+3. [PROFILING_GUIDE.md](PROFILING_GUIDE.md) - Performance optimization
+4. [LightRAG_concurrent_explain.md](LightRAG_concurrent_explain.md) - Concurrency tuning
 
 **DevOps / Platform Engineer**
 1. [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Deployment setup
-2. [ARCHITECTURE.md](ARCHITECTURE.md) - System understanding
-3. [UV_LOCK_GUIDE.md](UV_LOCK_GUIDE.md) - Dependency management
+2. [PROFILING_GUIDE.md](PROFILING_GUIDE.md) - Performance monitoring
+3. [ARCHITECTURE.md](ARCHITECTURE.md) - System understanding
+4. [UV_LOCK_GUIDE.md](UV_LOCK_GUIDE.md) - Dependency management
 
 **Application Developer**
 1. [USER_GUIDE.md](USER_GUIDE.md) - Getting started

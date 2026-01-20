@@ -234,6 +234,27 @@ Sequence Range: 1-4
 Effective Date Range: 2023-01-01 to 2025-12-31
 ```
 
+### Performance Profiling
+
+Monitor LightRAG performance during ingestion and querying:
+
+**Query with timing breakdown:**
+```bash
+python query_graph.py --query "Your question" --timing
+```
+
+**Profile with detailed statistics:**
+```bash
+python query_graph.py --query "Your question" --profile
+```
+
+**Profile ingestion:**
+```bash
+python build_graph.py --profile --timing
+```
+
+For detailed profiling workflows, see [PROFILING_GUIDE.md](PROFILING_GUIDE.md) and [PROFILING_QUICK_REFERENCE.md](PROFILING_QUICK_REFERENCE.md).
+
 ---
 
 ## Testing Your Installation

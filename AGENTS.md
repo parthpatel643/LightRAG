@@ -3,7 +3,7 @@
 LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed to enhance information retrieval and generation through graph-based knowledge representation.
 
 ## Project Structure & Module Organization
-- `lightrag/`: Core Python package with orchestrators (`lightrag/lightrag.py`), storage adapters in `kg/`, LLM bindings in `llm/`, and helpers such as `operate.py` and `utils_*.py`.
+- `lightrag/`: Core Python package with orchestrators (`lightrag/lightrag.py`), storage adapters in `kg/`, LLM bindings in `llm/`, profiling utilities in `profiling.py`, and helpers such as `operate.py` and `utils_*.py`.
 - `lightrag-api/`: FastAPI service (`lightrag_server.py`) with routers under `routers/` and Gunicorn launcher `run_with_gunicorn.py`.
 - `lightrag_webui/`: React 19 + TypeScript client driven by Bun + Vite; UI components live in `src/`.
 - Tests live in `tests/` and root-level `test_*.py`. Working datasets stay in `inputs/`, `rag_storage/`, `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and `docker-compose.yml`.
@@ -15,6 +15,11 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - `python -m pytest tests` (offline markers apply by default) or `python -m pytest tests --run-integration` / `python test_graph_storage.py`: run the full suite, opt into integration coverage, or target an individual script.
 - `ruff check .`: lint Python sources before committing.
 - `bun install`, `bun run dev`, `bun run build`, `bun test`: manage the web UI workflow (Bun is mandatory).
+- **Profiling & Performance**: Use `--profile` and/or `--timing` flags with `query_graph.py` and `build_graph.py`:
+  - `python query_graph.py --query "text" --mode hybrid --timing`: Query with phase timing breakdown
+  - `python query_graph.py --query "text" --mode temporal --date YYYY-MM-DD --profile`: Profile temporal queries
+  - `python build_graph.py --profile --timing`: Profile document ingestion
+  - See [docs/PROFILING_GUIDE.md](docs/PROFILING_GUIDE.md) and [docs/PROFILING_QUICK_REFERENCE.md](docs/PROFILING_QUICK_REFERENCE.md) for detailed profiling workflows.
 
 ## Coding Style & Naming Conventions
 - Backend code follow PEP 8 with four-space indentation, annotate functions, and reach for dataclasses when modelling state.
