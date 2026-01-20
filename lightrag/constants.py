@@ -89,12 +89,12 @@ DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
 DEFAULT_TEMPERATURE = 0.3  # Low temperature for more deterministic factual responses
 
 # Async configuration defaults
-DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
-DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
+DEFAULT_MAX_ASYNC = 8  # Default maximum async operations (increased for better concurrency)
+DEFAULT_MAX_PARALLEL_INSERT = 4  # Default maximum parallel insert operations (increased for throughput)
 
 # Embedding configuration defaults
-DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
-DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
+DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 12  # Default max async for embedding functions (increased for parallelization)
+DEFAULT_EMBEDDING_BATCH_NUM = 20  # Default batch size for embedding computations (increased batch size)
 
 # Gunicorn worker timeout
 DEFAULT_TIMEOUT = 300

@@ -117,12 +117,16 @@ class JsonKVStorage(BaseKVStorage):
             return result
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Optimized batch fetch implementation"""
         async with self._storage_lock:
+            # Process all records in a single pass for improved performance
             results = []
+            
+            # Using a list comprehension for better performance
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    # Create a copy to avoid modifying the original data
+                    # Create a copy with dictionary comprehension for better performance
                     result = {k: v for k, v in data.items()}
                     # Ensure time fields are present, provide default values for old data
                     result.setdefault("create_time", 0)

@@ -513,77 +513,96 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """Get nodes as a batch using UNWIND
 
-        Default implementation fetches nodes one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+        Default implementation fetches nodes using asyncio.gather for better parallelism.
+        Override this method for even better performance in storage backends
+        that support native batch operations.
         """
-        result = {}
-        for node_id in node_ids:
+        async def get_single_node(node_id):
             node = await self.get_node(node_id)
-            if node is not None:
-                result[node_id] = node
-        return result
+            return node_id, node
+            
+        # Use gather to parallelize node fetching
+        results = await asyncio.gather(*[get_single_node(node_id) for node_id in node_ids])
+        
+        # Filter out None results and build result dictionary
+        return {node_id: node for node_id, node in results if node is not None}
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Node degrees as a batch using UNWIND
 
-        Default implementation fetches node degrees one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+        Default implementation fetches node degrees in parallel using asyncio.gather.
+        Override this method for even better performance in storage backends
+        that support native batch operations.
         """
-        result = {}
-        for node_id in node_ids:
+        async def get_single_degree(node_id):
             degree = await self.node_degree(node_id)
-            result[node_id] = degree
-        return result
+            return node_id, degree
+            
+        # Use gather to parallelize degree fetching
+        results = await asyncio.gather(*[get_single_degree(node_id) for node_id in node_ids])
+        
+        # Build result dictionary
+        return {node_id: degree for node_id, degree in results}
 
     async def edge_degrees_batch(
         self, edge_pairs: list[tuple[str, str]]
     ) -> dict[tuple[str, str], int]:
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
 
-        Default implementation calculates edge degrees one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+        Default implementation calculates edge degrees in parallel using asyncio.gather.
+        Override this method for even better performance in storage backends
+        that support native batch operations.
         """
-        result = {}
-        for src_id, tgt_id in edge_pairs:
+        async def get_single_edge_degree(edge_pair):
+            src_id, tgt_id = edge_pair
             degree = await self.edge_degree(src_id, tgt_id)
-            result[(src_id, tgt_id)] = degree
-        return result
+            return (src_id, tgt_id), degree
+            
+        # Use gather to parallelize edge degree fetching
+        results = await asyncio.gather(*[get_single_edge_degree(pair) for pair in edge_pairs])
+        
+        # Build result dictionary
+        return {edge_pair: degree for edge_pair, degree in results}
 
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
         """Get edges as a batch using UNWIND
 
-        Default implementation fetches edges one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+        Default implementation fetches edges in parallel using asyncio.gather.
+        Override this method for even better performance in storage backends
+        that support native batch operations.
         """
-        result = {}
-        for pair in pairs:
+        async def get_single_edge(pair):
             src_id = pair["src"]
             tgt_id = pair["tgt"]
             edge = await self.get_edge(src_id, tgt_id)
-            if edge is not None:
-                result[(src_id, tgt_id)] = edge
-        return result
+            return (src_id, tgt_id), edge
+            
+        # Use gather to parallelize edge fetching
+        results = await asyncio.gather(*[get_single_edge(pair) for pair in pairs])
+        
+        # Filter out None results and build result dictionary
+        return {edge_pair: edge for edge_pair, edge in results if edge is not None}
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
         """Get nodes edges as a batch using UNWIND
 
-        Default implementation fetches node edges one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+        Default implementation fetches node edges in parallel using asyncio.gather.
+        Override this method for even better performance in storage backends
+        that support native batch operations.
         """
-        result = {}
-        for node_id in node_ids:
+        async def get_single_node_edges(node_id):
             edges = await self.get_node_edges(node_id)
-            result[node_id] = edges if edges is not None else []
-        return result
+            return node_id, edges if edges is not None else []
+            
+        # Use gather to parallelize node edges fetching
+        results = await asyncio.gather(*[get_single_node_edges(node_id) for node_id in node_ids])
+        
+        # Build result dictionary
+        return {node_id: edges for node_id, edges in results}
 
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
