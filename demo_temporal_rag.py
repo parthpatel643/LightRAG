@@ -190,6 +190,7 @@ async def run_demo():
     print("=" * 80)
     print()
 
+    # Hybrid queries (baseline)
     queries = [
         "What was the original parking fee in the base contract?",
         "How did parking services change over time?",
@@ -210,6 +211,29 @@ async def run_demo():
         except Exception as e:
             print(f"Error: {e}")
 
+        print()
+
+    # Temporal queries with reference_date
+    temporal_tests = [
+        ("What is the parking fee as of 2023-01-01?", "2023-01-01"),
+        ("What is the parking fee as of 2024-01-01?", "2024-01-01"),
+        ("What is the parking fee as of 2025-01-01?", "2025-01-01"),
+    ]
+
+    for query, ref_date in temporal_tests:
+        print(f"Temporal Query: {query} (reference_date={ref_date})")
+        print("-" * 80)
+        try:
+            result = await rag.aquery(
+                query,
+                param=QueryParam(
+                    mode="temporal", only_need_context=False, reference_date=ref_date
+                ),
+            )
+            response = result.response if hasattr(result, "response") else str(result)
+            print(f"Response:\n{response}")
+        except Exception as e:
+            print(f"Error: {e}")
         print()
 
     # ========================================================================

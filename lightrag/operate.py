@@ -4504,7 +4504,7 @@ async def _build_query_context(
                 # Batch retrieval - much faster than individual lookups
                 chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
                 chunk_data_map = {
-                    data.get("id"): data for data in chunk_data_list if data
+                    data.get("_id"): data for data in chunk_data_list if data
                 }
 
                 filtered_vector_chunks = [

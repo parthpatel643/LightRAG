@@ -1530,6 +1530,23 @@ class LightRAG:
             unique_content_with_paths_and_meta = {}
             for doc, path, meta in zip(input, file_paths, metadata):
                 cleaned_content = sanitize_text_for_encoding(doc)
+                # Extract effective date from content if present.
+                # Patterns supported:
+                #   - "Effective Date: 2024-01-01"
+                #   - "**Effective Date:** 2024-01-01" (markdown)
+                #   - Chinese colon variants
+                try:
+                    import re as _re
+
+                    m = _re.search(
+                        r"Effective\s*Date\s*[:：][^\d\n]{0,10}(\d{4}-\d{2}-\d{2})",
+                        cleaned_content,
+                        _re.IGNORECASE,
+                    )
+                    if m:
+                        meta["effective_date"] = m.group(1)
+                except Exception:
+                    pass
                 if cleaned_content not in unique_content_with_paths_and_meta:
                     unique_content_with_paths_and_meta[cleaned_content] = (path, meta)
 
