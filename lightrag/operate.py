@@ -4240,7 +4240,7 @@ async def _merge_all_chunks(
         logger.debug(f"Applying reranking to {len(merged_chunks)} merged chunks")
 
         # Rerank merged chunks to improve relevance
-        rerank_top_k = query_param.chunk_top_k or len(merged_chunks)
+        rerank_top_k = min(query_param.chunk_top_k, len(merged_chunks))
         merged_chunks = await apply_rerank_if_enabled(
             query=query,
             retrieved_docs=merged_chunks,
