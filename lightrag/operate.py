@@ -4200,6 +4200,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "sequence_index": chunk.get("sequence_index", 0),
                     }
                 )
 
@@ -4214,6 +4215,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "sequence_index": chunk.get("sequence_index", 0),
                     }
                 )
 
@@ -4228,6 +4230,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "sequence_index": chunk.get("sequence_index", 0),
                     }
                 )
 

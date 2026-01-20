@@ -3342,62 +3342,80 @@ def generate_reference_list_from_chunks(
     """
     Generate reference list from chunks, prioritizing by occurrence frequency.
 
-    This function extracts file_paths from chunks, counts their occurrences,
+    This function extracts file_paths AND sequence_index from chunks, counts their occurrences,
     sorts by frequency and first appearance order, creates reference_id mappings,
-    and builds a reference_list structure.
+    and builds a reference_list structure. Different versions (sequence_index) of the
+    same file will get different reference IDs.
 
     Args:
-        chunks: List of chunk dictionaries with file_path information
+        chunks: List of chunk dictionaries with file_path and optional sequence_index
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
-            - reference_list: List of dicts with reference_id and file_path
+            - reference_list: List of dicts with reference_id, file_path, and sequence_index
             - updated_chunks_with_reference_ids: Original chunks with reference_id field added
     """
     if not chunks:
         return [], []
 
-    # 1. Extract all valid file_paths and count their occurrences
-    file_path_counts = {}
+    # 1. Extract all valid (file_path, sequence_index) tuples and count their occurrences
+    # Use tuple (file_path, sequence_index) as the key to distinguish versions
+    source_counts = {}
     for chunk in chunks:
         file_path = chunk.get("file_path", "")
+        sequence_index = chunk.get("sequence_index", 0)
         if file_path and file_path != "unknown_source":
-            file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
+            source_key = (file_path, sequence_index)
+            source_counts[source_key] = source_counts.get(source_key, 0) + 1
 
-    # 2. Sort file paths by frequency (descending), then by first appearance order
-    # Create a list of (file_path, count, first_index) tuples
-    file_path_with_indices = []
-    seen_paths = set()
+    # 2. Sort sources by frequency (descending), then by first appearance order
+    # Create a list of (source_key, count, first_index) tuples
+    source_with_indices = []
+    seen_sources = set()
     for i, chunk in enumerate(chunks):
         file_path = chunk.get("file_path", "")
-        if file_path and file_path != "unknown_source" and file_path not in seen_paths:
-            file_path_with_indices.append((file_path, file_path_counts[file_path], i))
-            seen_paths.add(file_path)
+        sequence_index = chunk.get("sequence_index", 0)
+        if file_path and file_path != "unknown_source":
+            source_key = (file_path, sequence_index)
+            if source_key not in seen_sources:
+                source_with_indices.append((source_key, source_counts[source_key], i))
+                seen_sources.add(source_key)
 
     # Sort by count (descending), then by first appearance index (ascending)
-    sorted_file_paths = sorted(file_path_with_indices, key=lambda x: (-x[1], x[2]))
-    unique_file_paths = [item[0] for item in sorted_file_paths]
+    sorted_sources = sorted(source_with_indices, key=lambda x: (-x[1], x[2]))
+    unique_sources = [item[0] for item in sorted_sources]
 
-    # 3. Create mapping from file_path to reference_id (prioritized by frequency)
-    file_path_to_ref_id = {}
-    for i, file_path in enumerate(unique_file_paths):
-        file_path_to_ref_id[file_path] = str(i + 1)
+    # 3. Create mapping from (file_path, sequence_index) to reference_id (prioritized by frequency)
+    source_to_ref_id = {}
+    for i, source_key in enumerate(unique_sources):
+        source_to_ref_id[source_key] = str(i + 1)
 
     # 4. Add reference_id field to each chunk
     updated_chunks = []
     for chunk in chunks:
         chunk_copy = chunk.copy()
         file_path = chunk_copy.get("file_path", "")
+        sequence_index = chunk_copy.get("sequence_index", 0)
         if file_path and file_path != "unknown_source":
-            chunk_copy["reference_id"] = file_path_to_ref_id[file_path]
+            source_key = (file_path, sequence_index)
+            chunk_copy["reference_id"] = source_to_ref_id[source_key]
         else:
             chunk_copy["reference_id"] = ""
         updated_chunks.append(chunk_copy)
 
-    # 5. Build reference_list
-    reference_list = [
-        {"reference_id": str(i + 1), "file_path": file_path}
-        for i, file_path in enumerate(unique_file_paths)
-    ]
+    # 5. Build reference_list with version information
+    reference_list = []
+    for i, source_key in enumerate(unique_sources):
+        file_path, sequence_index = source_key
+        ref_entry = {
+            "reference_id": str(i + 1),
+            "file_path": file_path,
+        }
+        # Add version info to reference (v1, v2, v3, v4, etc.)
+        # Use sequence_index + 1 to start version numbering from v1
+        ref_entry["version"] = f"v{sequence_index + 1}"
+        # Also append version to file_path display for clarity
+        ref_entry["file_path"] = f"{file_path} [v{sequence_index + 1}]"
+        reference_list.append(ref_entry)
 
     return reference_list, updated_chunks
