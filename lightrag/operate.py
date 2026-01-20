@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from functools import partial
@@ -4508,7 +4509,7 @@ async def _build_query_context(
 
         # Also filter vector chunks to match the maximum sequence from filtered entities
         # Extract max sequence from versioned entities
-        import re
+        # re module already imported
 
         version_pattern = re.compile(r"\[v(\d+)\]$")
         max_sequence = 0

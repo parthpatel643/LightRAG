@@ -203,7 +203,6 @@ class WorkerPool:
                 self._stats["busy_workers"] += 1
                 
         # Submit task with backend-specific implementation
-        start_time = time.time()
         try:
             success = await self.backend.submit_task(
                 worker_id, 

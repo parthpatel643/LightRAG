@@ -154,7 +154,7 @@ def get_memory_usage() -> Dict[str, float]:
         return {"total": sys.getsizeof(0)}
 
 
-class AsyncGenerator:
+class AsyncGeneratorWrapper:
     """
     Helper class to convert a synchronous generator to an asynchronous one.
     
@@ -206,4 +206,4 @@ async def stream_large_file(file_path: str, chunk_size: int = 8192) -> AsyncGene
             while chunk := f.read(chunk_size):
                 yield chunk
     
-    return AsyncGenerator(_file_reader)
+    return AsyncGeneratorWrapper(_file_reader)
