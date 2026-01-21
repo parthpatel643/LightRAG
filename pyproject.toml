@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp",
+    "asyncpg>=0.31.0",
     "beautifulsoup4>=4.14.2",
     "boto3>=1.40.49",
     "configparser",

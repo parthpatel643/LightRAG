@@ -106,6 +106,7 @@ from lightrag.utils import (
     get_env_value,
     lazy_external_import,
     logger,
+    make_date_preface,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
     priority_limit_async_func_call,
@@ -2974,9 +2975,19 @@ class LightRAG:
                 use_llm_func = partial(use_llm_func, _priority=8)
 
                 param.stream = True if param.stream is None else param.stream
+                # Compose system prompt with date preface when enabled
+                try:
+                    _date_preface = make_date_preface(param.reference_date)
+                except Exception:
+                    _date_preface = make_date_preface(None)
+                effective_system_prompt = (
+                    f"{_date_preface}\n\n{system_prompt}"
+                    if (_date_preface and system_prompt)
+                    else (_date_preface or system_prompt)
+                )
                 response = await use_llm_func(
                     query.strip(),
-                    system_prompt=system_prompt,
+                    system_prompt=effective_system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,

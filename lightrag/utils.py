@@ -417,6 +417,46 @@ class UnlimitedSemaphore:
         pass
 
 
+def make_date_preface(reference_date: str | None = None) -> str:
+    """Return a one-line system preface indicating today's effective date.
+
+    Preface is enabled when LIGHTRAG_DATE_PREFACE is true (default: true).
+    The effective date selection priority:
+    1. LIGHTRAG_EFFECTIVE_DATE (env) if set
+    2. reference_date (function argument) if provided
+    3. current system date in YYYY-MM-DD
+
+    Args:
+        reference_date: Optional date string (YYYY-MM-DD) used for temporal alignment.
+
+    Returns:
+        A short string like "Today's date: 2026-01-21. Interpret 'today'/'now' using this date.".
+        Returns empty string when the preface feature is disabled.
+    """
+    try:
+        enabled = get_env_value("LIGHTRAG_DATE_PREFACE", True, bool)
+    except Exception:
+        enabled = True
+    if not enabled:
+        return ""
+
+    # Choose effective date
+    effective = os.getenv("LIGHTRAG_EFFECTIVE_DATE")
+    if effective:
+        date_str = effective.strip()
+    elif reference_date:
+        date_str = reference_date.strip()
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    # Basic YYYY-MM-DD sanity check
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        # Fallback to today if format is unexpected
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    return f"Today's date: {date_str}. Interpret 'today'/'now' using this date."
+
+
 @dataclass
 class TaskState:
     """Task state tracking for priority queue management"""

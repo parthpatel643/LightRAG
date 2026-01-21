@@ -56,6 +56,7 @@ from lightrag.utils import (
     handle_cache,
     is_float_regex,
     logger,
+    make_date_preface,
     make_relation_chunk_key,
     merge_source_ids,
     pack_user_ass_to_openai_messages,
@@ -3165,7 +3166,7 @@ For example:
     # Get max async tasks limit from global_config
     chunk_max_async = global_config.get("llm_model_max_async", 8)  # Increased default
     semaphore = asyncio.Semaphore(chunk_max_async)
-    
+
     async def _process_with_semaphore(chunk):
         async with semaphore:
             # Check for cancellation before processing chunk
@@ -3182,15 +3183,17 @@ For example:
                 chunk_id = chunk[0]  # Extract chunk_id from chunk[0]
                 prefixed_exception = create_prefixed_exception(e, chunk_id)
                 raise prefixed_exception from e
-    
+
     # Batch processing - split ordered_chunks into batches for better task management
     # and reduced overhead from creating many small tasks
-    batch_size = min(20, max(5, len(ordered_chunks) // (chunk_max_async * 2) + 1))  # Adaptive batch sizing
+    batch_size = min(
+        20, max(5, len(ordered_chunks) // (chunk_max_async * 2) + 1)
+    )  # Adaptive batch sizing
     tasks = []
-    
+
     # Process in batches to reduce overhead while maintaining parallelism
     for i in range(0, len(ordered_chunks), batch_size):
-        batch = ordered_chunks[i:i+batch_size]
+        batch = ordered_chunks[i : i + batch_size]
         # Create tasks for each chunk in the batch
         for c in batch:
             task = asyncio.create_task(_process_with_semaphore(c))
@@ -3504,6 +3507,17 @@ async def kg_query(
         user_prompt=user_prompt,
         context_data=context_result.context,
     )
+
+    # Inject date preface for LLM awareness (align to temporal when set)
+    try:
+        _ref_date = (
+            query_param.reference_date if query_param.mode == "temporal" else None
+        )
+    except Exception:
+        _ref_date = None
+    _date_preface = make_date_preface(_ref_date)
+    if _date_preface:
+        sys_prompt = f"{_date_preface}\n\n{sys_prompt}"
 
     user_query = query
 
@@ -5451,6 +5465,14 @@ async def naive_query(
         user_prompt=user_prompt,
         content_data=context_content,
     )
+
+    # Inject date preface for LLM awareness
+    try:
+        _date_preface = make_date_preface(getattr(query_param, "reference_date", None))
+    except Exception:
+        _date_preface = make_date_preface(None)
+    if _date_preface:
+        sys_prompt = f"{_date_preface}\n\n{sys_prompt}"
 
     user_query = query
 
