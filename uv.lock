@@ -2548,6 +2548,7 @@ name = "lightrag-hku"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "beautifulsoup4" },
     { name = "boto3" },
     { name = "configparser" },
     { name = "google-api-core" },
@@ -2805,6 +2806,7 @@ requires-dist = [
     { name = "ascii-colors", marker = "extra == 'api'" },
     { name = "asyncpg", marker = "extra == 'offline-storage'", specifier = ">=0.31.0,<1.0.0" },
     { name = "bcrypt", marker = "extra == 'api'", specifier = ">=4.0.0" },
+    { name = "beautifulsoup4", specifier = ">=4.14.2" },
     { name = "boto3", specifier = ">=1.40.49" },
     { name = "configparser" },
     { name = "configparser", marker = "extra == 'api'" },
