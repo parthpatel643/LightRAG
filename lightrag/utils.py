@@ -3244,10 +3244,13 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
 
 def _strip_version_tag(name: str) -> str:
     """
-    Strip version tag [vN] from entity/relation names for LLM display.
+    Strip version tag [vN] from entity/relation names.
 
-    Internal storage keeps version tags for filtering, but LLM context
-    should show clean names to avoid confusion.
+    NOTE: This function is currently UNUSED in the main query path.
+    Version tags are now preserved in LLM context to help the LLM understand
+    document hierarchy and temporal information (higher version = more recent).
+
+    Kept for potential future use cases where clean names are needed.
 
     Examples:
         "Boeing 787 Cabin Cleaning [v4]" -> "Boeing 787 Cabin Cleaning"
@@ -3281,13 +3284,10 @@ def convert_to_user_format(
             original_entity = entity_id_to_original[entity_name]
 
         if original_entity:
-            # Use original database data, but strip version tags for LLM display
-            clean_entity_name = _strip_version_tag(
-                original_entity.get("entity_name", entity_name)
-            )
+            # Use original database data and preserve version tags for LLM understanding
             formatted_entities.append(
                 {
-                    "entity_name": clean_entity_name,
+                    "entity_name": original_entity.get("entity_name", entity_name),
                     "entity_type": original_entity.get("entity_type", "UNKNOWN"),
                     "description": original_entity.get("description", ""),
                     "source_id": original_entity.get("source_id", ""),
@@ -3296,11 +3296,10 @@ def convert_to_user_format(
                 }
             )
         else:
-            # Fallback to LLM context data (for backward compatibility), strip version tags
-            clean_entity_name = _strip_version_tag(entity_name)
+            # Fallback to LLM context data (for backward compatibility), preserve version tags
             formatted_entities.append(
                 {
-                    "entity_name": clean_entity_name,
+                    "entity_name": entity_name,
                     "entity_type": entity.get("type", "UNKNOWN"),
                     "description": entity.get("description", ""),
                     "source_id": entity.get("source_id", ""),
@@ -3322,13 +3321,11 @@ def convert_to_user_format(
             original_relation = relation_id_to_original[relation_key]
 
         if original_relation:
-            # Use original database data, but strip version tags for LLM display
-            clean_src_id = _strip_version_tag(original_relation.get("src_id", entity1))
-            clean_tgt_id = _strip_version_tag(original_relation.get("tgt_id", entity2))
+            # Use original database data and preserve version tags for LLM understanding
             formatted_relationships.append(
                 {
-                    "src_id": clean_src_id,
-                    "tgt_id": clean_tgt_id,
+                    "src_id": original_relation.get("src_id", entity1),
+                    "tgt_id": original_relation.get("tgt_id", entity2),
                     "description": original_relation.get("description", ""),
                     "keywords": original_relation.get("keywords", ""),
                     "weight": original_relation.get("weight", 1.0),
@@ -3338,13 +3335,11 @@ def convert_to_user_format(
                 }
             )
         else:
-            # Fallback to LLM context data (for backward compatibility), strip version tags
-            clean_entity1 = _strip_version_tag(entity1)
-            clean_entity2 = _strip_version_tag(entity2)
+            # Fallback to LLM context data (for backward compatibility), preserve version tags
             formatted_relationships.append(
                 {
-                    "src_id": clean_entity1,
-                    "tgt_id": clean_entity2,
+                    "src_id": entity1,
+                    "tgt_id": entity2,
                     "description": relation.get("description", ""),
                     "keywords": relation.get("keywords", ""),
                     "weight": relation.get("weight", 1.0),
@@ -3467,10 +3462,14 @@ def generate_reference_list_from_chunks(
             "file_path": file_path,
         }
         # Add version info to reference (v1, v2, v3, v4, etc.)
-        # Use sequence_index + 1 to start version numbering from v1
-        ref_entry["version"] = f"v{sequence_index + 1}"
-        # Also append version to file_path display for clarity
-        ref_entry["file_path"] = f"{file_path} [v{sequence_index + 1}]"
+        # sequence_index already represents the version number
+        if sequence_index > 0:
+            ref_entry["version"] = f"v{sequence_index}"
+            # Append version to file_path display for clarity
+            ref_entry["file_path"] = f"{file_path} [v{sequence_index}]"
+        else:
+            ref_entry["version"] = "v0"
+            # No version marker for base/unversioned documents
         reference_list.append(ref_entry)
 
     return reference_list, updated_chunks

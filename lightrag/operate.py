@@ -4081,6 +4081,15 @@ async def _apply_token_truncation(
 
     # Apply token-based truncation
     if entities_context:
+        # Save original metadata before truncation
+        entity_metadata = {
+            e["entity"]: {
+                "file_path": e.get("file_path"),
+                "created_at": e.get("created_at"),
+            }
+            for e in entities_context
+        }
+
         # Remove file_path and created_at for token calculation
         entities_context_for_truncation = []
         for entity in entities_context:
@@ -4098,7 +4107,23 @@ async def _apply_token_truncation(
             tokenizer=tokenizer,
         )
 
+        # Restore file_path and created_at after truncation
+        for entity in entities_context:
+            entity_name = entity["entity"]
+            if entity_name in entity_metadata:
+                entity["file_path"] = entity_metadata[entity_name]["file_path"]
+                entity["created_at"] = entity_metadata[entity_name]["created_at"]
+
     if relations_context:
+        # Save original metadata before truncation
+        relation_metadata = {
+            (r["entity1"], r["entity2"]): {
+                "file_path": r.get("file_path"),
+                "created_at": r.get("created_at"),
+            }
+            for r in relations_context
+        }
+
         # Remove file_path and created_at for token calculation
         relations_context_for_truncation = []
         for relation in relations_context:
@@ -4115,6 +4140,13 @@ async def _apply_token_truncation(
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
+
+        # Restore file_path and created_at after truncation
+        for relation in relations_context:
+            relation_key = (relation["entity1"], relation["entity2"])
+            if relation_key in relation_metadata:
+                relation["file_path"] = relation_metadata[relation_key]["file_path"]
+                relation["created_at"] = relation_metadata[relation_key]["created_at"]
 
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
@@ -4377,20 +4409,84 @@ async def _build_context_str(
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
 
-    # Generate reference list from truncated chunks using the new common function
-    reference_list, truncated_chunks = generate_reference_list_from_chunks(
-        truncated_chunks
-    )
+    # Collect all unique sources from entities, relationships, AND chunks
+    # to build a comprehensive reference list
+    all_sources = set()
 
-    # Rebuild chunks_context with truncated chunks
-    # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    chunks_context = [
-        {
-            "reference_id": chunk["reference_id"],
-            "content": chunk["content"],
+    # Extract sources from entities
+    for entity in entities_context:
+        file_path = entity.get("file_path", "")
+        # Extract version from entity name if present
+        entity_name = entity.get("entity", "")
+        import re
+
+        version_match = re.search(r"\[v(\d+)\]$", entity_name)
+        sequence_index = int(version_match.group(1)) if version_match else 0
+        if file_path and file_path != "unknown_source":
+            all_sources.add((file_path, sequence_index))
+
+    # Extract sources from relationships
+    for relation in relations_context:
+        file_path = relation.get("file_path", "")
+        # Extract version from entity names in relationship
+        entity1 = relation.get("entity1", "")
+        version_match = re.search(r"\[v(\d+)\]$", entity1)
+        sequence_index = int(version_match.group(1)) if version_match else 0
+        if file_path and file_path != "unknown_source":
+            all_sources.add((file_path, sequence_index))
+
+    # Extract sources from chunks (already have sequence_index)
+    for chunk in merged_chunks:
+        file_path = chunk.get("file_path", "")
+        sequence_index = chunk.get("sequence_index", 0)
+        if file_path and file_path != "unknown_source":
+            all_sources.add((file_path, sequence_index))
+
+    # Build comprehensive reference list sorted by version (descending) then file_path
+    sorted_sources = sorted(all_sources, key=lambda x: (-x[1], x[0]))
+    source_to_ref_id = {source: str(i + 1) for i, source in enumerate(sorted_sources)}
+
+    # Build reference list
+    reference_list = []
+    for source_key in sorted_sources:
+        file_path, sequence_index = source_key
+        ref_id = source_to_ref_id[source_key]
+        ref_entry = {
+            "reference_id": ref_id,
+            "file_path": f"{file_path} [v{sequence_index}]"
+            if sequence_index > 0
+            else file_path,
+            "version": f"v{sequence_index}",
         }
-        for chunk in truncated_chunks
-    ]
+        reference_list.append(ref_entry)
+
+    # Update truncated_chunks with reference IDs
+    for chunk in truncated_chunks:
+        file_path = chunk.get("file_path", "")
+        sequence_index = chunk.get("sequence_index", 0)
+        source_key = (file_path, sequence_index)
+        chunk["reference_id"] = source_to_ref_id.get(source_key, "")
+
+    # Rebuild chunks_context with truncated chunks and restore version markers
+    # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
+    chunks_context = []
+    for chunk in truncated_chunks:
+        sequence_index = chunk.get("sequence_index", 0)
+        content = chunk["content"]
+
+        # Append version marker to content if sequence_index > 0
+        if sequence_index > 0:
+            content_with_version = f"{content} [v{sequence_index}]"
+        else:
+            content_with_version = content
+
+        chunks_context.append(
+            {
+                "reference_id": chunk["reference_id"],
+                "content": content_with_version,
+                "sequence_index": sequence_index,
+            }
+        )
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context

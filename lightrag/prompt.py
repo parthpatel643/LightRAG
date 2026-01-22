@@ -541,6 +541,14 @@ Produce a concise, well-structured answer that integrates relevant facts from Do
 """
 
 PROMPTS["kg_query_context"] = """
+---Document Versioning Information---
+This knowledge graph contains versioned data marked with [v1], [v2], [v3], [v4], etc.
+- Higher version numbers indicate MORE RECENT information (e.g., [v4] is newer than [v1])
+- Entities, relationships, and document chunks may all contain version markers
+- When answering queries about "latest" or "current" information, prioritize data with HIGHER version numbers
+- Version markers appear at the end of entity names, relationship references, and document chunk content
+- In document chunks, the "sequence_index" field corresponds to the version number (sequence_index: 4 = [v4], sequence_index: 1 = [v1])
+
 Knowledge Graph Data (Entity):
 
 ```json
