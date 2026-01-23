@@ -1410,33 +1410,42 @@ class LightRAG:
         """Get the next sequence index for automatic versioning.
 
         Retrieves the current sequence counter from KV storage, increments it,
-        and returns the new value. Works atomically for each insertion.
+        and returns the new value. Uses a lock to ensure atomicity across
+        concurrent insertions.
 
         Returns:
             int: Next sequence index (1-based for versioned documents)
         """
         counter_key = "_lightrag_metadata:sequence_counter"
-        try:
-            # Try to get existing counter
-            counter_data = await self.full_docs.get_by_id(counter_key)
-            if counter_data is None:
+
+        # Use namespace lock to ensure atomic read-modify-write operation
+        sequence_lock = get_namespace_lock("sequence_counter", workspace=self.workspace)
+
+        async with sequence_lock:
+            try:
+                # Try to get existing counter
+                counter_data = await self.full_docs.get_by_id(counter_key)
+                if counter_data is None:
+                    current_index = 0
+                else:
+                    current_index = counter_data.get("last_index", 0)
+            except (KeyError, AttributeError):
                 current_index = 0
-            else:
-                current_index = counter_data.get("last_index", 0)
-        except (KeyError, AttributeError):
-            current_index = 0
 
-        next_index = current_index + 1
+            next_index = current_index + 1
 
-        # Persist updated counter
-        await self.full_docs.upsert(
-            {
-                counter_key: {
-                    "last_index": next_index,
-                    "updated_at": str(__import__("datetime").datetime.now()),
+            # Persist updated counter
+            await self.full_docs.upsert(
+                {
+                    counter_key: {
+                        "last_index": next_index,
+                        "updated_at": str(__import__("datetime").datetime.now()),
+                    }
                 }
-            }
-        )
+            )
+
+            # Force immediate persistence to disk to ensure counter survives across sessions
+            await self.full_docs.index_done_callback()
 
         return next_index
 
