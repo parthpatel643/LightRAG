@@ -3609,7 +3609,6 @@ async def kg_query(
                 .replace("</system>", "")
                 .strip()
             )
-
         return QueryResult(content=response, raw_data=context_result.raw_data)
     else:
         # Streaming response (AsyncIterator)

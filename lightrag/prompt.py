@@ -478,9 +478,12 @@ Performance is based on Cabin Cleaning Off Time [2].
    - WRONG: "Performance is assessed based on cabin off time"
    - CORRECT: "Performance is assessed based on cabin off time [2]"
 5. Do NOT group all citations at the end - citations must appear inline with each fact.
-6. Generate a References section at the end listing all cited sources.
-7. Do not include any text after the References section.
-8. Do not mention context, implementation details, or prompts in the output.
+6. Generate a References section at the end listing ONLY the sources you actually cited in the answer body; no extras.
+7. Use ONLY the [n] IDs from the Reference Document List in the Materials; reuse the same [n] for repeat citations of the same source; do NOT invent or renumber IDs.
+8. Ensure bidirectional consistency: every [n] in the answer appears in References, and every entry in References is cited at least once in the answer.
+9. Order References by first appearance of their [n] in the answer.
+10. Do not include any text after the References section.
+11. Do not mention context, implementation details, or prompts in the output.
 
 ## Content & Grounding
 
@@ -495,6 +498,7 @@ Performance is based on Cabin Cleaning Off Time [2].
 - Respond in the user’s language.
 - Use GitHub Flavored Markdown (headings, bold text, bullet points).
 - Present the response in {response_type}.
+- Do NOT mention or expose document version markers, sequence indices, or tokens like [vN] in your answer.
 
 ## Inline Citation Format
 
@@ -506,7 +510,7 @@ Performance is based on Cabin Cleaning Off Time [2].
 ## References Section Format
 
 - Heading: `### References`
-- Each entry: `- [n] Document Title` (max 5)
+- Each entry: `- [n] Document Title` (IDs must match the Reference Document List; include ONLY cited sources)
 - Titles must keep original language.
 - One citation per line; no text after references.
 
@@ -569,9 +573,12 @@ Performance is based on Cabin Cleaning Off Time [2].
    - WRONG: "Performance is assessed based on cabin off time"
    - CORRECT: "Performance is assessed based on cabin off time [2]"
 5. Do NOT group all citations at the end - citations must appear inline with each fact.
-6. Generate a References section at the end listing all cited sources.
-7. Do not include any text after the References section.
-8. Do not mention context, implementation details, or prompts in the output.
+6. Generate a References section at the end listing ONLY the sources you actually cited in the answer body; no extras.
+7. Use ONLY the [n] IDs from the Reference Document List in the Materials; reuse the same [n] for repeat citations of the same source; do NOT invent or renumber IDs.
+8. Ensure bidirectional consistency: every [n] in the answer appears in References, and every entry in References is cited at least once in the answer.
+9. Order References by first appearance of their [n] in the answer.
+10. Do not include any text after the References section.
+11. Do not mention context, implementation details, or prompts in the output.
 
 ## Content & Grounding
 
@@ -583,6 +590,7 @@ Performance is based on Cabin Cleaning Off Time [2].
 - Respond in the user’s language.
 - Use GitHub Flavored Markdown (headings, bold text, bullet points).
 - Present the response in {response_type}.
+- Do NOT mention or expose document version markers, sequence indices, or tokens like [vN] in your answer.
 
 ## Inline Citation Format
 
@@ -594,7 +602,7 @@ Performance is based on Cabin Cleaning Off Time [2].
 ## References Section Format
 
 - Heading: `### References`
-- Each entry: `- [n] Document Title` (max 5)
+- Each entry: `- [n] Document Title` (IDs must match the Reference Document List; include ONLY cited sources)
 - Titles must keep original language.
 - One citation per line; no text after references.
 
@@ -820,10 +828,15 @@ The RON service costs $384.08 [2].
 
 ## Citation & References
 
-- Do not mention version numbers
+- Do not mention version numbers, sequence indices, or tokens like [vN]
 - Do not include internal implementation details
 - Extract filenames from the Reference Document List
 - **Every fact in your answer must have a corresponding [n] inline citation**
+
+### Bidirectional Citation Consistency (MANDATORY)
+- Use ONLY [n] IDs from the Reference Document List; reuse the same [n] when citing the same source again.
+- References must include EXACTLY the sources cited in the answer (no extras), ordered by first appearance of their [n].
+- Every [n] used in the answer MUST have a corresponding entry in References; every entry in References MUST be cited at least once in the answer.
 
 ### References Section Format
 ```
