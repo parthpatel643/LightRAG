@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -60,7 +61,7 @@ async def query_rag(
     param = QueryParam(
         mode=mode,
         reference_date=reference_date if mode == "temporal" else None,
-        enable_rerank=True,
+        enable_rerank=os.getenv("RERANK_BY_DEFAULT", "false").lower() == "true",
     )
 
     # Log query details
