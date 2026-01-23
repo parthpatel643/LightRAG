@@ -223,10 +223,6 @@ Examples:
             # Build file_paths in specified order
             file_paths = [available_files[i - 1] for i in indices]
 
-            logger.info("\n✅ Ingestion order selected:")
-            for idx, fp in enumerate(file_paths, start=1):
-                logger.info(f"  v{idx}: {fp.name}")
-
             break
 
         except ValueError:
@@ -256,6 +252,15 @@ Examples:
     # Initialize storages
     await rag.initialize_storages()
     logger.info("✅ LightRAG initialized")
+
+    # Get current sequence counter to show accurate version numbers
+    counter_data = await rag.full_docs.get_by_id("_lightrag_metadata:sequence_counter")
+    current_counter = counter_data.get("last_index", 0) if counter_data else 0
+
+    logger.info("\n✅ Ingestion order with version numbers:")
+    for idx, fp in enumerate(file_paths, start=1):
+        version_number = current_counter + idx
+        logger.info(f"  v{version_number}: {fp.name}")
 
     if timing:
         timing.mark("initialization")
