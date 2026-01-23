@@ -86,7 +86,7 @@ DEFAULT_MAX_FILE_PATH_LENGTH = 32768
 DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
 
 # Default temperature for LLM
-DEFAULT_TEMPERATURE = 0.3  # Low temperature for more deterministic factual responses
+DEFAULT_TEMPERATURE = 0.15  # Low temperature for more deterministic factual responses
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 8  # Default maximum async operations (increased for better concurrency)
