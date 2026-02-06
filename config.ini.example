@@ -14,6 +14,23 @@ keep_alive = true
 uri = mongodb+srv://name:password@your-cluster-address
 database = lightrag
 
+[documentdb]
+endpoint = your-documentdb-cluster.us-east-1.docdb.amazonaws.com
+port = 27017
+username = your-username
+password = your-password
+database = lightrag
+ssl = true
+retry_writes = true
+retry_reads = true
+pool_size = 10
+
+[neptune]
+endpoint = your-neptune-cluster.us-east-1.neptune.amazonaws.com
+port = 8182
+use_ssl = true
+iam_auth = false
+
 [redis]
 uri=redis://localhost:6379/1
 

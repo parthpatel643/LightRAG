@@ -52,6 +52,7 @@ from typing import Any, Dict, List
 
 import httpx
 from dotenv import load_dotenv
+
 from lightrag.utils import logger
 
 # Suppress LangchainLLMWrapper deprecation warning
@@ -82,15 +83,15 @@ load_dotenv(dotenv_path=".env", override=False)
 # Conditional imports - will raise ImportError if dependencies not installed
 try:
     from datasets import Dataset
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from ragas import evaluate
+    from ragas.llms import LangchainLLMWrapper
     from ragas.metrics import (
         AnswerRelevancy,
         ContextPrecision,
         ContextRecall,
         Faithfulness,
     )
-    from ragas.llms import LangchainLLMWrapper
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from tqdm.auto import tqdm
 
     RAGAS_AVAILABLE = True

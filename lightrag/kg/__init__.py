@@ -5,6 +5,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "PGKVStorage",
             "MongoKVStorage",
+            "DocumentDBKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -15,6 +16,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
+            "NeptuneGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -26,6 +28,7 @@ STORAGE_IMPLEMENTATIONS = {
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
+            "DocumentDBVectorDBStorage",
             # "ChromaVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -36,6 +39,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            "DocumentDBDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -91,6 +95,34 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "MONGO_URI",
         "MONGO_DATABASE",
     ],
+    # DocumentDB Storage Implementations
+    "DocumentDBKVStorage": [
+        "DOCUMENTDB_ENDPOINT",
+        "DOCUMENTDB_PORT",
+        "DOCUMENTDB_DATABASE",
+        "DOCUMENTDB_USERNAME",
+        "DOCUMENTDB_PASSWORD",
+    ],
+    "DocumentDBDocStatusStorage": [
+        "DOCUMENTDB_ENDPOINT",
+        "DOCUMENTDB_PORT",
+        "DOCUMENTDB_DATABASE",
+        "DOCUMENTDB_USERNAME",
+        "DOCUMENTDB_PASSWORD",
+    ],
+    "DocumentDBVectorDBStorage": [
+        "DOCUMENTDB_ENDPOINT",
+        "DOCUMENTDB_PORT",
+        "DOCUMENTDB_DATABASE",
+        "DOCUMENTDB_USERNAME",
+        "DOCUMENTDB_PASSWORD",
+    ],
+    # Neptune Graph Storage Implementation
+    "NeptuneGraphStorage": [
+        "NEPTUNE_ENDPOINT",
+        "NEPTUNE_PORT",
+        "NEPTUNE_USE_SSL",
+    ],
 }
 
 # Storage implementation module mapping
@@ -116,6 +148,10 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "DocumentDBKVStorage": ".kg.documentdb_impl",
+    "DocumentDBDocStatusStorage": ".kg.documentdb_impl",
+    "DocumentDBVectorDBStorage": ".kg.documentdb_impl",
+    "NeptuneGraphStorage": ".kg.neptune_impl",
 }
 
 
