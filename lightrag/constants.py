@@ -21,6 +21,9 @@ DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
 DEFAULT_SUMMARY_MAX_TOKENS = 1200
 DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
+# Maximum token size allowed for entity extraction input context
+DEFAULT_MAX_EXTRACT_INPUT_TOKENS = 20480
+# Default entities to extract if ENTITY_TYPES is not specified in .env
 DEFAULT_ENTITY_TYPES = [
     "Person",
     "Organization",
@@ -89,12 +92,20 @@ DEFAULT_FILE_PATH_MORE_PLACEHOLDER = "truncated"
 DEFAULT_TEMPERATURE = 0.15  # Low temperature for more deterministic factual responses
 
 # Async configuration defaults
-DEFAULT_MAX_ASYNC = 8  # Default maximum async operations (increased for better concurrency)
-DEFAULT_MAX_PARALLEL_INSERT = 4  # Default maximum parallel insert operations (increased for throughput)
+DEFAULT_MAX_ASYNC = (
+    8  # Default maximum async operations (increased for better concurrency)
+)
+DEFAULT_MAX_PARALLEL_INSERT = (
+    4  # Default maximum parallel insert operations (increased for throughput)
+)
 
 # Embedding configuration defaults
-DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 12  # Default max async for embedding functions (increased for parallelization)
-DEFAULT_EMBEDDING_BATCH_NUM = 20  # Default batch size for embedding computations (increased batch size)
+DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = (
+    12  # Default max async for embedding functions (increased for parallelization)
+)
+DEFAULT_EMBEDDING_BATCH_NUM = (
+    20  # Default batch size for embedding computations (increased batch size)
+)
 
 # Gunicorn worker timeout
 DEFAULT_TIMEOUT = 300
