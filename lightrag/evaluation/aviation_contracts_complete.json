@@ -1,0 +1,124 @@
+{
+  "test_cases": [
+    {
+      "question": "What is the price per event for Boeing 787 TURN service?",
+      "ground_truth": "$227.24",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the price per event for Boeing 787 RON service?",
+      "ground_truth": "$391.93",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the price per event for Boeing Airbus deep cleaning service?",
+      "ground_truth": "$1,211.10",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the cost per day for Airbus turn service?",
+      "ground_truth": "$463.76",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the cost per day for 737 turn service?",
+      "ground_truth": "$463.76",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the price per event for Narrowbody water service?",
+      "ground_truth": "$46.61",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the price per event for Narrowbody lav service?",
+      "ground_truth": "$46.97",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the incentive earned for TCI cabins?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the incentive/credit per audit?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "Tell me about the contract termination conditions?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "sea_cabin_cleaning"
+    },
+    {
+      "question": "What is the current rate for a wheelchair agent?",
+      "ground_truth": "$34.40",
+      "project": "sea_vbc_wheelchair"
+    },
+    {
+      "question": "What are the latest discount rates applicable to United?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "sea_vbc_wheelchair"
+    },
+    {
+      "question": "What is the annual RON cleaning service cost for a 737-900 airliner?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "lga_cabin_cleaning"
+    },
+    {
+      "question": "When is the latest Exhibit B pricing effective from?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "lga_cabin_cleaning"
+    },
+    {
+      "question": "What is the staffing shift for a Type 3 cleaning agent?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "lga_cabin_cleaning"
+    },
+    {
+      "question": "What would be the hourly rate for a supervisor?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "lga_cabin_cleaning"
+    },
+    {
+      "question": "What is the variable turn cost for an Airbus with 170 seats?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_ground_handling"
+    },
+    {
+      "question": "What is the total turnaround rate for Airbus A320?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_ground_handling"
+    },
+    {
+      "question": "What would be the air conditioning charge for an off-gate operation?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_ground_handling"
+    },
+    {
+      "question": "What are the latest rates for OT?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_security_handling"
+    },
+    {
+      "question": "How much is the employee dishonesty insurance liability?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_security_handling"
+    },
+    {
+      "question": "Explain me the flight cancellation charges",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_security_handling"
+    },
+    {
+      "question": "What is the latest rate per month for wheelchair service?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_wheelchair"
+    },
+    {
+      "question": "What is the wheelchair service rate excluding the booking amount?",
+      "ground_truth": "PENDING - Answer not provided in source document",
+      "project": "yyz_wheelchair"
+    }
+  ]
+}

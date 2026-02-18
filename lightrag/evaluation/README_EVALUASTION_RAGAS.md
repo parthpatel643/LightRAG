@@ -18,23 +18,34 @@
 
 ```
 lightrag/evaluation/
-├── eval_rag_quality.py      # Main evaluation script
-├── sample_dataset.json        # 3 test questions about LightRAG
-├── sample_documents/          # Matching markdown files for testing
+├── eval_rag_quality.py                    # Main evaluation script
+├── sample_dataset.json                    # Default: 8 aviation contract questions
+├── aviation_contracts_complete.json       # Complete: 24 aviation contract questions
+├── sample_dataset_lightrag_demo.json      # Original: 6 LightRAG demo questions
+├── sample_documents/                      # Demo markdown files for testing
 │   ├── 01_lightrag_overview.md
 │   ├── 02_rag_architecture.md
 │   ├── 03_lightrag_improvements.md
 │   ├── 04_supported_databases.md
 │   ├── 05_evaluation_and_deployment.md
 │   └── README.md
-├── __init__.py              # Package init
-├── results/                 # Output directory
-│   ├── results_YYYYMMDD_HHMMSS.json    # Raw metrics in JSON
-│   └── results_YYYYMMDD_HHMMSS.csv     # Metrics in CSV format
-└── README.md                # This file
+├── README_AVIATION_CONTRACTS.md           # Aviation contracts evaluation guide
+├── __init__.py                            # Package init
+├── results/                               # Output directory
+│   ├── results_YYYYMMDD_HHMMSS.json       # Raw metrics in JSON
+│   └── results_YYYYMMDD_HHMMSS.csv        # Metrics in CSV format
+└── README_EVALUASTION_RAGAS.md            # This file
 ```
 
-**Quick Test:** Index files from `sample_documents/` into LightRAG, then run the evaluator to reproduce results (~89-100% RAGAS score per question).
+**Datasets Available:**
+- **sample_dataset.json** (8 questions) - Aviation service contracts (ready to use)
+- **aviation_contracts_complete.json** (24 questions) - Complete set (some pending ground truths)
+- **sample_dataset_lightrag_demo.json** (6 questions) - Original LightRAG demo
+
+**Quick Test:** 
+1. Index your aviation contract documents into LightRAG
+2. Run: `python lightrag/evaluation/eval_rag_quality.py`
+3. Or use the demo: `python lightrag/evaluation/eval_rag_quality.py -d sample_dataset_lightrag_demo.json` (requires indexing `sample_documents/`)
 
 
 
@@ -272,9 +283,45 @@ EVAL_LLM_TIMEOUT=180     # 3-minute timeout per request
 
 ## 📝 Test Dataset
 
-`sample_dataset.json` contains 3 generic questions about LightRAG. Replace with questions matching YOUR indexed documents.
+### Available Datasets
 
-**Custom Test Cases:**
+#### 1. **sample_dataset.json** (Default - 8 questions)
+Aviation service contract questions with validated ground truth answers. Ready for immediate use.
+
+**Topics covered:**
+- SEA Cabin Cleaning (7 questions) - Pricing for Boeing 787, Airbus services
+- SEA VBC & Wheelchair (1 question) - Wheelchair agent rates
+
+#### 2. **aviation_contracts_complete.json** (24 questions)
+Complete aviation contracts dataset including questions pending ground truth answers.
+
+**Topics covered:**
+- SEA Cabin Cleaning (10 questions)
+- SEA VBC & Wheelchair (2 questions)
+- LGA Cabin Cleaning (4 questions)
+- YYZ Ground Handling (3 questions)
+- YYZ Security Handling (3 questions)
+- YYZ Wheelchair (2 questions)
+
+**Note:** Questions marked with `"PENDING - Answer not provided in source document"` need ground truth answers updated before evaluation.
+
+#### 3. **sample_dataset_lightrag_demo.json** (6 questions)
+Original demo questions about LightRAG framework. Requires indexing files from `sample_documents/` folder.
+
+### Using Different Datasets
+
+```bash
+# Default aviation contracts dataset
+python lightrag/evaluation/eval_rag_quality.py
+
+# Complete aviation dataset (update pending answers first!)
+python lightrag/evaluation/eval_rag_quality.py -d aviation_contracts_complete.json
+
+# Original LightRAG demo
+python lightrag/evaluation/eval_rag_quality.py -d sample_dataset_lightrag_demo.json
+```
+
+### Creating Custom Test Cases
 
 ```json
 {
@@ -287,6 +334,8 @@ EVAL_LLM_TIMEOUT=180     # 3-minute timeout per request
   ]
 }
 ```
+
+**For detailed aviation contracts evaluation guide, see [README_AVIATION_CONTRACTS.md](README_AVIATION_CONTRACTS.md)**
 
 ---
 
