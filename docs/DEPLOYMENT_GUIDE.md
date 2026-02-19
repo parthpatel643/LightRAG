@@ -378,6 +378,56 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 ```
 
+### AWS Neptune (Managed Graph Database)
+
+```bash
+# Prerequisites:
+# 1. Create Neptune cluster in AWS Console or via CloudFormation
+# 2. Configure VPC security group to allow port 8182
+# 3. Create IAM policy for Neptune access (if using IAM auth)
+# 4. Ensure application can access Neptune VPC (VPN, Direct Connect, or EC2/Lambda in VPC)
+
+# IAM Policy Example (attach to your EC2/Lambda role):
+# {
+#   "Version": "2012-10-17",
+#   "Statement": [{
+#     "Effect": "Allow",
+#     "Action": "neptune-db:*",
+#     "Resource": "arn:aws:neptune-db:region:account-id:cluster-id/*"
+#   }]
+# }
+
+# .env
+STORAGE_TYPE=neptune
+NEPTUNE_ENDPOINT=your-cluster.region.neptune.amazonaws.com
+NEPTUNE_PORT=8182
+NEPTUNE_REGION=us-east-1
+NEPTUNE_USE_IAM=true
+
+# AWS Credentials (choose one):
+# Option 1: AWS Profile
+AWS_PROFILE=your-profile
+
+# Option 2: Access Keys (not recommended for production)
+# AWS_ACCESS_KEY_ID=your-key-id
+# AWS_SECRET_ACCESS_KEY=your-secret-key
+
+# Option 3: IAM Role (automatic for EC2, Lambda, ECS - recommended)
+
+# Optional: OpenSearch integration for full-text search
+# NEPTUNE_OPENSEARCH_ENDPOINT=https://search-domain.region.es.amazonaws.com
+
+# Installation
+pip install lightrag-hku[offline-storage]
+```
+
+**Important Neptune Notes:**
+- Neptune clusters are VPC-only by default. Your application must have network access to the VPC.
+- For local development, use AWS Client VPN or SSH tunnel through a bastion host.
+- Neptune supports automatic backups and point-in-time recovery.
+- IAM authentication is strongly recommended for production deployments.
+- Neptune automatically scales read replicas based on load.
+
 ### MongoDB (Document Store)
 
 ```bash

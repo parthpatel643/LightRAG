@@ -346,7 +346,7 @@ A full list of LightRAG init parameters:
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`MemgraphStorage`,`NeptuneGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
@@ -951,7 +951,8 @@ MongoKVStorage   MongoDB
 NetworkXStorage      NetworkX (default)
 Neo4JStorage         Neo4J
 PGGraphStorage       PostgreSQL with AGE plugin
-MemgraphStorage.     Memgraph
+MemgraphStorage      Memgraph
+NeptuneGraphStorage  AWS Neptune
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -1097,6 +1098,56 @@ async def initialize_rag():
 </details>
 
 <details>
+<summary> <b>Using AWS Neptune for Storage</b> </summary>
+
+* AWS Neptune is a fully managed graph database service that supports Gremlin and SPARQL query languages.
+* LightRAG uses Gremlin (Apache TinkerPop) for property graph operations.
+* Neptune requires AWS credentials and VPC access.
+* See: https://docs.aws.amazon.com/neptune/
+
+```python
+# Configure Neptune connection
+export NEPTUNE_ENDPOINT="your-cluster.region.neptune.amazonaws.com"
+export NEPTUNE_PORT="8182"
+export NEPTUNE_REGION="us-east-1"
+export NEPTUNE_USE_IAM="true"
+
+# AWS credentials (choose one method):
+# 1. AWS Profile
+export AWS_PROFILE="your-profile"
+# 2. Access keys
+# export AWS_ACCESS_KEY_ID="your-access-key"
+# export AWS_SECRET_ACCESS_KEY="your-secret-key"
+# 3. IAM role (automatic for EC2, Lambda, ECS)
+
+# Optional: OpenSearch integration for full-text search
+# export NEPTUNE_OPENSEARCH_ENDPOINT="https://search-domain.region.es.amazonaws.com"
+
+# Setup logger for LightRAG
+setup_logger("lightrag", level="INFO")
+
+# Initialize LightRAG with Neptune implementation
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
+        graph_storage="NeptuneGraphStorage", #<-----------override KG default
+    )
+
+    # Initialize database connections (includes IAM authentication)
+    await rag.initialize_storages()
+    return rag
+```
+
+**Important Notes:**
+- Neptune clusters are VPC-only by default. Ensure your application can access the VPC.
+- IAM authentication is recommended for production (uses SigV4 signing).
+- Install Neptune dependencies: `pip install lightrag-hku[offline-storage]`
+- Neptune automatically scales and provides high availability.
+
+</details>
+
+<details>
 <summary> <b>Using MongoDB Storage</b> </summary>
 
 MongoDB provides a one-stop storage solution for LightRAG. MongoDB offers native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage. MongoDB's official vector search functionality (`$vectorSearch`) currently requires their official cloud service MongoDB Atlas. This functionality cannot be used on self-hosted MongoDB Community/Enterprise versions.
@@ -1128,9 +1179,9 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
-- **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
+- **For graph databases, logical data isolation is achieved through different mechanisms:** `Neo4JStorage` uses labels, `MemgraphStorage` uses labels, `NeptuneGraphStorage` uses property-based filtering.
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `NEPTUNE_WORKSPACE`.
 
 **Usage Example:**
 For a practical demonstration of managing multiple isolated knowledge bases (e.g., separating "Book" content from "HR Policies") within a single application, refer to the [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).
