@@ -50,34 +50,39 @@ def _extract_headers(table_tag) -> Tuple[List[str], Optional[int]]:
                 # Prepare columns list: list of header parts per column
                 columns: List[List[str]] = [[h] for h in base_headers]
 
-                # Process second header row: distribute cells over segments with colspan>1
-                subcells = trs[1].find_all(["th", "td"], recursive=False)
-                sub_idx = 0
-                for seg_start, seg_len, _ in segments:
-                    if seg_len > 1:
-                        for j in range(seg_len):
-                            if sub_idx < len(subcells):
-                                sub_text = _cell_text(subcells[sub_idx])
-                                columns[seg_start + j].append(sub_text)
-                                sub_idx += 1
-                            else:
-                                # No subheader provided; keep base only
-                                pass
+                # Process subsequent header rows (not just row 1 - ALL remaining rows)
+                for row_idx in range(1, len(trs)):
+                    subcells = trs[row_idx].find_all(["th", "td"], recursive=False)
+                    sub_idx = 0
+                    for seg_start, seg_len, _ in segments:
+                        if seg_len > 1:
+                            for j in range(seg_len):
+                                if sub_idx < len(subcells):
+                                    sub_text = _cell_text(subcells[sub_idx])
+                                    columns[seg_start + j].append(sub_text)
+                                    sub_idx += 1
+                                else:
+                                    # No subheader provided; keep base only
+                                    pass
 
                 # Compose final header names by joining parts with ': '
                 headers = [
                     ": ".join([p for p in parts if p != ""]) if parts else ""
                     for parts in columns
                 ]
-                # Fallback names for empty headers (avoid YAML empty keys)
-                headers = [
-                    (
-                        ("Row" if i == 0 else f"Column {i + 1}")
-                        if (h.strip() == "")
-                        else h
-                    )
-                    for i, h in enumerate(headers)
-                ]
+                # Fallback names for empty headers and ensure uniqueness
+                seen: dict = {}
+                for i in range(len(headers)):
+                    h = headers[i].strip()
+                    if h == "":
+                        headers[i] = "Row" if i == 0 else f"Column {i + 1}"
+                    else:
+                        # Ensure unique headers to prevent data loss
+                        if h in seen:
+                            seen[h] += 1
+                            headers[i] = f"{h} ({seen[h]})"
+                        else:
+                            seen[h] = 0
                 return headers, None
             else:
                 # Single-row header
