@@ -80,6 +80,50 @@ See [tests/TEST_CONSOLIDATION.md](tests/TEST_CONSOLIDATION.md) for:
 - Test running options
 - CLI flags and environment variables
 
+## WebUI Testing
+
+### Graph Features Testing
+
+**Edge Search & Chunks Display**
+
+Test edge relationship search and chunks panel in the browser console:
+
+```javascript
+// Test edge search
+const store = useGraphStore.getState()
+const graph = store.sigmaGraph
+console.log('Total edges:', graph.edges().length)
+
+// Select first edge
+if (graph.edges().length > 0) {
+  const firstEdge = graph.edges()[0]
+  store.setSelectedEdge(firstEdge)
+  console.log('Edge selected:', firstEdge)
+}
+
+// Add test chunks
+store.setEdgeChunks(firstEdge, [
+  {
+    reference_id: 'test-ref-1',
+    file_path: '/documents/test.md',
+    content: ['Test content for edge relationship'],
+    score: 0.9
+  }
+])
+```
+
+**Feature Checklist:**
+- [ ] Graph loads successfully
+- [ ] Search bar shows both nodes and edges in results
+- [ ] Can select edges from search results
+- [ ] Selected edge is highlighted in the graph
+- [ ] Properties panel appears when node/edge is selected
+- [ ] ChunksPanel appears below PropertiesView when chunks are available
+- [ ] Can expand/collapse chunks to view content
+- [ ] Copy button works to copy chunk content
+
+For detailed WebUI testing procedures, see [WEBUI_FEATURES.md](WEBUI_FEATURES.md).
+
 ## Recent Changes
 
 **Test Consolidation (2026-01-20)**
@@ -90,3 +134,5 @@ See [tests/TEST_CONSOLIDATION.md](tests/TEST_CONSOLIDATION.md) for:
 ✅ Added TEST_CONSOLIDATION.md migration guide
 
 See [tests/TEST_CONSOLIDATION.md](tests/TEST_CONSOLIDATION.md) for complete details.
+
+**Last Updated:** March 5, 2026

@@ -93,6 +93,7 @@ from lightrag.operate import (
     rebuild_knowledge_from_chunks,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.temporal import SequenceIndexManager
 from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
     EmbeddingFunc,
@@ -749,6 +750,9 @@ class LightRAG:
             global_config=global_config,
             embedding_func=None,
         )
+
+        # Initialize sequence index manager for temporal versioning (Issue #6 fix)
+        self._sequence_manager = SequenceIndexManager(self.doc_status)
 
     def _init_llm_function(self) -> None:
         """Initialize LLM function with rate limiting and caching configuration."""
@@ -1439,45 +1443,19 @@ class LightRAG:
     async def _get_next_sequence_index(self) -> int:
         """Get the next sequence index for automatic versioning.
 
-        Retrieves the current sequence counter from KV storage, increments it,
-        and returns the new value. Uses a lock to ensure atomicity across
-        concurrent insertions.
+        Uses the SequenceIndexManager to ensure race-free sequence allocation
+        across concurrent insertions and distributed processes.
 
         Returns:
             int: Next sequence index (1-based for versioned documents)
+
+        Note:
+            This method now delegates to SequenceIndexManager which provides:
+            - Distributed locking with CAS pattern
+            - Stale lock detection and recovery
+            - Thread-safe atomic operations
         """
-        counter_key = "_lightrag_metadata:sequence_counter"
-
-        # Use namespace lock to ensure atomic read-modify-write operation
-        sequence_lock = get_namespace_lock("sequence_counter", workspace=self.workspace)
-
-        async with sequence_lock:
-            try:
-                # Try to get existing counter
-                counter_data = await self.full_docs.get_by_id(counter_key)
-                if counter_data is None:
-                    current_index = 0
-                else:
-                    current_index = counter_data.get("last_index", 0)
-            except (KeyError, AttributeError):
-                current_index = 0
-
-            next_index = current_index + 1
-
-            # Persist updated counter
-            await self.full_docs.upsert(
-                {
-                    counter_key: {
-                        "last_index": next_index,
-                        "updated_at": str(__import__("datetime").datetime.now()),
-                    }
-                }
-            )
-
-            # Force immediate persistence to disk to ensure counter survives across sessions
-            await self.full_docs.index_done_callback()
-
-        return next_index
+        return await self._sequence_manager.get_next_sequence_index()
 
     async def apipeline_enqueue_documents(
         self,
@@ -1532,16 +1510,18 @@ class LightRAG:
 
         # Always auto-assign sequence_index for each document
         # Versioning is internalized and managed automatically
-        metadata = []
-        for _ in range(len(input)):
-            next_idx = await self._get_next_sequence_index()
-            metadata.append(
-                {
-                    "sequence_index": next_idx,
-                    "effective_date": "unknown",
-                    "doc_type": "unknown",
-                }
-            )
+        # Use atomic batch allocation to prevent gaps on failure (Issue #16 fix)
+        sequence_indices = await self._sequence_manager.get_next_batch_sequence_indices(
+            len(input)
+        )
+        metadata = [
+            {
+                "sequence_index": idx,
+                "effective_date": "unknown",
+                "doc_type": "unknown",
+            }
+            for idx in sequence_indices
+        ]
 
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:

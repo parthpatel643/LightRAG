@@ -9,20 +9,47 @@ This guide covers all aspects of using LightRAG for temporal document processing
 ## Complete Workflow
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Prepare: Organize Files
-    Prepare --> Upload: Configure Metadata
-    Upload --> Process: Build Knowledge Graph
-    Process --> Query: Begin Analysis
+flowchart TD
+    Start([Start]) --> Prepare[Organize Documents]
+    Prepare --> Upload{Upload Method?}
     
-    state Query {
-        [*] --> SelectMode
-        SelectMode --> SetDate: Choose Temporal Mode
-        SetDate --> Ask: Set Reference Date
-        Ask --> Review: Submit Question
-        Review --> Analyze: Verify Results
-        Analyze --> [*]
-    }
+    Upload -->|WebUI| WebUpload[Drag & Drop in Staging Area]
+    Upload -->|API| APIUpload[POST /upload with metadata]
+    Upload -->|CLI| CLIUpload[python build_graph.py]
+    Upload -->|SDK| SDKUpload[rag.ainsert with metadata]
+    
+    WebUpload --> Sequence[Assign Sequence Index]
+    APIUpload --> Sequence
+    CLIUpload --> Sequence
+    SDKUpload --> Sequence
+    
+    Sequence --> Process[LightRAG Processing]
+    Process --> Extract[Entity Extraction]
+    Extract --> Version[Create Versioned Nodes]
+    Version --> Store[Store in Knowledge Graph]
+    
+    Store --> Query[Query Knowledge Graph]
+    Query --> Mode{Select Query Mode}
+    
+    Mode -->|Local| LocalQuery[Single-hop Search]
+    Mode -->|Global| GlobalQuery[Multi-hop Search]
+    Mode -->|Hybrid| HybridQuery[Balanced Search]
+    Mode -->|Temporal| TemporalQuery[Time-aware Search]
+    
+    TemporalQuery --> SetDate[Set Reference Date]
+    SetDate --> Filter[Apply Temporal Filter]
+    Filter --> Generate[LLM Generate Answer]
+    
+    LocalQuery --> Generate
+    GlobalQuery --> Generate
+    HybridQuery --> Generate
+    
+    Generate --> Result[View Results]
+    Result --> End([End])
+    
+    style TemporalQuery fill:#e1f5ff
+    style Filter fill:#fff4e1
+    style Generate fill:#f0e1ff
 ```
 
 ---
@@ -561,6 +588,8 @@ export MAX_PARALLEL_INSERT=1 # Single document at a time
 - **Retrieval Algorithm** → [RETRIEVAL_LOGIC.md](RETRIEVAL_LOGIC.md)
 - **Getting Started** → [GETTING_STARTED.md](GETTING_STARTED.md)
 - **Deployment** → [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+- **WebUI Features** → [WEBUI_FEATURES.md](WEBUI_FEATURES.md)
+- **Testing** → [TESTING.md](TESTING.md)
 
 ---
 
@@ -579,5 +608,7 @@ uv run demo_temporal_rag.py
 ```
 
 ---
+
+**Last Updated:** March 5, 2026
 
 **Need help? Check [GETTING_STARTED.md](GETTING_STARTED.md) or [ARCHITECTURE.md](ARCHITECTURE.md)**

@@ -614,6 +614,6 @@ curl -X POST "http://localhost:9621/query" \
 
 ---
 
-**API Version:** 1.0.0  
-**Last Updated:** January 19, 2026  
+**API Version:** 1.0.0
+**Last Updated:** March 5, 2026
 **Status:** Production Ready

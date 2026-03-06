@@ -50,19 +50,38 @@ Documents are assigned monotonically increasing sequence IDs during ingestion. T
 The following diagram illustrates the complete journey of data through the LightRAG temporal system:
 
 ```mermaid
-graph TD
-    User[User / Staging UI] -->|1. Drag & Drop Files| Sequencer[Contract Sequencer]
-    Sequencer -->|2. Assign Seq_ID & Doc_Type| Tagger[Data Prep / NLP Tagger]
-    Tagger -->|3. Inject XML Tags Effective Dates| LightRAG[LightRAG Ingestion]
-    LightRAG -->|4. Split & Extract| EntityExtract[LLM Entity Extraction]
-    EntityExtract -->|5. Create Versioned Nodes| KG[(Knowledge Graph)]
-    
-    subgraph Knowledge Graph Storage
-        Node1[("Parking Fee [v1]")]
-        Node2[("Parking Fee [v2]")]
-        Edge1[("v2 SUPERSEDES v1")]
-        Node1 -.-> Edge1 -.-> Node2
+graph TB
+    subgraph "Document Upload"
+        User[User/WebUI] -->|Upload Files| API[LightRAG API]
+        API -->|Assign sequence_index| Files[Document Files]
     end
+    
+    subgraph "LightRAG Processing"
+        Files -->|Read & Parse| Chunker[Text Chunking]
+        Chunker -->|Token-based chunks| Extractor[Entity Extraction]
+        Extractor -->|LLM Processing| Entities[Entities & Relations]
+        Entities -->|Version Detection| Versioner[Versioning Logic]
+    end
+    
+    subgraph "Knowledge Graph Storage"
+        Versioner -->|Create Nodes| GraphDB[(Graph Storage)]
+        Versioner -->|Store Vectors| VectorDB[(Vector Storage)]
+        Versioner -->|Cache Metadata| KVStore[(KV Storage)]
+        
+        GraphDB -.->|SUPERSEDES| Relations[Version Relations]
+    end
+    
+    subgraph "Query Processing"
+        Query[User Query] -->|Search| VectorDB
+        VectorDB -->|Candidates| Filter[Temporal Filter]
+        Filter -->|Max Sequence| GraphDB
+        GraphDB -->|Context| LLM[LLM Generator]
+        LLM -->|Answer| Response[Query Response]
+    end
+    
+    style GraphDB fill:#e1f5ff
+    style VectorDB fill:#fff4e1
+    style KVStore fill:#f0e1ff
 ```
 
 ---
@@ -239,8 +258,11 @@ export LIGHTRAG_SEQUENCE_FIRST=true
 
 - **For retrieval details**: See [RETRIEVAL_LOGIC.md](RETRIEVAL_LOGIC.md)
 - **For user instructions**: See [USER_GUIDE.md](USER_GUIDE.md)
-- **For API documentation**: See [API_CHANGES.md](API_CHANGES.md)
+- **For API documentation**: See [API_REFERENCE.md](API_REFERENCE.md)
+- **For WebUI features**: See [WEBUI_FEATURES.md](WEBUI_FEATURES.md)
 
 ---
+
+**Last Updated:** March 5, 2026
 
 **Architecture designed for the aviation industry use case, extensible to any temporal knowledge domain.**

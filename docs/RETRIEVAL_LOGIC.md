@@ -48,6 +48,8 @@ def filter_temporal_results(candidates, reference_date=None):
 
 ---
 
+**Last Updated:** March 5, 2026
+
 ## Retrieval Pipeline Visualization
 
 The following sequence diagram illustrates the complete retrieval flow from user query to final answer:
@@ -55,23 +57,32 @@ The following sequence diagram illustrates the complete retrieval flow from user
 ```mermaid
 sequenceDiagram
     participant User
-    participant VectorDB as Vector Search
-    participant Filter as Temporal Filter (Python)
-    participant LLM as Generator (Airline Persona)
+    participant API as LightRAG API
+    participant Vector as Vector Storage
+    participant Graph as Graph Storage
+    participant Filter as Temporal Filter
+    participant LLM as LLM Generator
     
-    User->>Filter: Query: "What is the fee?" + Date: "2025-01-01"
-    Filter->>VectorDB: Get Candidates
-    VectorDB-->>Filter: Returns ["Fee [v1]", "Fee [v2]"]
+    User->>API: POST /query<br/>{query, mode: "temporal", reference_date}
+    API->>Vector: Embedding Search
+    Note over Vector: Convert query to embedding<br/>Find top-k similar chunks
+    Vector-->>API: Candidate Chunks<br/>[v1, v2, v3 entities]
     
-    Note over Filter: Group by Name: "Fee"<br/>Select MAX Sequence Index
+    API->>Graph: Get Entity Metadata
+    Graph-->>API: Entity Details<br/>(sequence_index, effective_date)
     
-    Filter->>Filter: Discard "Fee [v1]"<br/>Keep "Fee [v2]"
+    API->>Filter: Apply Temporal Filter
+    Note over Filter: Group by entity name<br/>Select MAX(sequence_index)<br/>Keep only latest versions
+    Filter-->>API: Filtered Entities<br/>[v3 only]
     
-    Filter->>LLM: Context: "Fee [v2] content..." + Query
+    API->>Graph: Get Related Context
+    Graph-->>API: Entity Content + Relations
     
-    Note over LLM: Check text for <EFFECTIVE_DATE> tags.<br/>Compare with User Date.
+    API->>LLM: Generate Answer
+    Note over LLM: Process context with<br/><EFFECTIVE_DATE> tags<br/>Generate response
+    LLM-->>API: Generated Answer
     
-    LLM-->>User: "Fee is $100 (Seq 2), but effective date is 2026."
+    API-->>User: Query Response<br/>{answer, sources, metadata}
 ```
 
 ---
@@ -368,7 +379,7 @@ show_supersedes_chain("Parking Fee")
 
 - **For architecture overview**: See [ARCHITECTURE.md](ARCHITECTURE.md)
 - **For user instructions**: See [USER_GUIDE.md](USER_GUIDE.md)
-- **For API details**: See [API_CHANGES.md](API_CHANGES.md)
+- **For API details**: See [API_REFERENCE.md](API_REFERENCE.md)
 
 ---
 

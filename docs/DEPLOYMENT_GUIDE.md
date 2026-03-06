@@ -97,6 +97,12 @@ uv run demo_temporal_rag.py
 
 ## Docker Deployment
 
+---
+
+**Last Updated:** March 5, 2026
+
+---
+
 ### Quick Start
 
 ```bash
@@ -457,23 +463,75 @@ POSTGRES_URI=postgresql://user:password@localhost:5432/lightrag
 ### Recommended Architecture
 
 ```mermaid
-graph TD
-    Client["Client Applications"]
-    LB["Load Balancer"]
-    API1["API Pod 1"]
-    API2["API Pod 2"]
-    API3["API Pod 3"]
-    Cache["Redis Cache"]
-    DB["Neo4j/PostgreSQL"]
+flowchart TB
+    subgraph Clients["Client Layer"]
+        WebUI[Web UI]
+        MobileApp[Mobile App]
+        API_Client[API Clients]
+    end
     
-    Client --> LB
+    subgraph LoadBalancer["Load Balancing"]
+        LB[Load Balancer<br/>Nginx/HAProxy]
+    end
+    
+    subgraph APILayer["LightRAG API Layer (Kubernetes Pods)"]
+        API1[API Pod 1<br/>lightrag-server]
+        API2[API Pod 2<br/>lightrag-server]
+        API3[API Pod 3<br/>lightrag-server]
+    end
+    
+    subgraph CacheLayer["Caching Layer"]
+        Redis[(Redis Cache<br/>Query Results)]
+    end
+    
+    subgraph StorageLayer["Storage Layer"]
+        GraphDB[(Graph Storage<br/>Neo4j/NetworkX)]
+        VectorDB[(Vector Storage<br/>Milvus/Qdrant)]
+        KVDB[(KV Storage<br/>MongoDB/PostgreSQL)]
+    end
+    
+    subgraph LLMLayer["LLM Services"]
+        LLM[LLM Provider<br/>OpenAI/Azure/Ollama]
+        Embedding[Embedding Service<br/>text-embedding-3]
+    end
+    
+    WebUI --> LB
+    MobileApp --> LB
+    API_Client --> LB
+    
     LB --> API1
     LB --> API2
     LB --> API3
-    API1 --> Cache
-    API2 --> Cache
-    API3 --> Cache
-    Cache --> DB
+    
+    API1 --> Redis
+    API2 --> Redis
+    API3 --> Redis
+    
+    API1 --> GraphDB
+    API1 --> VectorDB
+    API1 --> KVDB
+    
+    API2 --> GraphDB
+    API2 --> VectorDB
+    API2 --> KVDB
+    
+    API3 --> GraphDB
+    API3 --> VectorDB
+    API3 --> KVDB
+    
+    API1 -.->|LLM Requests| LLM
+    API2 -.->|LLM Requests| LLM
+    API3 -.->|LLM Requests| LLM
+    
+    API1 -.->|Embedding Requests| Embedding
+    API2 -.->|Embedding Requests| Embedding
+    API3 -.->|Embedding Requests| Embedding
+    
+    style LoadBalancer fill:#e1f5ff
+    style APILayer fill:#fff4e1
+    style CacheLayer fill:#f0e1ff
+    style StorageLayer fill:#e1ffe1
+    style LLMLayer fill:#ffe1e1
 ```
 
 ### Environment Variables

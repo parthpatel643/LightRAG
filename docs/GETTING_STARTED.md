@@ -285,7 +285,7 @@ After getting started:
 2. **Master Queries** → See [RETRIEVAL_LOGIC.md](RETRIEVAL_LOGIC.md)
 3. **Explore API** → Check [API_REFERENCE.md](API_REFERENCE.md)
 4. **Deploy Production** → See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
-5. **Advanced Topics** → Review [ADVANCED_GUIDE.md](ADVANCED_GUIDE.md)
+5. **WebUI Features** → Review [WEBUI_FEATURES.md](WEBUI_FEATURES.md)
 
 ---
 
@@ -328,5 +328,7 @@ docker-compose up --build
 - **Main Repo** → [GitHub](https://github.com/HKUDS/LightRAG)
 
 ---
+
+**Last Updated:** March 5, 2026
 
 **Ready to get started? Run:** `lightrag-server`
