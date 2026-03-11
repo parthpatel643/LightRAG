@@ -67,6 +67,11 @@ class JsonDocStatusStorage(DocStatusStorage):
         ]
 
         for doc_id, doc_data in data.items():
+            # Skip internal system keys (locks, counters, etc.)
+            if doc_id.startswith("__") and doc_id.endswith("__"):
+                sanitized[doc_id] = doc_data
+                continue
+
             # Skip non-dict values
             if not isinstance(doc_data, dict):
                 logger.warning(f"Skipping invalid document {doc_id}: not a dictionary")
@@ -274,7 +279,12 @@ class JsonDocStatusStorage(DocStatusStorage):
         ]
 
         for doc_id, doc_data in data.items():
-            # Validate required fields
+            # Skip internal system keys (locks, counters, etc.)
+            if doc_id.startswith("__") and doc_id.endswith("__"):
+                validated_data[doc_id] = doc_data
+                continue
+
+            # Validate required fields for regular documents
             missing_fields = [f for f in required_fields if f not in doc_data]
             if missing_fields:
                 logger.error(
