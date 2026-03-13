@@ -210,8 +210,8 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                       isActive
                         ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/50'
                         : isCompleted
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : 'bg-gray-100 text-gray-400'
+                        ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500'
                     )}
                     whileHover={{ scale: 1.1 }}
                   >
@@ -219,15 +219,15 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                   </motion.div>
                   <span className={cn(
                     "text-xs mt-1 font-medium",
-                    isActive ? "text-emerald-600" : "text-gray-500"
+                    isActive ? "text-emerald-600 dark:text-emerald-400" : "text-gray-500 dark:text-gray-400"
                   )}>
                     {step.label}
                   </span>
                 </motion.div>
                 {index < steps.length - 1 && (
-                  <div className="flex-1 h-0.5 mx-2 bg-gray-200 relative overflow-hidden">
+                  <div className="flex-1 h-0.5 mx-2 bg-gray-200 dark:bg-gray-700 relative overflow-hidden">
                     <motion.div
-                      className="absolute inset-0 bg-emerald-500"
+                      className="absolute inset-0 bg-emerald-500 dark:bg-emerald-400"
                       initial={{ scaleX: 0 }}
                       animate={{ scaleX: isCompleted ? 1 : 0 }}
                       transition={{ duration: 0.3 }}
@@ -258,8 +258,8 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                     className={cn(
                       'border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all',
                       isDragActive
-                        ? 'border-emerald-500 bg-emerald-50 scale-105'
-                        : 'border-gray-300 hover:border-emerald-400 hover:bg-gray-50'
+                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950 scale-105'
+                        : 'border-gray-300 dark:border-gray-600 hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-gray-50 dark:hover:bg-gray-800'
                     )}
                     whileHover={{ scale: 1.01 }}
                     whileTap={{ scale: 0.99 }}
@@ -271,15 +271,15 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                     >
                       <Upload className={cn(
                         "h-16 w-16 mx-auto mb-4 transition-colors",
-                        isDragActive ? "text-emerald-500" : "text-gray-400"
+                        isDragActive ? "text-emerald-500 dark:text-emerald-400" : "text-gray-400 dark:text-gray-500"
                       )} />
                     </motion.div>
-                    <p className="text-base font-medium text-gray-700 mb-2">
+                    <p className="text-base font-medium text-gray-700 dark:text-gray-200 mb-2">
                       {isDragActive
                         ? t('sequencer.dropFiles', 'Drop files here...')
                         : t('sequencer.dragDrop', 'Drag & drop files here, or click to browse')}
                     </p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       {t('sequencer.supportedFormats', 'Supported: TXT, PDF, DOC, DOCX, MD')}
                     </p>
                   </motion.div>
@@ -291,7 +291,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                       className="space-y-3"
                     >
                       <div className="flex items-center justify-between">
-                        <label className="text-sm font-semibold text-gray-700">
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">
                           {t('sequencer.uploadedFiles', 'Uploaded Files')} ({documents.length})
                         </label>
                         <Button
@@ -311,12 +311,12 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                               initial={{ opacity: 0, scale: 0.9 }}
                               animate={{ opacity: 1, scale: 1 }}
                               exit={{ opacity: 0, scale: 0.9, x: -100 }}
-                              className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow"
+                              className="flex items-center justify-between p-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:shadow-md transition-shadow"
                             >
                               <div className="flex items-center gap-3 flex-1 min-w-0">
-                                <FileText className="h-5 w-5 text-emerald-500 flex-shrink-0" />
-                                <span className="text-sm font-medium truncate">{doc.file.name}</span>
-                                <span className="text-xs text-gray-500 flex-shrink-0">
+                                <FileText className="h-5 w-5 text-emerald-500 dark:text-emerald-400 flex-shrink-0" />
+                                <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.file.name}</span>
+                                <span className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
                                   {(doc.file.size / 1024).toFixed(1)} KB
                                 </span>
                               </div>
@@ -324,7 +324,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => removeDocument(doc.id)}
-                                className="hover:bg-red-50 hover:text-red-600"
+                                className="hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400"
                               >
                                 <X className="h-4 w-4" />
                               </Button>
@@ -340,14 +340,14 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
               {/* Step 2: Sequence with Framer Motion Reorder */}
               {currentStep === 'sequence' && (
                 <div className="space-y-4">
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
                     <div className="flex items-start gap-3">
-                      <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                      <AlertCircle className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-sm font-medium text-blue-900 mb-1">
+                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-1">
                           {t('sequencer.arrangeOrder', 'Arrange Document Order')}
                         </p>
-                        <p className="text-xs text-blue-700">
+                        <p className="text-xs text-blue-700 dark:text-blue-300">
                           {t('sequencer.arrangeHelp', 'Drag and drop documents to reorder them chronologically. The first document should be the earliest.')}
                         </p>
                       </div>
@@ -374,22 +374,22 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                         >
                           <motion.div
                             layout
-                            className="flex items-center gap-3 p-4 bg-white border-2 border-gray-200 rounded-xl cursor-grab active:cursor-grabbing hover:border-emerald-300 transition-colors group"
+                            className="flex items-center gap-3 p-4 bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 rounded-xl cursor-grab active:cursor-grabbing hover:border-emerald-300 dark:hover:border-emerald-500 transition-colors group"
                           >
-                            <GripVertical className="h-6 w-6 text-gray-400 group-hover:text-emerald-500 transition-colors flex-shrink-0" />
+                            <GripVertical className="h-6 w-6 text-gray-400 dark:text-gray-500 group-hover:text-emerald-500 dark:group-hover:text-emerald-400 transition-colors flex-shrink-0" />
                             <motion.div
-                              className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 font-bold text-sm flex-shrink-0"
+                              className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 font-bold text-sm flex-shrink-0"
                               layout
                             >
                               {index + 1}
                             </motion.div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium truncate">{doc.file.name}</p>
-                              <p className="text-xs text-gray-500">
+                              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.file.name}</p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
                                 {(doc.file.size / 1024).toFixed(1)} KB
                               </p>
                             </div>
-                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                               <span className="hidden sm:inline">Drag to reorder</span>
                             </div>
                           </motion.div>
@@ -403,14 +403,14 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
               {/* Step 3: Metadata */}
               {currentStep === 'metadata' && (
                 <div className="space-y-4">
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                  <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
                     <div className="flex items-start gap-3">
-                      <Calendar className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <Calendar className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-sm font-medium text-amber-900 mb-1">
+                        <p className="text-sm font-medium text-amber-900 dark:text-amber-100 mb-1">
                           {t('sequencer.setDates', 'Set Effective Dates')}
                         </p>
-                        <p className="text-xs text-amber-700">
+                        <p className="text-xs text-amber-700 dark:text-amber-300">
                           {t('sequencer.datesHelp', 'Assign effective dates to enable temporal queries. These dates determine when each document version becomes active.')}
                         </p>
                       </div>
@@ -426,18 +426,18 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                           initial={{ opacity: 0, y: 20 }}
                           animate={{ opacity: 1, y: 0 }}
                           transition={{ delay: index * 0.05 }}
-                          className="flex items-center gap-3 p-4 bg-white border border-gray-200 rounded-xl hover:shadow-md transition-shadow"
+                          className="flex items-center gap-3 p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:shadow-md transition-shadow"
                         >
-                          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-gray-100 text-gray-700 font-bold text-sm flex-shrink-0">
+                          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold text-sm flex-shrink-0">
                             {index + 1}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium truncate">{doc.file.name}</p>
+                            <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.file.name}</p>
                           </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
                             <Calendar className={cn(
                               "h-4 w-4 transition-colors",
-                              doc.effectiveDate ? "text-emerald-500" : "text-gray-400"
+                              doc.effectiveDate ? "text-emerald-500 dark:text-emerald-400" : "text-gray-400 dark:text-gray-500"
                             )} />
                             <Input
                               type="date"
@@ -445,7 +445,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                               onChange={(e) => updateEffectiveDate(doc.id, e.target.value)}
                               className={cn(
                                 "w-40 transition-all",
-                                doc.effectiveDate ? "border-emerald-300" : ""
+                                doc.effectiveDate ? "border-emerald-300 dark:border-emerald-600" : ""
                               )}
                               placeholder="Select date"
                             />
@@ -463,15 +463,15 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                   <motion.div
                     initial={{ scale: 0.9, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    className="flex items-center gap-3 p-4 bg-emerald-50 border border-emerald-200 rounded-xl"
+                    className="flex items-center gap-3 p-4 bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-xl"
                   >
-                    <CheckCircle2 className="h-6 w-6 text-emerald-600 flex-shrink-0" />
+                    <CheckCircle2 className="h-6 w-6 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
                     <div>
-                      <p className="text-sm font-semibold text-emerald-900">
+                      <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
                         {t('sequencer.reviewUpload', 'Ready to Upload')}
                       </p>
-                      <p className="text-xs text-emerald-700">
-                        {t('sequencer.confirmMessage', 
+                      <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                        {t('sequencer.confirmMessage',
                           `${documents.length} document(s) sequenced and ready for temporal queries`
                         )}
                       </p>
@@ -485,16 +485,16 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: index * 0.05 }}
-                        className="p-4 bg-white border border-gray-200 rounded-xl"
+                        className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-3 flex-1 min-w-0">
-                            <div className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 font-bold text-sm flex-shrink-0">
+                            <div className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 font-bold text-sm flex-shrink-0">
                               {index + 1}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium truncate mb-2">{doc.file.name}</p>
-                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+                              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate mb-2">{doc.file.name}</p>
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-400">
                                 <span className="flex items-center gap-1">
                                   <Calendar className="h-3 w-3" />
                                   {doc.effectiveDate}
@@ -505,7 +505,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                               </div>
                             </div>
                           </div>
-                          <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
+                          <CheckCircle2 className="h-5 w-5 text-emerald-500 dark:text-emerald-400 flex-shrink-0" />
                         </div>
                       </motion.div>
                     ))}

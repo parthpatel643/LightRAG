@@ -8,12 +8,9 @@ import { NodeBorderProgram } from '@sigma/node-border'
 import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
 
 import FocusOnNode from '@/components/graph/FocusOnNode'
-import LayoutsControl from '@/components/graph/LayoutsControl'
 import GraphControl from '@/components/graph/GraphControl'
-import ExportControl from '@/components/graph/ExportControl'
+import CollapsibleControlPanel from '@/components/graph/CollapsibleControlPanel'
 // import ThemeToggle from '@/components/ThemeToggle'
-import ZoomControl from '@/components/graph/ZoomControl'
-import FullScreenControl from '@/components/graph/FullScreenControl'
 import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
@@ -239,15 +236,7 @@ const GraphViewer = () => {
           </div>
         </div>
 
-        <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-          <LayoutsControl />
-          <ZoomControl />
-          <FullScreenControl />
-          <ExportControl />
-          <LegendButton />
-          <Settings />
-          {/* <ThemeToggle /> */}
-        </div>
+        <CollapsibleControlPanel />
 
         {showPropertyPanel && (
           <div className="absolute top-2 right-2 z-10 flex flex-col gap-2 max-w-96">
