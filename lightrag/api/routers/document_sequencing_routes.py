@@ -340,10 +340,21 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                             f"Processing document {idx + 1}/{len(sequenced_docs)}"
                         )
                         content = doc["content"]
-                        doc_metadata = {**doc["metadata"], **extra_metadata}
+
+                        # Merge metadata: extra_metadata from frontend takes precedence
+                        # This allows frontend to override sequence_index and other fields
+                        source_filename = doc["metadata"]["source"]
+                        file_specific_metadata = extra_metadata.get(source_filename, {})
+                        doc_metadata = {**doc["metadata"], **file_specific_metadata}
+
+                        logger.info(f"Document metadata for {source_filename}:")
+                        logger.info(f"  - From ContractSequencer: {doc['metadata']}")
+                        logger.info(
+                            f"  - From frontend (extra_metadata): {file_specific_metadata}"
+                        )
+                        logger.info(f"  - Final merged metadata: {doc_metadata}")
 
                         # Get the actual file path from the filename
-                        source_filename = doc_metadata["source"]
                         actual_file_path = filename_to_path.get(
                             source_filename, source_filename
                         )
@@ -458,6 +469,222 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
             logger.error(f"Failed to get document sequences: {e}")
             raise HTTPException(
                 status_code=500, detail=f"Failed to get document sequences: {str(e)}"
+            )
+
+    @router.delete("/{document_id}/sequenced")
+    async def delete_sequenced_document(
+        document_id: str,
+        delete_file: bool = True,
+        delete_llm_cache: bool = False,
+        _auth=Depends(combined_auth),
+    ):
+        """
+        Delete a sequenced document while preserving sequence gaps.
+
+        This endpoint removes a document from the system without reindexing
+        other documents in the sequence. Sequence gaps are intentionally preserved
+        to maintain temporal integrity.
+
+        Args:
+            document_id: ID of the document to delete
+            delete_file: Whether to delete the physical file (default: True)
+            delete_llm_cache: Whether to delete LLM cache entries (default: False)
+
+        Returns:
+            Deletion status and details
+
+        Example:
+            DELETE /documents/doc_123/sequenced?delete_file=true&delete_llm_cache=false
+        """
+        try:
+            if rag is None:
+                raise HTTPException(
+                    status_code=500, detail="RAG instance not available"
+                )
+
+            doc_storage = rag.doc_status_storage
+
+            # Check if document exists
+            doc_status = await doc_storage.get_doc_status(document_id)
+            if doc_status is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Document not found: {document_id}"
+                )
+
+            # Get sequence information before deletion
+            metadata = doc_status.get("metadata", {})
+            sequence_index = metadata.get("sequence_index")
+            effective_date = metadata.get("date")
+            doc_type = metadata.get("doc_type")
+
+            logger.info(
+                f"Deleting sequenced document {document_id} "
+                f"(seq={sequence_index}, date={effective_date}, type={doc_type})"
+            )
+
+            # Delete the document using RAG's delete method
+            deletion_result = await rag.adelete_by_ids(
+                [document_id],
+                delete_file=delete_file,
+                delete_llm_cache=delete_llm_cache,
+            )
+
+            logger.info(
+                f"Successfully deleted sequenced document {document_id}. "
+                f"Sequence gaps preserved."
+            )
+
+            return {
+                "status": "success",
+                "message": f"Deleted document {document_id}",
+                "document_id": document_id,
+                "sequence_index": sequence_index,
+                "effective_date": effective_date,
+                "doc_type": doc_type,
+                "deleted_file": delete_file,
+                "deleted_cache": delete_llm_cache,
+                "deletion_details": {
+                    "chunks_deleted": deletion_result.get("chunks_deleted", 0),
+                    "entities_deleted": deletion_result.get("entities_deleted", 0),
+                    "relations_deleted": deletion_result.get("relations_deleted", 0),
+                },
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to delete sequenced document: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete sequenced document: {str(e)}",
+            )
+
+    @router.post("/{document_id}/replace")
+    async def replace_sequenced_document(
+        document_id: str,
+        file: UploadFile = File(...),
+        _auth=Depends(combined_auth),
+    ):
+        """
+        Replace a sequenced document with new content while preserving metadata.
+
+        This endpoint:
+        1. Retrieves the original document's sequence metadata
+        2. Deletes the old document
+        3. Uploads the new document with the same sequence_index and effective_date
+        4. Maintains the document's position in the temporal sequence
+
+        Args:
+            document_id: ID of the document to replace
+            file: New file to upload
+
+        Returns:
+            Upload status and new document details
+
+        Example:
+            POST /documents/doc_123/replace
+            Content-Type: multipart/form-data
+            file: <new_file.pdf>
+        """
+        try:
+            if rag is None:
+                raise HTTPException(
+                    status_code=500, detail="RAG instance not available"
+                )
+
+            if not file.filename:
+                raise HTTPException(status_code=400, detail="File must have a filename")
+
+            doc_storage = rag.doc_status_storage
+
+            # Get original document metadata
+            doc_status = await doc_storage.get_doc_status(document_id)
+            if doc_status is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Document not found: {document_id}"
+                )
+
+            # Extract sequence metadata to preserve
+            original_metadata = doc_status.get("metadata", {})
+            sequence_index = original_metadata.get("sequence_index")
+            effective_date = original_metadata.get("date")
+            doc_type = original_metadata.get("doc_type", "unknown")
+
+            if sequence_index is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Document {document_id} is not a sequenced document",
+                )
+
+            logger.info(
+                f"Replacing sequenced document {document_id} "
+                f"(seq={sequence_index}, date={effective_date}, type={doc_type}) "
+                f"with new file: {file.filename}"
+            )
+
+            # Delete old document (keep file deletion false to avoid issues)
+            await rag.adelete_by_ids(
+                [document_id], delete_file=True, delete_llm_cache=False
+            )
+
+            logger.info(f"Deleted old document {document_id}")
+
+            # Read new file content
+            content = await file.read()
+
+            # Get INPUT_DIR from environment or use default
+            import os
+
+            input_dir_str = os.getenv("INPUT_DIR", "./inputs")
+            input_dir = Path(input_dir_str).resolve()
+            input_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save new file to INPUT_DIR
+            new_file_path = input_dir / file.filename
+            new_file_path.write_bytes(content)
+
+            logger.info(f"Saved replacement file to: {new_file_path}")
+
+            # Prepare metadata for new document (preserve sequence info)
+            new_metadata = {
+                "sequence_index": sequence_index,
+                "date": effective_date,
+                "doc_type": doc_type,
+                "replaced_document_id": document_id,  # Track replacement history
+                "source": file.filename,
+            }
+
+            # Insert new document with preserved metadata
+            await rag.ainsert(
+                input=content.decode("utf-8", errors="ignore"),
+                file_paths=str(new_file_path),
+                metadata=new_metadata,
+            )
+
+            logger.info(
+                f"Successfully replaced document {document_id} with {file.filename} "
+                f"(preserved seq={sequence_index}, date={effective_date})"
+            )
+
+            return {
+                "status": "success",
+                "message": f"Replaced document {document_id} with {file.filename}",
+                "original_document_id": document_id,
+                "new_file": file.filename,
+                "preserved_metadata": {
+                    "sequence_index": sequence_index,
+                    "effective_date": effective_date,
+                    "doc_type": doc_type,
+                },
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to replace sequenced document: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to replace sequenced document: {str(e)}",
             )
 
     return router

@@ -79,6 +79,224 @@ from lightrag.utils import (
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 
+# Version linking utilities
+VERSION_PATTERN = re.compile(r"^(.*?)\s*\[v(\d+)\]$")
+
+
+def _extract_version_info(entity_name: str) -> tuple[str, int | None]:
+    """Extract base entity name and version number from versioned entity name.
+
+    Args:
+        entity_name: Entity name possibly with version suffix (e.g., "Parking Fee [v1]")
+
+    Returns:
+        Tuple of (base_name, version_number) or (entity_name, None) if not versioned
+        Example: "Parking Fee [v1]" -> ("Parking Fee", 1)
+    """
+    match = VERSION_PATTERN.match(entity_name)
+    if match:
+        return match.group(1), int(match.group(2))
+    return entity_name, None
+
+
+async def _create_version_link_edges(
+    entity_name: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    pipeline_status: dict = None,
+    pipeline_status_lock=None,
+) -> bool:
+    """Create SUPERSEDES relationship edge between versioned entities.
+
+    After inserting a versioned entity like "Entity [v2]", creates an edge:
+        "Entity [v2]" --SUPERSEDES--> "Entity [v1]"
+
+    Args:
+        entity_name: The entity name that was just upserted (may have version suffix)
+        knowledge_graph_inst: Knowledge graph storage instance
+        pipeline_status: Optional pipeline status dict to log progress
+        pipeline_status_lock: Optional lock for pipeline status updates
+
+    Returns:
+        True if version link was created, False otherwise
+    """
+    base_name, current_version = _extract_version_info(entity_name)
+
+    if current_version is None:
+        # Not a versioned entity
+        return False
+
+    if current_version == 1:
+        # First version has no predecessor
+        return False
+
+    # Try to find previous version
+    previous_version = current_version - 1
+    previous_entity_name = f"{base_name} [v{previous_version}]"
+
+    # Check if previous version exists in graph
+    previous_node = await knowledge_graph_inst.get_node(previous_entity_name)
+    if not previous_node:
+        logger.debug(
+            f"Previous version '{previous_entity_name}' not found in graph for '{entity_name}'"
+        )
+        return False
+
+    # Create SUPERSEDES edge: new version supersedes previous version
+    edge_data = dict(
+        weight=1.0,
+        description=f"Version {current_version} supersedes version {previous_version}",
+        keywords="version,supersedes,evolution",
+        source_id="",  # System-generated edge
+        file_path="",  # System-generated edge
+        created_at=int(time.time()),
+        truncate="",
+        relationship_type="SUPERSEDES",  # Mark as version link, not extracted relation
+    )
+
+    await knowledge_graph_inst.upsert_edge(
+        entity_name,  # New version is source
+        previous_entity_name,  # Previous version is target
+        edge_data=edge_data,
+    )
+
+    status_message = (
+        f"Created version link: '{entity_name}' SUPERSEDES '{previous_entity_name}'"
+    )
+    logger.info(status_message)
+
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = status_message
+            pipeline_status["history_messages"].append(status_message)
+
+
+async def _create_version_link_edges(
+    entity_name: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    pipeline_status: dict = None,
+    pipeline_status_lock=None,
+) -> bool:
+    """Create SUPERSEDES relationship edge between versioned entities.
+
+    After inserting a versioned entity like "Entity [v2]", creates an edge:
+        "Entity [v2]" --SUPERSEDES--> "Entity [v1]"
+
+    Args:
+        entity_name: The entity name that was just upserted (may have version suffix)
+        knowledge_graph_inst: Knowledge graph storage instance
+        pipeline_status: Optional pipeline status dict to log progress
+        pipeline_status_lock: Optional lock for pipeline status updates
+
+    Returns:
+        True if version link was created, False otherwise
+    """
+    base_name, current_version = _extract_version_info(entity_name)
+
+    if current_version is None:
+        # Not a versioned entity
+        return False
+
+    if current_version == 1:
+        # First version has no predecessor
+        return False
+
+    # Try to find previous version
+    previous_version = current_version - 1
+    previous_entity_name = f"{base_name} [v{previous_version}]"
+
+    # Check if previous version exists in graph
+    previous_node = await knowledge_graph_inst.get_node(previous_entity_name)
+    if not previous_node:
+        logger.debug(
+            f"Previous version '{previous_entity_name}' not found in graph for '{entity_name}'"
+        )
+        return False
+
+    # Create SUPERSEDES edge: new version supersedes previous version
+    edge_data = dict(
+        weight=1.0,
+        description=f"Version {current_version} supersedes version {previous_version}",
+        keywords="version,supersedes,evolution",
+        source_id="",  # System-generated edge
+        file_path="",  # System-generated edge
+        created_at=int(time.time()),
+        truncate="",
+        relationship_type="SUPERSEDES",  # Mark as version link, not extracted relation
+    )
+
+    await knowledge_graph_inst.upsert_edge(
+        entity_name,  # New version is source
+        previous_entity_name,  # Previous version is target
+        edge_data=edge_data,
+    )
+
+    status_message = (
+        f"Created version link: '{entity_name}' SUPERSEDES '{previous_entity_name}'"
+    )
+    logger.info(status_message)
+
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = status_message
+            pipeline_status["history_messages"].append(status_message)
+
+    return True
+
+
+async def get_version_history(
+    entity_base_name: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    max_versions: int = 20,
+) -> list[dict]:
+    """Get version history chain for an entity by searching for all versions.
+
+    Returns ordered list of versions from newest to oldest by probing for
+    all versions [v1] through [vN] and collecting those that exist.
+
+    Args:
+        entity_base_name: Base entity name without version suffix (e.g., "Parking Fee")
+        knowledge_graph_inst: Knowledge graph storage instance
+        max_versions: Maximum version number to probe (prevents infinite loops)
+
+    Returns:
+        List of dicts with keys:
+        - entity_name: Full entity name with version suffix (e.g., "Parking Fee [v2]")
+        - version: Version number (e.g., 2)
+        - node_data: Full node data from graph
+
+        Sorted from newest (highest version) to oldest (lowest version).
+        Returns empty list if entity not found.
+
+    Example:
+        >>> history = await get_version_history("Parking Fee", kg)
+        >>> history
+        [
+            {'version': 3, 'entity_name': 'Parking Fee [v3]', 'node_data': {...}},
+            {'version': 2, 'entity_name': 'Parking Fee [v2]', 'node_data': {...}},
+            {'version': 1, 'entity_name': 'Parking Fee [v1]', 'node_data': {...}},
+        ]
+    """
+    version_chain = []
+
+    # Search for all versions
+    for v in range(max_versions, 0, -1):
+        versioned_name = f"{entity_base_name} [v{v}]"
+        node_data = await knowledge_graph_inst.get_node(versioned_name)
+        if node_data:
+            version_chain.append(
+                {
+                    "entity_name": versioned_name,
+                    "version": v,
+                    "node_data": node_data,
+                }
+            )
+
+    if not version_chain:
+        logger.debug(f"No versions found for entity '{entity_base_name}'")
+
+    return version_chain
+
+
 def _truncate_entity_identifier(
     identifier: str, limit: int, chunk_key: str, identifier_role: str
 ) -> str:
@@ -2064,6 +2282,18 @@ async def _merge_nodes_then_upsert(
         entity_name,
         node_data=node_data,
     )
+
+    # Create version linking edges for versioned entities
+    try:
+        version_link_created = await _create_version_link_edges(
+            entity_name,
+            knowledge_graph_inst,
+            pipeline_status,
+            pipeline_status_lock,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to create version link edges for '{entity_name}': {e}")
+
     node_data["entity_name"] = entity_name
     if entity_vdb is not None:
         entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
@@ -2560,6 +2790,7 @@ async def _merge_edges_then_upsert(
             file_path=file_path,
             created_at=edge_created_at,
             truncate=truncation_info,
+            relationship_type="EXTRACTED",  # Mark as LLM-extracted relation (not version link)
         ),
     )
 

@@ -17,6 +17,7 @@ import Checkbox from '@/components/ui/Checkbox'
 import Skeleton from '@/components/ui/Skeleton'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import DeleteSequencedDocumentDialog from '@/components/documents/DeleteSequencedDocumentDialog'
 import DocumentPreviewDialog from '@/components/documents/DocumentPreviewDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 import DocumentSequencer from '@/components/DocumentSequencer'
@@ -34,7 +35,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, Search, X as XCircle } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, Search, X as XCircle, Trash2 } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import Input from '@/components/ui/Input'
 
@@ -255,6 +256,10 @@ export default function DocumentManager() {
   const [previewDocument, setPreviewDocument] = useState<DocStatusResponse | null>(null)
   const [showPreviewDialog, setShowPreviewDialog] = useState(false)
 
+  // Delete sequenced document dialog state
+  const [deleteSequencedDialogOpen, setDeleteSequencedDialogOpen] = useState(false)
+  const [documentToDeleteSequenced, setDocumentToDeleteSequenced] = useState<DocStatusResponse | null>(null)
+
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
@@ -316,6 +321,19 @@ export default function DocumentManager() {
   const handleDocumentClick = useCallback((doc: DocStatusResponse) => {
     setPreviewDocument(doc)
     setShowPreviewDialog(true)
+  }, [])
+
+  // Handle delete sequenced document click
+  const handleDeleteSequencedClick = useCallback((doc: DocStatusResponse, e: React.MouseEvent) => {
+    e.stopPropagation() // Prevent row click
+    setDocumentToDeleteSequenced(doc)
+    setDeleteSequencedDialogOpen(true)
+  }, [])
+
+  // Handle delete sequenced success
+  const handleDeleteSequencedSuccess = useCallback(() => {
+    // Trigger a refresh by updating a state that will cause re-fetch
+    setIsRefreshing(true)
   }, [])
 
   // Handle sort column click
@@ -771,6 +789,19 @@ export default function DocumentManager() {
       if (pageToFetch !== pagination.page) {
         setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
       }
+      
+      // DEBUG: Log metadata from API response
+      console.log('[DocumentManager] API Response received:', {
+        total_documents: response.documents.length,
+        documents_with_sequence_index: response.documents.filter(d => d.metadata?.sequence_index !== undefined).length,
+        sample_docs: response.documents.slice(0, 3).map(d => ({
+          id: d.id,
+          status: d.status,
+          metadata: d.metadata,
+          has_sequence_index: d.metadata?.sequence_index !== undefined
+        }))
+      });
+      
       updateComponentState(response);
 
     } catch (err) {
@@ -1605,9 +1636,27 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead className="w-20 text-center">
+                          {t('documentPanel.documentManager.columns.actions', 'Actions')}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
+                      {filteredAndSortedDocs && (() => {
+                        // DEBUG: Log what we're actually rendering  
+                        if (filteredAndSortedDocs.length > 0) {
+                          console.log('[DocumentManager] Rendering table with documents:', {
+                            total_docs: filteredAndSortedDocs.length,
+                            docs_with_sequence: filteredAndSortedDocs.filter(d => d.metadata?.sequence_index !== undefined).length,
+                            sample: filteredAndSortedDocs.slice(0, 3).map(d => ({
+                              id: d.id,
+                              metadata: d.metadata,
+                              sequence_index: d.metadata?.sequence_index
+                            }))
+                          });
+                        }
+                        return null
+                      })()} 
                       {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
                         <TableRow
                           key={doc.id}
@@ -1713,6 +1762,21 @@ export default function DocumentManager() {
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
                           </TableCell>
+                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                            {doc.metadata?.sequence_index !== undefined ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => handleDeleteSequencedClick(doc, e)}
+                                className="hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400"
+                                tooltip="Delete sequenced document"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -1730,6 +1794,17 @@ export default function DocumentManager() {
           document={previewDocument}
           open={showPreviewDialog}
           onOpenChange={setShowPreviewDialog}
+        />
+      )}
+
+      {/* Delete Sequenced Document Dialog */}
+      {documentToDeleteSequenced && (
+        <DeleteSequencedDocumentDialog
+          document={documentToDeleteSequenced}
+          open={deleteSequencedDialogOpen}
+          onOpenChange={setDeleteSequencedDialogOpen}
+          onDeleteSuccess={handleDeleteSequencedSuccess}
+          mode="existing"
         />
       )}
     </Card>

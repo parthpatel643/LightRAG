@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { motion, Reorder, AnimatePresence } from 'framer-motion'
 import Button from '@/components/ui/Button'
@@ -12,19 +12,21 @@ import {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/Dialog'
-import { 
-  Upload, 
-  GripVertical, 
-  X, 
-  Calendar, 
-  FileText, 
+import DeleteSequencedDocumentDialog from '@/components/documents/DeleteSequencedDocumentDialog'
+import {
+  Upload,
+  GripVertical,
+  X,
+  Calendar,
+  FileText,
   CheckCircle2,
   AlertCircle,
-  Sparkles
+  Sparkles,
+  Trash2
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { batchUploadSequenced } from '@/api/lightrag'
+import { batchUploadSequenced, getDocuments } from '@/api/lightrag'
 import { cn } from '@/lib/utils'
 
 interface DocumentWithMetadata {
@@ -45,17 +47,65 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
   const [documents, setDocuments] = useState<DocumentWithMetadata[]>([])
   const [currentStep, setCurrentStep] = useState<'upload' | 'sequence' | 'metadata' | 'confirm'>('upload')
   const [isUploading, setIsUploading] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [documentToDelete, setDocumentToDelete] = useState<DocumentWithMetadata | null>(null)
+  const [maxExistingSequence, setMaxExistingSequence] = useState<number>(0)
+  const [totalExistingDocs, setTotalExistingDocs] = useState<number>(0)
+  const [sequencedDocsCount, setSequencedDocsCount] = useState<number>(0)
+  const [isLoadingSequence, setIsLoadingSequence] = useState(false)
+
+  // Fetch the highest sequence index from existing documents
+  useEffect(() => {
+    const fetchMaxSequence = async () => {
+      if (!isDialogOpen) return
+      
+      setIsLoadingSequence(true)
+      try {
+        const response = await getDocuments()
+        let maxSeq = 0
+        let totalDocs = 0
+        let sequencedDocs = 0
+        
+        // Flatten all documents from all statuses and find the highest sequence_index
+        const allDocs = Object.values(response.statuses).flat()
+        allDocs.forEach((doc: any) => {
+          totalDocs++
+          const seqIndex = doc.metadata?.sequence_index
+          if (typeof seqIndex === 'number') {
+            sequencedDocs++
+            if (seqIndex > maxSeq) {
+              maxSeq = seqIndex
+            }
+          }
+        })
+        
+        setMaxExistingSequence(maxSeq)
+        setTotalExistingDocs(totalDocs)
+        setSequencedDocsCount(sequencedDocs)
+      } catch (error) {
+        console.error('Failed to fetch existing documents:', error)
+        // If fetch fails, default to 0
+        setMaxExistingSequence(0)
+        setTotalExistingDocs(0)
+        setSequencedDocsCount(0)
+      } finally {
+        setIsLoadingSequence(false)
+      }
+    }
+
+    fetchMaxSequence()
+  }, [isDialogOpen])
 
   // File upload handler
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newDocs: DocumentWithMetadata[] = acceptedFiles.map((file, index) => ({
       file,
       id: `${file.name}-${Date.now()}-${index}`,
-      sequenceIndex: documents.length + index
+      sequenceIndex: maxExistingSequence + documents.length + index + 1
     }))
     setDocuments(prev => [...prev, ...newDocs])
     toast.success(t('sequencer.filesAdded', `Added ${acceptedFiles.length} file(s)`))
-  }, [documents.length, t])
+  }, [documents.length, maxExistingSequence, t])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -72,7 +122,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
   const handleReorder = (newOrder: DocumentWithMetadata[]) => {
     const reindexed = newOrder.map((doc, idx) => ({
       ...doc,
-      sequenceIndex: idx
+      sequenceIndex: maxExistingSequence + idx + 1
     }))
     setDocuments(reindexed)
   }
@@ -81,8 +131,24 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
   const removeDocument = (id: string) => {
     setDocuments(prev => {
       const filtered = prev.filter(doc => doc.id !== id)
-      return filtered.map((doc, idx) => ({ ...doc, sequenceIndex: idx }))
+      return filtered.map((doc, idx) => ({
+        ...doc,
+        sequenceIndex: maxExistingSequence + idx + 1
+      }))
     })
+  }
+
+  // Open delete dialog
+  const handleDeleteClick = (doc: DocumentWithMetadata) => {
+    setDocumentToDelete(doc)
+    setDeleteDialogOpen(true)
+  }
+
+  // Handle delete success
+  const handleDeleteSuccess = () => {
+    if (documentToDelete) {
+      removeDocument(documentToDelete.id)
+    }
   }
 
   // Update effective date
@@ -323,10 +389,11 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => removeDocument(doc.id)}
+                                onClick={() => handleDeleteClick(doc)}
                                 className="hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400"
+                                tooltip="Delete document"
                               >
-                                <X className="h-4 w-4" />
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </motion.div>
                           ))}
@@ -340,6 +407,59 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
               {/* Step 2: Sequence with Framer Motion Reorder */}
               {currentStep === 'sequence' && (
                 <div className="space-y-4">
+                  {/* Warning for non-sequenced documents */}
+                  {totalExistingDocs > 0 && sequencedDocsCount === 0 && (
+                    <div className="bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium text-yellow-900 dark:text-yellow-100 mb-1">
+                            No Sequenced Documents Found
+                          </p>
+                          <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                            You have {totalExistingDocs} existing document{totalExistingDocs !== 1 ? 's' : ''}, but {totalExistingDocs !== 1 ? 'they were' : 'it was'} not uploaded with sequence metadata.
+                            New documents will start from version 1. To include existing documents in the sequence, please re-upload them using this sequencer.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Warning for mixed documents */}
+                  {totalExistingDocs > sequencedDocsCount && sequencedDocsCount > 0 && (
+                    <div className="bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium text-yellow-900 dark:text-yellow-100 mb-1">
+                            Mixed Document Types Detected
+                          </p>
+                          <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                            You have {totalExistingDocs} total documents: {sequencedDocsCount} sequenced and {totalExistingDocs - sequencedDocsCount} non-sequenced.
+                            New documents will continue from version {maxExistingSequence + 1}, but non-sequenced documents won't appear in temporal queries.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Success banner for continuing sequence */}
+                  {maxExistingSequence > 0 && sequencedDocsCount === totalExistingDocs && (
+                    <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-lg p-4">
+                      <div className="flex items-start gap-3">
+                        <Sparkles className="h-5 w-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium text-emerald-900 dark:text-emerald-100 mb-1">
+                            Continuing Sequence
+                          </p>
+                          <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                            You have {sequencedDocsCount} existing sequenced document{sequencedDocsCount !== 1 ? 's' : ''} (versions 1-{maxExistingSequence}).
+                            New documents will be assigned versions {maxExistingSequence + 1} through {maxExistingSequence + documents.length}.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
                     <div className="flex items-start gap-3">
                       <AlertCircle className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
@@ -380,13 +500,19 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                             <motion.div
                               className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 font-bold text-sm flex-shrink-0"
                               layout
+                              title={`Sequence Index: ${doc.sequenceIndex}`}
                             >
-                              {index + 1}
+                              {doc.sequenceIndex}
                             </motion.div>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{doc.file.name}</p>
                               <p className="text-xs text-gray-500 dark:text-gray-400">
                                 {(doc.file.size / 1024).toFixed(1)} KB
+                                {maxExistingSequence > 0 && (
+                                  <span className="ml-2 text-emerald-600 dark:text-emerald-400">
+                                    • Version {doc.sequenceIndex}
+                                  </span>
+                                )}
                               </p>
                             </div>
                             <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -582,6 +708,17 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
           </div>
         </DialogFooter>
       </DialogContent>
+
+      {/* Delete Dialog */}
+      {documentToDelete && (
+        <DeleteSequencedDocumentDialog
+          document={documentToDelete}
+          open={deleteDialogOpen}
+          onOpenChange={setDeleteDialogOpen}
+          onDeleteSuccess={handleDeleteSuccess}
+          mode="pre-upload"
+        />
+      )}
     </Dialog>
   )
 }

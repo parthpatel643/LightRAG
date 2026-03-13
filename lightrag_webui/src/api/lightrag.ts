@@ -1225,3 +1225,96 @@ export const getDocumentSequences = async (): Promise<DocumentSequencesResponse>
   const response = await axiosInstance.get('/documents/sequences')
   return response.data
 }
+
+/**
+ * Response for deleting a sequenced document
+ */
+export type DeleteSequencedDocumentResponse = {
+  status: string
+  message: string
+  document_id: string
+  sequence_index?: number
+  effective_date?: string
+  doc_type?: string
+  deleted_file: boolean
+  deleted_cache: boolean
+  deletion_details: {
+    chunks_deleted: number
+    entities_deleted: number
+    relations_deleted: number
+  }
+}
+
+/**
+ * Response for replacing a sequenced document
+ */
+export type ReplaceSequencedDocumentResponse = {
+  status: string
+  message: string
+  original_document_id: string
+  new_file: string
+  preserved_metadata: {
+    sequence_index: number
+    effective_date: string
+    doc_type: string
+  }
+}
+
+/**
+ * Delete a sequenced document while preserving sequence gaps
+ * @param documentId - ID of the document to delete
+ * @param deleteFile - Whether to delete the physical file (default: true)
+ * @param deleteLlmCache - Whether to delete LLM cache entries (default: false)
+ * @returns Promise with deletion response
+ */
+export const deleteSequencedDocument = async (
+  documentId: string,
+  deleteFile: boolean = true,
+  deleteLlmCache: boolean = false
+): Promise<DeleteSequencedDocumentResponse> => {
+  const response = await axiosInstance.delete(
+    `/documents/${documentId}/sequenced`,
+    {
+      params: {
+        delete_file: deleteFile,
+        delete_llm_cache: deleteLlmCache
+      }
+    }
+  )
+  return response.data
+}
+
+/**
+ * Replace a sequenced document with new content while preserving metadata
+ * @param documentId - ID of the document to replace
+ * @param file - New file to upload
+ * @param onUploadProgress - Optional callback for upload progress
+ * @returns Promise with replacement response
+ */
+export const replaceSequencedDocument = async (
+  documentId: string,
+  file: File,
+  onUploadProgress?: (progress: number) => void
+): Promise<ReplaceSequencedDocumentResponse> => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await axiosInstance.post(
+    `/documents/${documentId}/replace`,
+    formData,
+    {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      onUploadProgress: onUploadProgress
+        ? (progressEvent) => {
+            const percentCompleted = Math.round(
+              (progressEvent.loaded * 100) / (progressEvent.total || 1)
+            )
+            onUploadProgress(percentCompleted)
+          }
+        : undefined
+    }
+  )
+  return response.data
+}
