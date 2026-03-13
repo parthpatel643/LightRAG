@@ -18,7 +18,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    from data_prep import ContractSequencer
+    from lightrag.temporal.data_prep import ContractSequencer
 except ImportError:
     # If data_prep is not available, create a minimal stub
     class ContractSequencer:

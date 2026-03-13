@@ -12,7 +12,7 @@ import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
 import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
-import { switchWorkspace, type WorkspaceConfig as ApiWorkspaceConfig } from '@/api/lightrag'
+import { switchWorkspace } from '@/api/lightrag'
 import { toast } from 'sonner'
 import { useState } from 'react'
 
@@ -85,15 +85,8 @@ export default function SiteHeader() {
 
   const handleWorkspaceChange = async (workspace: WorkspaceConfig) => {
     try {
-      // Convert camelCase to snake_case for API
-      const apiConfig: ApiWorkspaceConfig = {
-        name: workspace.name,
-        working_dir: workspace.workingDir,
-        input_dir: workspace.inputDir,
-        description: workspace.description
-      }
-      
-      const response = await switchWorkspace(apiConfig)
+      // API function handles camelCase to snake_case conversion
+      const response = await switchWorkspace(workspace)
       setCurrentWorkspace(workspace.name)
       toast.success(t('workspace.switchSuccess', 'Workspace switched successfully'))
       

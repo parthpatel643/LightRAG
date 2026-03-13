@@ -1059,8 +1059,8 @@ export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> =
 
 export type WorkspaceConfig = {
   name: string
-  working_dir: string
-  input_dir: string
+  workingDir: string
+  inputDir: string
   description?: string
 }
 
@@ -1076,7 +1076,14 @@ export type WorkspaceResponse = {
  * @returns Promise with workspace response
  */
 export const switchWorkspace = async (config: WorkspaceConfig): Promise<WorkspaceResponse> => {
-  const response = await axiosInstance.post('/workspace/switch', config)
+  // Transform camelCase to snake_case for API
+  const apiPayload = {
+    name: config.name,
+    working_dir: config.workingDir,
+    input_dir: config.inputDir,
+    description: config.description
+  }
+  const response = await axiosInstance.post('/workspace/switch', apiPayload)
   return response.data
 }
 
@@ -1095,7 +1102,13 @@ export const getCurrentWorkspace = async (): Promise<WorkspaceConfig> => {
  */
 export const listWorkspaces = async (): Promise<WorkspaceConfig[]> => {
   const response = await axiosInstance.get('/workspace/list')
-  return response.data
+  // Transform snake_case from API to camelCase for frontend
+  return response.data.map((ws: any) => ({
+    name: ws.name,
+    workingDir: ws.working_dir,
+    inputDir: ws.input_dir,
+    description: ws.description
+  }))
 }
 
 /**
