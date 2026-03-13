@@ -153,10 +153,16 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
-            for doc in self._data.values():
+            for k, doc in self._data.items():
+                # Skip internal metadata entries
+                if k.startswith("__") and k.endswith("__"):
+                    continue
+
                 # Skip documents without status field (data integrity issue)
                 if not isinstance(doc, dict) or "status" not in doc:
-                    logger.warning("Document missing 'status' field in count, skipping")
+                    logger.warning(
+                        f"Document {k} missing 'status' field in count, skipping"
+                    )
                     continue
                 counts[doc["status"]] += 1
         return counts
@@ -170,6 +176,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
+                # Skip internal metadata entries (used by SequenceIndexManager, etc.)
+                if k.startswith("__") and k.endswith("__"):
+                    continue
+
+                if isinstance(v, dict) and v.get("_is_metadata"):
+                    continue
+
                 # Skip documents without status field (data integrity issue)
                 if not isinstance(v, dict) or "status" not in v:
                     logger.warning(f"Document {k} missing 'status' field, skipping")
@@ -189,6 +202,11 @@ class JsonDocStatusStorage(DocStatusStorage):
                             data["metadata"] = {}
                         if "error_msg" not in data:
                             data["error_msg"] = None
+
+                        # Convert status string to DocStatus enum
+                        if "status" in data and isinstance(data["status"], str):
+                            data["status"] = DocStatus(data["status"])
+
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(
@@ -206,6 +224,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
+                # Skip internal metadata entries
+                if k.startswith("__") and k.endswith("__"):
+                    continue
+
+                if isinstance(v, dict) and v.get("_is_metadata"):
+                    continue
+
                 if v.get("track_id") == track_id:
                     try:
                         # Make a copy of the data to avoid modifying the original
@@ -220,6 +245,11 @@ class JsonDocStatusStorage(DocStatusStorage):
                             data["metadata"] = {}
                         if "error_msg" not in data:
                             data["error_msg"] = None
+
+                        # Convert status string to DocStatus enum
+                        if "status" in data and isinstance(data["status"], str):
+                            data["status"] = DocStatus(data["status"])
+
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(
@@ -367,6 +397,20 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
+                # Skip internal metadata entries
+                if doc_id.startswith("__") and doc_id.endswith("__"):
+                    continue
+
+                if doc_data.get("_is_metadata"):
+                    continue
+
+                # Skip documents without status field
+                if "status" not in doc_data:
+                    logger.warning(
+                        f"Document {doc_id} missing 'status' field, skipping"
+                    )
+                    continue
+
                 # Apply status filter
                 if (
                     status_filter is not None
@@ -384,6 +428,10 @@ class JsonDocStatusStorage(DocStatusStorage):
                         data["metadata"] = {}
                     if "error_msg" not in data:
                         data["error_msg"] = None
+
+                    # Convert status string to DocStatus enum
+                    if "status" in data and isinstance(data["status"], str):
+                        data["status"] = DocStatus(data["status"])
 
                     doc_status = DocProcessingStatus(**data)
 

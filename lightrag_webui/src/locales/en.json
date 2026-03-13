@@ -4,7 +4,8 @@
     "theme": "Theme",
     "light": "Light",
     "dark": "Dark",
-    "system": "System"
+    "system": "System",
+    "showApiTab": "Show API Tab"
   },
   "header": {
     "documents": "Documents",
@@ -124,6 +125,11 @@
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
       "emptyDescription": "There are no uploaded documents yet.",
+      "noDocuments": "No documents found",
+      "noDocumentsHint": "Upload documents or scan for new files to get started",
+      "noDocumentsForStatus": "No {{status}} documents",
+      "noDocumentsForStatusHint": "Try selecting a different status filter or upload new documents",
+      "viewAllDocuments": "View all documents",
       "columns": {
         "id": "ID",
         "fileName": "File Name",

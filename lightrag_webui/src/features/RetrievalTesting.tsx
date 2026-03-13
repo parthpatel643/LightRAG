@@ -9,8 +9,9 @@ import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
+import QueryHistoryDialog from '@/components/retrieval/QueryHistoryDialog'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
+import { EraserIcon, SendIcon, CopyIcon, History } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -107,6 +108,8 @@ export default function RetrievalTesting() {
   // Get current tab to determine if this tab is active (for performance optimization)
   const currentTab = useSettingsStore.use.currentTab()
   const isRetrievalTabActive = currentTab === 'retrieval'
+  
+  const [showHistoryDialog, setShowHistoryDialog] = useState(false)
 
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
     try {
@@ -800,6 +803,16 @@ export default function RetrievalTesting() {
             <EraserIcon />
             {t('retrievePanel.retrieval.clear')}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setShowHistoryDialog(true)}
+            disabled={isLoading}
+            size="sm"
+            tooltip="View query history"
+          >
+            <History />
+          </Button>
           <div className="flex-1 relative">
             <label htmlFor="query-input" className="sr-only">
               {t('retrievePanel.retrieval.placeholder')}
@@ -857,6 +870,11 @@ export default function RetrievalTesting() {
         </form>
       </div>
       <QuerySettings />
+      <QueryHistoryDialog
+        open={showHistoryDialog}
+        onOpenChange={setShowHistoryDialog}
+        onSelectQuery={(query) => setInputValue(query)}
+      />
     </div>
   )
 }

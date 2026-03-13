@@ -1897,45 +1897,55 @@ async def background_delete_documents(
                     ):
                         try:
                             deleted_files = []
-                            # SECURITY FIX: Use secure path validation to prevent arbitrary file deletion
-                            safe_file_path = validate_file_path_security(
-                                result.file_path, doc_manager.input_dir
-                            )
 
-                            if safe_file_path is None:
-                                # Security violation detected - log and skip file deletion
-                                security_msg = f"Security violation: Unsafe file path detected for deletion - {result.file_path}"
-                                logger.warning(security_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = security_msg
-                                    pipeline_status["history_messages"].append(
-                                        security_msg
-                                    )
+                            # Skip deletion for temporary files only (batch uploads now save to INPUT_DIR)
+                            if (
+                                "/tmp/" in result.file_path
+                                and "/lightrag_batch_upload_" in result.file_path
+                            ):
+                                logger.debug(
+                                    f"Skipping deletion of temporary file: {result.file_path}"
+                                )
                             else:
-                                # check and delete files from input_dir directory
-                                if safe_file_path.exists():
-                                    try:
-                                        safe_file_path.unlink()
-                                        deleted_files.append(safe_file_path.name)
-                                        file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
-                                        logger.info(file_delete_msg)
-                                        async with pipeline_status_lock:
-                                            pipeline_status["latest_message"] = (
-                                                file_delete_msg
-                                            )
-                                            pipeline_status["history_messages"].append(
-                                                file_delete_msg
-                                            )
-                                    except Exception as file_error:
-                                        file_error_msg = f"Failed to delete input_dir file {result.file_path}: {str(file_error)}"
-                                        logger.debug(file_error_msg)
-                                        async with pipeline_status_lock:
-                                            pipeline_status["latest_message"] = (
-                                                file_error_msg
-                                            )
-                                            pipeline_status["history_messages"].append(
-                                                file_error_msg
-                                            )
+                                # SECURITY FIX: Use secure path validation to prevent arbitrary file deletion
+                                safe_file_path = validate_file_path_security(
+                                    result.file_path, doc_manager.input_dir
+                                )
+
+                                if safe_file_path is None:
+                                    # Security violation detected - log and skip file deletion
+                                    security_msg = f"Security violation: Unsafe file path detected for deletion - {result.file_path}"
+                                    logger.warning(security_msg)
+                                    async with pipeline_status_lock:
+                                        pipeline_status["latest_message"] = security_msg
+                                        pipeline_status["history_messages"].append(
+                                            security_msg
+                                        )
+                                else:
+                                    # check and delete files from input_dir directory
+                                    if safe_file_path.exists():
+                                        try:
+                                            safe_file_path.unlink()
+                                            deleted_files.append(safe_file_path.name)
+                                            file_delete_msg = f"Successfully deleted input_dir file: {result.file_path}"
+                                            logger.info(file_delete_msg)
+                                            async with pipeline_status_lock:
+                                                pipeline_status["latest_message"] = (
+                                                    file_delete_msg
+                                                )
+                                                pipeline_status[
+                                                    "history_messages"
+                                                ].append(file_delete_msg)
+                                        except Exception as file_error:
+                                            file_error_msg = f"Failed to delete input_dir file {result.file_path}: {str(file_error)}"
+                                            logger.debug(file_error_msg)
+                                            async with pipeline_status_lock:
+                                                pipeline_status["latest_message"] = (
+                                                    file_error_msg
+                                                )
+                                                pipeline_status[
+                                                    "history_messages"
+                                                ].append(file_error_msg)
 
                                 # Also check and delete files from __enqueued__ directory
                                 enqueued_dir = doc_manager.input_dir / "__enqueued__"

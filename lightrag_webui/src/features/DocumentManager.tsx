@@ -14,11 +14,12 @@ import {
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
-import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
-import StagingAreaDialog from '@/components/documents/StagingAreaDialog'
+import Skeleton from '@/components/ui/Skeleton'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import DocumentPreviewDialog from '@/components/documents/DocumentPreviewDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
+import DocumentSequencer from '@/components/DocumentSequencer'
 
 import {
   scanNewDocuments,
@@ -33,8 +34,9 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, Search, X as XCircle } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
+import Input from '@/components/ui/Input'
 
 type StatusFilter = DocStatus | 'all';
 
@@ -245,6 +247,13 @@ export default function DocumentManager() {
   })
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
   const [isRefreshing, setIsRefreshing] = useState(false)
+  
+  // Search state
+  const [searchTerm, setSearchTerm] = useState('')
+
+  // Preview dialog state
+  const [previewDocument, setPreviewDocument] = useState<DocStatusResponse | null>(null)
+  const [showPreviewDialog, setShowPreviewDialog] = useState(false)
 
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
@@ -303,6 +312,12 @@ export default function DocumentManager() {
     setSelectedDocIds([])
   }, [])
 
+  // Handle document row click to show preview
+  const handleDocumentClick = useCallback((doc: DocStatusResponse) => {
+    setPreviewDocument(doc)
+    setShowPreviewDialog(true)
+  }, [])
+
   // Handle sort column click
   const handleSort = (field: SortField) => {
     let actualField = field;
@@ -330,6 +345,20 @@ export default function DocumentManager() {
       failed: 1,
     });
   };
+
+  // Filter documents based on search term
+  const filterDocuments = useCallback((documents: DocStatusResponse[]) => {
+    if (!searchTerm.trim()) return documents
+    
+    const term = searchTerm.toLowerCase()
+    return documents.filter(doc => {
+      const fileName = getDisplayFileName(doc).toLowerCase()
+      const docId = doc.id.toLowerCase()
+      const filePath = (doc.file_path || '').toLowerCase()
+      
+      return fileName.includes(term) || docId.includes(term) || filePath.includes(term)
+    })
+  }, [searchTerm])
 
   // Sort documents based on current sort field and direction
   const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
@@ -368,10 +397,13 @@ export default function DocumentManager() {
     // Use currentPageDocs directly if available (from paginated API)
     // This preserves the backend's sort order and prevents status grouping
     if (currentPageDocs && currentPageDocs.length > 0) {
-      return currentPageDocs.map(doc => ({
+      const docsWithStatus = currentPageDocs.map(doc => ({
         ...doc,
         status: doc.status as DocStatus
       })) as DocStatusWithStatus[];
+      
+      // Apply search filter
+      return filterDocuments(docsWithStatus);
     }
 
     // Fallback to legacy docs structure for backward compatibility
@@ -401,13 +433,16 @@ export default function DocumentManager() {
       });
     }
 
+    // Apply search filter
+    const filtered = filterDocuments(allDocuments);
+
     // Sort all documents together if sort field and direction are specified
     if (sortField && sortDirection) {
-      return sortDocuments(allDocuments);
+      return sortDocuments(filtered);
     }
 
-    return allDocuments;
-  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments]);
+    return filtered;
+  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments, filterDocuments]);
 
   // Calculate current page selection state (after filteredAndSortedDocs is defined)
   const currentPageDocIds = useMemo(() => {
@@ -1124,7 +1159,7 @@ export default function DocumentManager() {
       </CardHeader>
       <CardContent className="flex-1 flex flex-col min-h-0 overflow-auto">
         <div className="flex justify-between items-center gap-2 mb-2">
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-1">
             <Button
               variant="outline"
               onClick={scanDocuments}
@@ -1146,6 +1181,27 @@ export default function DocumentManager() {
             >
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>
+            
+            {/* Search input */}
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Input
+                type="search"
+                placeholder="Search documents..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 pr-8 h-9"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  title="Clear search"
+                >
+                  <XCircle className="h-4 w-4 text-gray-400" />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Pagination Controls in the middle */}
@@ -1189,8 +1245,7 @@ export default function DocumentManager() {
             ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
-            <StagingAreaDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
-            <UploadDocumentsDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
+            <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}
@@ -1210,10 +1265,17 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('all')}
                     disabled={isRefreshing}
                     className={cn(
-                      statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
+                      'transition-all duration-200',
+                      statusFilter === 'all' && 'bg-gray-200 dark:bg-gray-800 font-semibold border-2 border-gray-500 dark:border-gray-400 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.all')} ({statusCounts.all || documentCounts.all})
+                    {t('documentPanel.documentManager.status.all')}
+                    <span className={cn(
+                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
+                      statusFilter === 'all' ? 'bg-gray-300 dark:bg-gray-700' : 'bg-gray-100 dark:bg-gray-800'
+                    )}>
+                      {statusCounts.all || documentCounts.all}
+                    </span>
                   </Button>
                   <Button
                     size="sm"
@@ -1221,11 +1283,18 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('processed')}
                     disabled={isRefreshing}
                     className={cn(
-                      processedCount > 0 ? 'text-green-600' : 'text-gray-500',
-                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
+                      'transition-all duration-200',
+                      processedCount > 0 ? 'text-green-700 dark:text-green-400' : 'text-gray-400',
+                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/40 font-semibold border-2 border-green-500 dark:border-green-500 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.completed')} ({processedCount})
+                    {t('documentPanel.documentManager.status.completed')}
+                    <span className={cn(
+                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
+                      statusFilter === 'processed' ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-100' : 'bg-green-50 dark:bg-green-900/20'
+                    )}>
+                      {processedCount}
+                    </span>
                   </Button>
                   <Button
                     size="sm"
@@ -1233,11 +1302,18 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('preprocessed')}
                     disabled={isRefreshing}
                     className={cn(
-                      preprocessedCount > 0 ? 'text-purple-600' : 'text-gray-500',
-                      statusFilter === 'preprocessed' && 'bg-purple-100 dark:bg-purple-900/30 font-medium border border-purple-400 dark:border-purple-600 shadow-sm'
+                      'transition-all duration-200',
+                      preprocessedCount > 0 ? 'text-purple-700 dark:text-purple-400' : 'text-gray-400',
+                      statusFilter === 'preprocessed' && 'bg-purple-100 dark:bg-purple-900/40 font-semibold border-2 border-purple-500 dark:border-purple-500 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.preprocessed')} ({preprocessedCount})
+                    {t('documentPanel.documentManager.status.preprocessed')}
+                    <span className={cn(
+                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
+                      statusFilter === 'preprocessed' ? 'bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-100' : 'bg-purple-50 dark:bg-purple-900/20'
+                    )}>
+                      {preprocessedCount}
+                    </span>
                   </Button>
                   <Button
                     size="sm"
@@ -1245,11 +1321,18 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('processing')}
                     disabled={isRefreshing}
                     className={cn(
-                      processingCount > 0 ? 'text-blue-600' : 'text-gray-500',
-                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
+                      'transition-all duration-200',
+                      processingCount > 0 ? 'text-blue-700 dark:text-blue-400' : 'text-gray-400',
+                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/40 font-semibold border-2 border-blue-500 dark:border-blue-500 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.processing')} ({processingCount})
+                    {t('documentPanel.documentManager.status.processing')}
+                    <span className={cn(
+                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
+                      statusFilter === 'processing' ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-100' : 'bg-blue-50 dark:bg-blue-900/20'
+                    )}>
+                      {processingCount}
+                    </span>
                   </Button>
                   <Button
                     size="sm"
@@ -1257,11 +1340,18 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('pending')}
                     disabled={isRefreshing}
                     className={cn(
-                      pendingCount > 0 ? 'text-yellow-600' : 'text-gray-500',
-                      statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
+                      'transition-all duration-200',
+                      pendingCount > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-400',
+                      statusFilter === 'pending' && 'bg-amber-100 dark:bg-amber-900/40 font-semibold border-2 border-amber-500 dark:border-amber-500 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.pending')} ({pendingCount})
+                    {t('documentPanel.documentManager.status.pending')}
+                    <span className={cn(
+                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
+                      statusFilter === 'pending' ? 'bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-100' : 'bg-amber-50 dark:bg-amber-900/20'
+                    )}>
+                      {pendingCount}
+                    </span>
                   </Button>
                   <Button
                     size="sm"
@@ -1269,11 +1359,18 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('failed')}
                     disabled={isRefreshing}
                     className={cn(
-                      failedCount > 0 ? 'text-red-600' : 'text-gray-500',
-                      statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
+                      'transition-all duration-200',
+                      failedCount > 0 ? 'text-red-700 dark:text-red-400' : 'text-gray-400',
+                      statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/40 font-semibold border-2 border-red-500 dark:border-red-500 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.failed')} ({failedCount})
+                    {t('documentPanel.documentManager.status.failed')}
+                    <span className={cn(
+                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
+                      statusFilter === 'failed' ? 'bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-100' : 'bg-red-50 dark:bg-red-900/20'
+                    )}>
+                      {failedCount}
+                    </span>
                   </Button>
                 </div>
                 <Button
@@ -1313,19 +1410,152 @@ export default function DocumentManager() {
 
           <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
             {!docs && (
-              <div className="absolute inset-0 p-0">
-                <EmptyCard
-                  title={t('documentPanel.documentManager.emptyTitle')}
-                  description={t('documentPanel.documentManager.emptyDescription')}
-                />
+              <div className="absolute inset-0 p-4 flex items-center justify-center">
+                <div className="text-center max-w-md space-y-4">
+                  <div className="flex justify-center">
+                    <div className="rounded-full bg-gray-100 dark:bg-gray-800 p-4">
+                      <RefreshCwIcon className="h-8 w-8 text-gray-400" />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {t('documentPanel.documentManager.emptyTitle')}
+                    </h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {t('documentPanel.documentManager.emptyDescription')}
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 items-center">
+                    <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={scanDocuments}
+                    >
+                      <RefreshCwIcon className="h-4 w-4 mr-2" />
+                      {t('documentPanel.documentManager.scanButton')}
+                    </Button>
+                  </div>
+                </div>
               </div>
             )}
-            {docs && (
+            {docs && filteredAndSortedDocs && filteredAndSortedDocs.length === 0 && (
+              <div className="absolute inset-0 p-4 flex items-center justify-center">
+                <div className="text-center max-w-md space-y-4">
+                  <div className="flex justify-center">
+                    <div className="rounded-full bg-blue-100 dark:bg-blue-900/40 p-4">
+                      <Info className="h-8 w-8 text-blue-500" />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {statusFilter === 'all'
+                        ? t('documentPanel.documentManager.noDocuments', 'No documents found')
+                        : t('documentPanel.documentManager.noDocumentsForStatus', `No ${statusFilter} documents`)}
+                    </h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {statusFilter === 'all'
+                        ? t('documentPanel.documentManager.noDocumentsHint', 'Upload documents or scan for new files to get started')
+                        : t('documentPanel.documentManager.noDocumentsForStatusHint', `Try selecting a different status filter or upload new documents`)}
+                    </p>
+                  </div>
+                  {statusFilter === 'all' && (
+                    <div className="flex flex-col gap-2 items-center">
+                      <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={scanDocuments}
+                      >
+                        <RefreshCwIcon className="h-4 w-4 mr-2" />
+                        {t('documentPanel.documentManager.scanButton')}
+                      </Button>
+                    </div>
+                  )}
+                  {statusFilter !== 'all' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleStatusFilterChange('all')}
+                    >
+                      {t('documentPanel.documentManager.viewAllDocuments', 'View all documents')}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+            {isRefreshing && !docs && (
               <div className="absolute inset-0 flex flex-col p-0">
                 <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
                   <Table className="w-full">
                     <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
+                        <TableHead className="w-12 text-center">
+                          <CheckSquareIcon className="h-4 w-4 mx-auto text-gray-500" />
+                        </TableHead>
+                        <TableHead>
+                          {showFileName
+                            ? t('documentPanel.documentManager.columns.fileName')
+                            : t('documentPanel.documentManager.columns.id')
+                          }
+                        </TableHead>
+                        <TableHead className="w-20 text-center">
+                          {t('documentPanel.documentManager.columns.sequence', 'Seq')}
+                        </TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody className="text-sm overflow-auto">
+                      {Array.from({ length: pagination.page_size || 10 }).map((_, index) => (
+                        <TableRow key={`skeleton-${index}`}>
+                          <TableCell className="text-center">
+                            <Skeleton className="h-4 w-4 mx-auto" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-full max-w-[200px]" />
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Skeleton className="h-8 w-8 mx-auto rounded-full" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-full max-w-[300px]" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-20" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-12" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-12" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-32" />
+                          </TableCell>
+                          <TableCell>
+                            <Skeleton className="h-4 w-32" />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            )}
+            {docs && filteredAndSortedDocs && filteredAndSortedDocs.length > 0 && (
+              <div className="absolute inset-0 flex flex-col p-0">
+                <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
+                  <Table className="w-full">
+                    <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                      <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
+                        <TableHead className="w-12 text-center">
+                          <CheckSquareIcon className="h-4 w-4 mx-auto text-gray-500" />
+                        </TableHead>
                         <TableHead
                           onClick={() => handleSort('id')}
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
@@ -1341,6 +1571,9 @@ export default function DocumentManager() {
                               </span>
                             )}
                           </div>
+                        </TableHead>
+                        <TableHead className="w-20 text-center">
+                          {t('documentPanel.documentManager.columns.sequence', 'Seq')}
                         </TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
@@ -1372,14 +1605,22 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
-                        <TableHead className="w-16 text-center">
-                          {t('documentPanel.documentManager.columns.select')}
-                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
                       {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
-                        <TableRow key={doc.id}>
+                        <TableRow
+                          key={doc.id}
+                          onClick={() => handleDocumentClick(doc)}
+                          className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+                        >
+                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                            <Checkbox
+                              checked={selectedDocIds.includes(doc.id)}
+                              onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
+                              className="mx-auto"
+                            />
+                          </TableCell>
                           <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                             {showFileName ? (
                               <>
@@ -1402,6 +1643,15 @@ export default function DocumentManager() {
                                   {doc.file_path}
                                 </div>
                               </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {doc.metadata?.sequence_index !== undefined ? (
+                              <span className="inline-flex items-center justify-center w-8 h-8 text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 rounded-full">
+                                {doc.metadata.sequence_index}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">-</span>
                             )}
                           </TableCell>
                           <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
@@ -1463,14 +1713,6 @@ export default function DocumentManager() {
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
                           </TableCell>
-                          <TableCell className="text-center">
-                            <Checkbox
-                              checked={selectedDocIds.includes(doc.id)}
-                              onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
-                              // disabled={doc.status !== 'processed'}
-                              className="mx-auto"
-                            />
-                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -1481,6 +1723,15 @@ export default function DocumentManager() {
           </CardContent>
         </Card>
       </CardContent>
+
+      {/* Document Preview Dialog */}
+      {previewDocument && (
+        <DocumentPreviewDialog
+          document={previewDocument}
+          open={showPreviewDialog}
+          onOpenChange={setShowPreviewDialog}
+        />
+      )}
     </Card>
   )
 }

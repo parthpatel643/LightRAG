@@ -94,7 +94,14 @@ class SequenceIndexManager:
 
                 if existing_lock is None:
                     # No lock exists, try to acquire
-                    await self.doc_status.upsert({self._lock_key: {"value": lock_id}})
+                    await self.doc_status.upsert(
+                        {
+                            self._lock_key: {
+                                "value": lock_id,
+                                "_is_metadata": True,  # Mark as internal metadata
+                            }
+                        }
+                    )
 
                     # Verify we got the lock (handle race condition)
                     await asyncio.sleep(0.01)  # Small delay for consistency
@@ -120,7 +127,12 @@ class SequenceIndexManager:
                                     f"(age: {time.time() - lock_timestamp:.1f}s)"
                                 )
                                 await self.doc_status.upsert(
-                                    {self._lock_key: {"value": lock_id}}
+                                    {
+                                        self._lock_key: {
+                                            "value": lock_id,
+                                            "_is_metadata": True,  # Mark as internal metadata
+                                        }
+                                    }
                                 )
 
                                 # Verify we got the lock
@@ -193,7 +205,12 @@ class SequenceIndexManager:
 
                     # Atomic update within lock
                     await self.doc_status.upsert(
-                        {self._counter_key: {"value": next_idx}}
+                        {
+                            self._counter_key: {
+                                "value": next_idx,
+                                "_is_metadata": True,  # Mark as internal metadata
+                            }
+                        }
                     )
 
                     logger.debug(f"Assigned sequence index: {next_idx}")

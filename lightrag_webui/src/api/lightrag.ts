@@ -1052,3 +1052,176 @@ export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> =
   const response = await axiosInstance.get('/documents/status_counts')
   return response.data
 }
+
+// ============================================================================
+// Workspace Management API
+// ============================================================================
+
+export type WorkspaceConfig = {
+  name: string
+  working_dir: string
+  input_dir: string
+  description?: string
+}
+
+export type WorkspaceResponse = {
+  status: string
+  message: string
+  workspace?: WorkspaceConfig
+}
+
+/**
+ * Switch to a different workspace
+ * @param config The workspace configuration
+ * @returns Promise with workspace response
+ */
+export const switchWorkspace = async (config: WorkspaceConfig): Promise<WorkspaceResponse> => {
+  const response = await axiosInstance.post('/workspace/switch', config)
+  return response.data
+}
+
+/**
+ * Get the current workspace configuration
+ * @returns Promise with current workspace config
+ */
+export const getCurrentWorkspace = async (): Promise<WorkspaceConfig> => {
+  const response = await axiosInstance.get('/workspace/current')
+  return response.data
+}
+
+/**
+ * List all available workspaces
+ * @returns Promise with array of workspace configs
+ */
+export const listWorkspaces = async (): Promise<WorkspaceConfig[]> => {
+  const response = await axiosInstance.get('/workspace/list')
+  return response.data
+}
+
+/**
+ * Create a new workspace
+ * @param config The workspace configuration
+ * @returns Promise with workspace response
+ */
+export const createWorkspace = async (config: WorkspaceConfig): Promise<WorkspaceResponse> => {
+  const response = await axiosInstance.post('/workspace/create', config)
+  return response.data
+}
+
+// ============================================================================
+// Document Sequencing API
+// ============================================================================
+
+export type DocumentSequenceUpdate = {
+  document_id: string
+  sequence_index: number
+  doc_type?: string
+  effective_date?: string
+}
+
+export type BatchSequenceUpdate = {
+  updates: DocumentSequenceUpdate[]
+}
+
+export type SequenceResponse = {
+  status: string
+  message: string
+  updated_count: number
+}
+
+export type SequencedDocument = {
+  document_id: string
+  file_path: string
+  sequence_index: number
+  doc_type: string
+  effective_date: string
+  status: string
+}
+
+export type DocumentSequencesResponse = {
+  status: string
+  count: number
+  documents: SequencedDocument[]
+}
+
+/**
+ * Update the sequence index of a single document
+ * @param documentId The document ID
+ * @param update The sequence update data
+ * @returns Promise with sequence response
+ */
+export const updateDocumentSequence = async (
+  documentId: string,
+  update: DocumentSequenceUpdate
+): Promise<SequenceResponse> => {
+  const response = await axiosInstance.patch(`/documents/${documentId}/sequence`, update)
+  return response.data
+}
+
+/**
+ * Update sequence indices for multiple documents
+ * @param updates The batch sequence updates
+ * @returns Promise with sequence response
+ */
+export const batchUpdateSequences = async (updates: BatchSequenceUpdate): Promise<SequenceResponse> => {
+  const response = await axiosInstance.post('/documents/batch-sequence', updates)
+  return response.data
+}
+
+/**
+ * Upload multiple files with automatic sequencing
+ * @param files The files to upload
+ * @param order The ordered list of filenames
+ * @param metadata Additional metadata
+ * @param onUploadProgress Optional progress callback
+ * @returns Promise with upload response
+ */
+export const batchUploadSequenced = async (
+  files: File[],
+  order: string[],
+  metadata?: Record<string, any>,
+  onUploadProgress?: (percentCompleted: number) => void
+): Promise<{
+  status: string
+  message: string
+  inserted_count: number
+  total_files: number
+}> => {
+  const formData = new FormData()
+  
+  // Add all files
+  files.forEach(file => {
+    formData.append('files', file)
+  })
+  
+  // Add order as JSON string
+  formData.append('order', JSON.stringify(order))
+  
+  // Add metadata as JSON string
+  if (metadata) {
+    formData.append('metadata', JSON.stringify(metadata))
+  }
+  
+  const response = await axiosInstance.post('/documents/batch-upload-sequenced', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    onUploadProgress: onUploadProgress
+      ? (progressEvent) => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1))
+          onUploadProgress(percentCompleted)
+        }
+      : undefined
+  })
+  
+  return response.data
+}
+
+/**
+ * Get all documents with their sequence information
+ * @returns Promise with sequenced documents response
+ */
+export const getDocumentSequences = async (): Promise<DocumentSequencesResponse> => {
+  const response = await axiosInstance.get('/documents/sequences')
+  return response.data
+}

@@ -20,24 +20,29 @@ const StatusIndicator = () => {
   }, [lastCheckTime])
 
   return (
-    <div className="fixed right-4 bottom-4 flex items-center gap-2 opacity-80 select-none">
+    <>
+      {/* Header indicator - more prominent when disconnected */}
       <div
-        className="flex cursor-pointer items-center gap-2"
+        className={cn(
+          "flex items-center gap-2 cursor-pointer transition-all duration-300 px-2 py-1 rounded-md",
+          !health && "bg-red-50 dark:bg-red-900/20 animate-pulse"
+        )}
         onClick={() => setDialogOpen(true)}
+        title={health ? t('graphPanel.statusIndicator.connected') : t('graphPanel.statusIndicator.disconnected')}
       >
         <div
           className={cn(
-            'h-3 w-3 rounded-full transition-all duration-300',
-            'shadow-[0_0_8px_rgba(0,0,0,0.2)]',
+            'h-2 w-2 rounded-full transition-all duration-300',
             health ? 'bg-green-500' : 'bg-red-500',
             animate && 'scale-125',
-            animate && health && 'shadow-[0_0_12px_rgba(34,197,94,0.4)]',
-            animate && !health && 'shadow-[0_0_12px_rgba(239,68,68,0.4)]'
+            !health && 'shadow-[0_0_8px_rgba(239,68,68,0.6)]'
           )}
         />
-        <span className="text-muted-foreground text-xs">
-          {health ? t('graphPanel.statusIndicator.connected') : t('graphPanel.statusIndicator.disconnected')}
-        </span>
+        {!health && (
+          <span className="text-red-600 dark:text-red-400 text-xs font-medium">
+            {t('graphPanel.statusIndicator.disconnected')}
+          </span>
+        )}
       </div>
 
       <StatusDialog
@@ -45,7 +50,7 @@ const StatusIndicator = () => {
         onOpenChange={setDialogOpen}
         status={status}
       />
-    </div>
+    </>
   )
 }
 

@@ -8,9 +8,8 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/Select'
-import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
-import { Label } from '@/components/ui/Label'
+import Button from '@/components/ui/Button'
+import Input from '@/components/ui/Input'
 import {
   Dialog,
   DialogContent,
@@ -243,9 +242,9 @@ export default function WorkspaceSwitcher({
 
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="workspace-name">
+              <label htmlFor="workspace-name" className="text-sm font-medium">
                 {t('workspace.name', 'Workspace Name')} *
-              </Label>
+              </label>
               <Input
                 id="workspace-name"
                 placeholder="e.g., aviation-contracts"
@@ -255,9 +254,9 @@ export default function WorkspaceSwitcher({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="working-dir">
+              <label htmlFor="working-dir" className="text-sm font-medium">
                 {t('workspace.workingDir', 'Working Directory')} *
-              </Label>
+              </label>
               <Input
                 id="working-dir"
                 placeholder="e.g., ./rag_storage/aviation"
@@ -270,9 +269,9 @@ export default function WorkspaceSwitcher({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="input-dir">
+              <label htmlFor="input-dir" className="text-sm font-medium">
                 {t('workspace.inputDir', 'Input Directory')} *
-              </Label>
+              </label>
               <Input
                 id="input-dir"
                 placeholder="e.g., ./inputs/aviation"
@@ -285,9 +284,9 @@ export default function WorkspaceSwitcher({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="description">
+              <label htmlFor="description" className="text-sm font-medium">
                 {t('workspace.description', 'Description')} ({t('workspace.optional', 'optional')})
-              </Label>
+              </label>
               <Input
                 id="description"
                 placeholder={t('workspace.descriptionPlaceholder', 'Brief description of this workspace')}

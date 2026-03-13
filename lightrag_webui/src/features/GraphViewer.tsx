@@ -10,6 +10,7 @@ import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curv
 import FocusOnNode from '@/components/graph/FocusOnNode'
 import LayoutsControl from '@/components/graph/LayoutsControl'
 import GraphControl from '@/components/graph/GraphControl'
+import ExportControl from '@/components/graph/ExportControl'
 // import ThemeToggle from '@/components/ThemeToggle'
 import ZoomControl from '@/components/graph/ZoomControl'
 import FullScreenControl from '@/components/graph/FullScreenControl'
@@ -242,6 +243,7 @@ const GraphViewer = () => {
           <LayoutsControl />
           <ZoomControl />
           <FullScreenControl />
+          <ExportControl />
           <LegendButton />
           <Settings />
           {/* <ThemeToggle /> */}

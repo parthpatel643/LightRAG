@@ -2,67 +2,69 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, Request
+import configparser
+import logging
+import logging.config
+import os
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import pipmaster as pm
+import uvicorn
+from ascii_colors import ASCIIColors
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
-import os
-import logging
-import logging.config
-import sys
-import uvicorn
-import pipmaster as pm
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
-from pathlib import Path
-import configparser
-from ascii_colors import ASCIIColors
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-from lightrag.api.utils_api import (
-    get_combined_auth_dependency,
-    display_splash_screen,
-    check_env_file,
-)
-from .config import (
-    global_args,
-    update_uvicorn_mode_config,
-    get_default_host,
-)
-from lightrag.utils import get_env_value
-from lightrag import LightRAG, __version__ as core_version
+
+from lightrag import LightRAG
+from lightrag import __version__ as core_version
 from lightrag.api import __api_version__
-from lightrag.types import GPTKeywordExtractionFormat
-from lightrag.utils import EmbeddingFunc
-from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
-    DEFAULT_LOG_BACKUP_COUNT,
-    DEFAULT_LOG_FILENAME,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
-)
+from lightrag.api.auth import auth_handler
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
 )
-from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.document_sequencing_routes import create_sequencing_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
-
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.workspace_routes import router as workspace_router
+from lightrag.api.utils_api import (
+    check_env_file,
+    display_splash_screen,
+    get_combined_auth_dependency,
+)
+from lightrag.constants import (
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_FILENAME,
+    DEFAULT_LOG_MAX_BYTES,
+)
 from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_default_workspace,
     # set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
+    get_default_workspace,
+    get_namespace_data,
 )
-from fastapi.security import OAuth2PasswordRequestForm
-from lightrag.api.auth import auth_handler
+from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
+
+from .config import (
+    get_default_host,
+    global_args,
+    update_uvicorn_mode_config,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -886,6 +888,17 @@ def create_app(args):
 
         return embedding_func_instance
 
+    # Try to import custom functions from functions.py if it exists
+    custom_llm_func = None
+    custom_embedding_func = None
+    try:
+        from lightrag.functions import embedding_func as custom_embedding_func
+        from lightrag.functions import llm_model_func as custom_llm_func
+
+        logger.info("Using custom LLM and embedding functions from functions.py")
+    except ImportError:
+        logger.debug("functions.py not found, using server's optimized functions")
+
     llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
     embedding_timeout = get_env_value(
         "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
@@ -980,7 +993,7 @@ def create_app(args):
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
     if args.rerank_binding != "null":
-        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+        from lightrag.rerank import ali_rerank, cohere_rerank, jina_rerank
 
         # Map rerank binding to corresponding function
         rerank_functions = {
@@ -1053,10 +1066,18 @@ def create_app(args):
 
     # Initialize RAG with unified configuration
     try:
+        # Use custom functions from functions.py if available, otherwise use server's optimized functions
+        llm_func = (
+            custom_llm_func
+            if custom_llm_func
+            else create_llm_model_func(args.llm_binding)
+        )
+        embed_func = custom_embedding_func if custom_embedding_func else embedding_func
+
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
+            llm_model_func=llm_func,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.summary_max_tokens,
@@ -1065,8 +1086,10 @@ def create_app(args):
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs=create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
-            ),
-            embedding_func=embedding_func,
+            )
+            if not custom_llm_func
+            else {},
+            embedding_func=embed_func,
             default_llm_timeout=llm_timeout,
             default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
@@ -1101,6 +1124,12 @@ def create_app(args):
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+
+    # Add workspace management routes
+    app.include_router(workspace_router)
+
+    # Add document sequencing routes
+    app.include_router(create_sequencing_routes(rag, api_key))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)

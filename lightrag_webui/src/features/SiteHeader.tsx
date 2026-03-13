@@ -1,6 +1,7 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
+import StatusIndicator from '@/components/status/StatusIndicator'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
@@ -9,6 +10,11 @@ import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
 import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
+import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
+import { switchWorkspace, type WorkspaceConfig as ApiWorkspaceConfig } from '@/api/lightrag'
+import { toast } from 'sonner'
+import { useState } from 'react'
 
 interface NavigationTabProps {
   value: string
@@ -32,6 +38,7 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
 
 function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
+  const showApiTab = useSettingsStore.use.showApiTab()
   const { t } = useTranslation()
 
   return (
@@ -46,9 +53,11 @@ function TabsNavigation() {
         <NavigationTab value="retrieval" currentTab={currentTab}>
           {t('header.retrieval')}
         </NavigationTab>
-        <NavigationTab value="api" currentTab={currentTab}>
-          {t('header.api')}
-        </NavigationTab>
+        {showApiTab && (
+          <NavigationTab value="api" currentTab={currentTab}>
+            {t('header.api')}
+          </NavigationTab>
+        )}
       </TabsList>
     </div>
   )
@@ -57,6 +66,8 @@ function TabsNavigation() {
 export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
+  const [currentWorkspace, setCurrentWorkspace] = useState<string>('default')
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -70,6 +81,28 @@ export default function SiteHeader() {
 
   const handleLogout = () => {
     navigationService.navigateToLogin();
+  }
+
+  const handleWorkspaceChange = async (workspace: WorkspaceConfig) => {
+    try {
+      // Convert camelCase to snake_case for API
+      const apiConfig: ApiWorkspaceConfig = {
+        name: workspace.name,
+        working_dir: workspace.workingDir,
+        input_dir: workspace.inputDir,
+        description: workspace.description
+      }
+      
+      const response = await switchWorkspace(apiConfig)
+      setCurrentWorkspace(workspace.name)
+      toast.success(t('workspace.switchSuccess', 'Workspace switched successfully'))
+      
+      // Optionally refresh the page to reload with new workspace
+      // window.location.reload()
+    } catch (error) {
+      console.error('Failed to switch workspace:', error)
+      toast.error(t('workspace.switchError', 'Failed to switch workspace'))
+    }
   }
 
   return (
@@ -100,22 +133,33 @@ export default function SiteHeader() {
         )}
       </div>
 
-      <div className="flex h-10 flex-1 items-center justify-center">
+      <div className="flex h-10 flex-1 items-center justify-center gap-4">
         <TabsNavigation />
         {isGuestMode && (
           <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
+        {currentWorkspace && currentWorkspace !== 'default' && (
+          <div className="ml-2 self-center px-2 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-md font-medium">
+            📁 {currentWorkspace}
+          </div>
+        )}
+        <WorkspaceSwitcher
+          currentWorkspace={currentWorkspace}
+          onWorkspaceChange={handleWorkspaceChange}
+          className="ml-auto"
+        />
       </div>
 
       <nav className="w-[200px] flex items-center justify-end">
         <div className="flex items-center gap-2">
+          {enableHealthCheck && <StatusIndicator />}
           {versionDisplay && (
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1 cursor-default">
+                  <span className="text-xs text-gray-600 dark:text-gray-400 mr-1 cursor-default">
                     v{versionDisplay}
                   </span>
                 </TooltipTrigger>
