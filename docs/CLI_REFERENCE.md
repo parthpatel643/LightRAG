@@ -2,6 +2,18 @@
 
 Complete reference for the unified LightRAG command-line interface.
 
+## Design Philosophy
+
+LightRAG's CLI is designed with these core principles:
+
+1. **Simplicity** - Reduce cognitive load with smart defaults and intuitive commands
+2. **Discoverability** - Built-in help and examples for all commands
+3. **Flexibility** - Support both simple and advanced use cases
+4. **Consistency** - Unified argument patterns across all subcommands
+5. **Backward Compatibility** - Existing scripts continue to work
+
+The CLI consolidates separate tools (`build_graph.py`, `query_graph.py`) into a single intuitive interface with subcommands for building, querying, and managing knowledge graphs.
+
 ## Installation
 
 ```bash
@@ -501,9 +513,9 @@ lightrag query "test" --date 2024-01-01
 
 - [Getting Started Guide](GETTING_STARTED.md)
 - [User Guide](USER_GUIDE.md)
-- [CLI Design Specification](CLI_DESIGN.md)
-- [API Reference](API_REFERENCE.md)
-- [Profiling Guide](PROFILING_GUIDE.md)
+- [Architecture](ARCHITECTURE.md)
+- [Deployment Guide](DEPLOYMENT_GUIDE.md)
+- [Temporal Guide](TEMPORAL.md)
 
 ---
 

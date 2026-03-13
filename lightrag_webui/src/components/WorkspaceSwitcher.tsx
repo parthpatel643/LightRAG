@@ -23,6 +23,7 @@ import { FolderOpen, Plus, Settings2, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import { listWorkspaces, switchWorkspace } from '@/api/lightrag'
 
 export interface WorkspaceConfig {
   name: string
@@ -56,28 +57,70 @@ export default function WorkspaceSwitcher({
     description: ''
   })
 
-  // Load workspaces from localStorage on mount
+  // Load workspaces from server, falling back to localStorage
   useEffect(() => {
-    const loadWorkspaces = () => {
+    const loadWorkspaces = async () => {
       try {
+        let serverWorkspaces: WorkspaceConfig[] | null = null
+        
+        // Try to fetch from server first
+        try {
+          console.log('Fetching workspaces from server...')
+          serverWorkspaces = await listWorkspaces()
+          console.log('Server workspaces:', serverWorkspaces)
+          
+          if (serverWorkspaces && serverWorkspaces.length > 0) {
+            setWorkspaces(serverWorkspaces)
+            // Set the first workspace from server as current (it's the configured one)
+            setSelectedWorkspace(serverWorkspaces[0].name)
+            // Save to localStorage for offline access
+            localStorage.setItem('lightrag_workspaces', JSON.stringify(serverWorkspaces))
+            console.log('Workspaces loaded from server:', serverWorkspaces[0].name)
+            return
+          }
+        } catch (serverError) {
+          console.warn('Failed to fetch workspaces from server:', serverError)
+        }
+
+        // Fall back to localStorage if server fetch fails
         const stored = localStorage.getItem('lightrag_workspaces')
         if (stored) {
-          const parsed = JSON.parse(stored) as WorkspaceConfig[]
-          setWorkspaces(parsed)
-        } else {
-          // Initialize with default workspace
-          const defaultWorkspace: WorkspaceConfig = {
-            name: 'default',
-            workingDir: './rag_storage',
-            inputDir: './inputs',
-            description: 'Default workspace'
+          try {
+            const parsed = JSON.parse(stored) as WorkspaceConfig[]
+            if (parsed && parsed.length > 0) {
+              setWorkspaces(parsed)
+              // Set first workspace as current
+              setSelectedWorkspace(parsed[0].name)
+              console.log('Workspaces loaded from localStorage:', parsed[0].name)
+              return
+            }
+          } catch (parseError) {
+            console.warn('Failed to parse localStorage workspaces:', parseError)
           }
-          setWorkspaces([defaultWorkspace])
-          localStorage.setItem('lightrag_workspaces', JSON.stringify([defaultWorkspace]))
         }
+
+        // Initialize with default workspace as last resort
+        const defaultWorkspace: WorkspaceConfig = {
+          name: 'default',
+          workingDir: './rag_storage',
+          inputDir: './inputs',
+          description: 'Default workspace'
+        }
+        setWorkspaces([defaultWorkspace])
+        setSelectedWorkspace('default')
+        localStorage.setItem('lightrag_workspaces', JSON.stringify([defaultWorkspace]))
+        console.log('Using default workspace (no server or localStorage data)')
       } catch (error) {
-        console.error('Error loading workspaces:', error)
-        toast.error(t('workspace.loadError', 'Failed to load workspaces'))
+        console.error('Unexpected error loading workspaces:', error)
+        // Don't show toast error - always have a fallback
+        const defaultWorkspace: WorkspaceConfig = {
+          name: 'default',
+          workingDir: './rag_storage',
+          inputDir: './inputs',
+          description: 'Default workspace'
+        }
+        setWorkspaces([defaultWorkspace])
+        setSelectedWorkspace('default')
       }
     }
 

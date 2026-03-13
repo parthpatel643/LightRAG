@@ -499,6 +499,143 @@ result = await rag.aquery("What is the fee?", param=QueryParam(mode="temporal"))
 
 ---
 
+## WebUI Features
+
+### Temporal Query Interface
+
+The web interface includes a dedicated temporal query component with these features:
+
+- **Date Picker**: Click calendar to select reference date
+- **Quick Actions**: 
+  - "Today" button for current state
+  - "Clear" to reset date
+- **Mode Indicator**: Visual feedback when temporal mode is active
+- **Tooltips**: Helpful information about temporal queries
+
+#### Using Temporal Queries in WebUI
+
+1. Open the Query tab
+2. Select mode: "Temporal"
+3. Click "Select Reference Date"
+4. Choose date from calendar (or type YYYY-MM-DD)
+5. Type your question
+6. Click "Query"
+7. Results show version and effective date information
+
+**Example workflow:**
+```
+Mode: Temporal
+Reference Date: 2024-01-15
+Question: "What is the parking fee?"
+Result: "The parking fee was $50/night (Sequence 1, Effective 2024-01-01)"
+```
+
+### Workspace Management
+
+Switch between different document collections without restarting:
+
+#### Creating a New Workspace
+
+1. Click workspace dropdown (top-right)
+2. Click "New Workspace" button
+3. Configure:
+   - **Workspace Name**: descriptive name
+   - **Working Directory**: where RAG data is stored (default: `./rag_storage`)
+   - **Input Directory**: where source documents are (default: `./inputs`)
+   - **Description**: optional notes
+4. Click "Create Workspace"
+
+#### Switching Workspaces
+
+1. Click workspace dropdown
+2. Select workspace from list
+3. System automatically reloads:
+   - Document list
+   - Knowledge graph
+   - Query results
+
+**Use case:** Separate projects (aviation contracts, legal docs, technical specs)
+
+### Document Management
+
+#### Staging Area
+
+Upload and organize documents before ingestion:
+
+1. Open **Documents** tab
+2. Click **Staging Area** button
+3. **Add Files**:
+   - Drag and drop PDFs
+   - Or click "Browse" to select
+4. **Organize**:
+   - Drag to reorder (oldest → newest)
+   - Visual indicators show v1, v2, etc.
+5. **Set Metadata**:
+   - Effective date for each file
+   - Document type (auto-detected)
+6. **Upload**: Click "Upload All"
+7. Monitor progress bar
+
+#### Document Viewing
+
+- **List View**: All documents with metadata
+- **Details**: Click to see document info
+- **Search**: Filter documents by name
+- **Statistics**: Total documents, entities, versions
+
+### Graph Visualization
+
+Explore the knowledge graph visually:
+
+#### Navigation
+
+- **Zoom**: Mouse wheel or pinch
+- **Pan**: Click and drag
+- **Fit**: Double-click or "Fit to View" button
+- **Focus**: Click node to focus on it
+
+#### Node Information
+
+Click on a node to see:
+- Entity name and version
+- Related connections
+- Sequence number
+- Effective date (if available)
+
+#### Edge Relationships
+
+View relationship types between entities:
+- **SUPERSEDES**: Version relationship
+- **MENTIONED_WITH**: Co-occurrence
+- **REFERENCES**: Direct reference
+
+#### Search Graph
+
+Search for specific entities:
+
+1. Open Graph Search
+2. Type entity name or relationship type
+3. Results show as nodes and edges
+4. Click result to select and focus
+5. View associated chunks/references
+
+### Chunk/Reference Panel
+
+View text chunks supporting query results:
+
+1. Select a node or edge in graph
+2. **Chunks Panel** shows on the right
+3. Each chunk shows:
+   - Source document (file path)
+   - Relevance score
+   - Text excerpt
+4. **Actions**:
+   - Copy content to clipboard
+   - View full document
+   - Expand/collapse chunk
+
+---
+
 ## Troubleshooting
 
 ### Issue: Versioned entities not being created
@@ -584,12 +721,10 @@ export MAX_PARALLEL_INSERT=1 # Single document at a time
 ## Reference
 
 - **System Architecture** → [ARCHITECTURE.md](ARCHITECTURE.md)
-- **API Documentation** → [API_REFERENCE.md](API_REFERENCE.md)
-- **Retrieval Algorithm** → [RETRIEVAL_LOGIC.md](RETRIEVAL_LOGIC.md)
+- **CLI Usage** → [CLI_REFERENCE.md](CLI_REFERENCE.md)
 - **Getting Started** → [GETTING_STARTED.md](GETTING_STARTED.md)
 - **Deployment** → [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
-- **WebUI Features** → [WEBUI_FEATURES.md](WEBUI_FEATURES.md)
-- **Testing** → [TESTING.md](TESTING.md)
+- **Temporal Features** → [TEMPORAL.md](TEMPORAL.md)
 
 ---
 

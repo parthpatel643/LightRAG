@@ -51,11 +51,11 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
 )
 from lightrag.kg.shared_storage import (
-    # set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
     get_default_workspace,
     get_namespace_data,
+    set_default_workspace,
 )
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
@@ -66,18 +66,59 @@ from .config import (
     update_uvicorn_mode_config,
 )
 
+
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+def _load_dotenv_from_path():
+    """Load .env file from current dir, then project root, then script dir."""
+    from pathlib import Path
+
+    # Try paths in order
+    paths_to_try = [
+        Path.cwd() / ".env",  # Current working directory
+        Path(__file__).parent.parent.parent
+        / ".env",  # Project root (lightrag/api/.. = root)
+    ]
+
+    for env_path in paths_to_try:
+        if env_path.exists():
+            load_dotenv(dotenv_path=str(env_path), override=False)
+            return str(env_path)
+
+    # If no .env found, still call load_dotenv (will load from environment)
+    load_dotenv(override=False)
+    return None
+
+
+_dotenv_path = _load_dotenv_from_path()
 
 
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
 
-# Initialize config parser
+
+# Initialize config parser and load config.ini from current dir or project root
+def _load_config_ini():
+    """Load config.ini file from current dir or project root."""
+    from pathlib import Path
+
+    paths_to_try = [
+        Path.cwd() / "config.ini",
+        Path(__file__).parent.parent.parent / "config.ini",
+    ]
+
+    for config_path in paths_to_try:
+        if config_path.exists():
+            return str(config_path)
+
+    return None
+
+
 config = configparser.ConfigParser()
-config.read("config.ini")
+config_ini_path = _load_config_ini()
+if config_ini_path:
+    config.read(config_ini_path)
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
@@ -1110,6 +1151,13 @@ def create_app(args):
             },
             ollama_server_infos=ollama_server_infos,
         )
+        # Initialize global default workspace for storage access
+        set_default_workspace(args.workspace)
+
+        # Set environment variables for workspace routes to access
+        os.environ["WORKSPACE_NAME"] = args.workspace
+        os.environ["WORKING_DIR"] = str(args.working_dir)
+        os.environ["INPUT_DIR"] = str(args.input_dir)
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise

@@ -2,23 +2,25 @@
 Utility functions for the LightRAG API.
 """
 
-import os
 import argparse
-from typing import Optional, List, Tuple
+import logging
 import sys
 import time
-import logging
+from typing import List, Optional, Tuple
+
 from ascii_colors import ASCIIColors
-from lightrag.api import __api_version__ as api_version
+from fastapi import HTTPException, Request, Response, Security, status
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
+from starlette.status import HTTP_403_FORBIDDEN
+
 from lightrag import __version__ as core_version
+from lightrag.api import __api_version__ as api_version
 from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
-from fastapi import HTTPException, Security, Request, Response, status
-from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
-from starlette.status import HTTP_403_FORBIDDEN
+
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args, get_env_value
+from .config import get_env_value, global_args, ollama_server_infos
 
 logger = logging.getLogger("lightrag")
 
@@ -42,19 +44,41 @@ _TOKEN_RENEWAL_SKIP_PATHS = [
 
 def check_env_file():
     """
-    Check if .env file exists and handle user confirmation if needed.
+    Check if .env file exists in any expected location and provide feedback.
     Returns True if should continue, False if should exit.
     """
-    if not os.path.exists(".env"):
-        warning_msg = "Warning: Startup directory must contain .env file for multi-instance support."
-        ASCIIColors.yellow(warning_msg)
+    from pathlib import Path
 
-        # Check if running in interactive terminal
-        if sys.stdin.isatty():
-            response = input("Do you want to continue? (yes/no): ")
-            if response.lower() != "yes":
-                ASCIIColors.red("Server startup cancelled")
-                return False
+    # Check possible .env locations
+    env_paths = [
+        Path.cwd() / ".env",
+        Path(__file__).parent.parent.parent / ".env",  # Project root
+    ]
+
+    found_path = None
+    for env_path in env_paths:
+        if env_path.exists():
+            found_path = env_path
+            break
+
+    if found_path:
+        ASCIIColors.green(f"✓ Loaded .env from: {found_path}")
+        return True
+
+    # .env not found, provide helpful warning
+    msg = "⚠ Warning: .env file not found. Checked in:"
+    for env_path in env_paths:
+        msg += f"\n  - {env_path}"
+    msg += "\n  Using environment variables only."
+    ASCIIColors.yellow(msg)
+
+    # Check if running in interactive terminal
+    if sys.stdin.isatty():
+        response = input("\nDo you want to continue? (yes/no): ")
+        if response.lower() != "yes":
+            ASCIIColors.red("Server startup cancelled")
+            return False
+
     return True
 
 
@@ -128,8 +152,9 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 token_info = auth_handler.validate_token(token)
 
                 # ========== Token Auto-Renewal Logic ==========
-                from lightrag.api.config import global_args
                 from datetime import datetime
+
+                from lightrag.api.config import global_args
 
                 if global_args.token_auto_renew:
                     # Check if current path should skip token renewal

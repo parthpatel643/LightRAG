@@ -1,0 +1,109 @@
+{
+  "workspace": "temporal",
+  "evaluation_type": "temporal",
+  "description": "Sample temporal evaluation dataset for versioned entity queries",
+  "created_at": "2024-01-15T10:30:00Z",
+  "documentation": {
+    "reference_date": "Date used to filter versioned entities. Format: YYYY-MM-DD",
+    "expected_version": "Expected sequence_index of the correct entity version",
+    "metadata.entity_type": "Type of entity being queried (e.g., service_rate, policy, contract_term)"
+  },
+  "test_cases": [
+    {
+      "id": "tc_001",
+      "question": "What is the current Boeing 787 TURN service rate?",
+      "ground_truth": "The Boeing 787 TURN service rate is $227.24 per event.",
+      "reference_date": "2024-01-15",
+      "expected_version": 3,
+      "metadata": {
+        "category": "pricing",
+        "entity_type": "service_rate",
+        "document_source": "contract_v3.pdf"
+      }
+    },
+    {
+      "id": "tc_002",
+      "question": "What was the Boeing 787 TURN service rate in mid-2023?",
+      "ground_truth": "The Boeing 787 TURN service rate was $215.00 per event in mid-2023.",
+      "reference_date": "2023-06-15",
+      "expected_version": 2,
+      "metadata": {
+        "category": "pricing",
+        "entity_type": "service_rate",
+        "document_source": "contract_v2.pdf"
+      }
+    },
+    {
+      "id": "tc_003",
+      "question": "What was the original Boeing 787 TURN service rate?",
+      "ground_truth": "The original Boeing 787 TURN service rate was $200.00 per event.",
+      "reference_date": "2022-01-01",
+      "expected_version": 1,
+      "metadata": {
+        "category": "pricing",
+        "entity_type": "service_rate",
+        "document_source": "contract_v1.pdf"
+      }
+    },
+    {
+      "id": "tc_004",
+      "question": "What is the deep cleaning service price for Airbus aircraft?",
+      "ground_truth": "The Airbus deep cleaning service price is $1,211.10 per event.",
+      "reference_date": "2024-01-15",
+      "expected_version": 2,
+      "metadata": {
+        "category": "pricing",
+        "entity_type": "service_rate",
+        "document_source": "service_catalog_v2.pdf"
+      }
+    },
+    {
+      "id": "tc_005",
+      "question": "What is the wheelchair agent rate?",
+      "ground_truth": "The current wheelchair agent rate is $34.40 per hour.",
+      "reference_date": "2024-01-15",
+      "expected_version": 1,
+      "metadata": {
+        "category": "labor",
+        "entity_type": "hourly_rate",
+        "document_source": "labor_rates.pdf"
+      }
+    },
+    {
+      "id": "tc_006",
+      "question": "What is the cancellation policy for service contracts?",
+      "ground_truth": "Cancellation requires 30 days written notice. Early termination fees may apply.",
+      "reference_date": "2024-01-01",
+      "expected_version": 2,
+      "metadata": {
+        "category": "policy",
+        "entity_type": "contract_term",
+        "document_source": "terms_v2.pdf"
+      }
+    },
+    {
+      "id": "tc_007",
+      "question": "What was the previous cancellation policy?",
+      "ground_truth": "The previous cancellation policy required 60 days written notice with no early termination fees.",
+      "reference_date": "2023-01-01",
+      "expected_version": 1,
+      "metadata": {
+        "category": "policy",
+        "entity_type": "contract_term",
+        "document_source": "terms_v1.pdf"
+      }
+    },
+    {
+      "id": "tc_008",
+      "question": "What is the service level agreement for response times?",
+      "ground_truth": "Standard SLA guarantees 15-minute response time for urgent requests and 2-hour response for standard requests.",
+      "reference_date": "2024-01-15",
+      "expected_version": 3,
+      "metadata": {
+        "category": "sla",
+        "entity_type": "response_time",
+        "document_source": "sla_v3.pdf"
+      }
+    }
+  ]
+}
