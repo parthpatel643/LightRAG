@@ -70,12 +70,7 @@ try:
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from ragas import evaluate
     from ragas.llms import LangchainLLMWrapper
-    from ragas.metrics import (
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
-    )
+    from ragas.metrics import SimpleCriteriaScore
     from tqdm.auto import tqdm
 
     RAGAS_AVAILABLE = True
@@ -85,6 +80,7 @@ except ImportError as e:
     Dataset = None
     evaluate = None
     LangchainLLMWrapper = None
+    SimpleCriteriaScore = None
     logger.warning(
         f"RAGAS dependencies not installed: {e}\n"
         "Install with: pip install -e '.[evaluation]'"
@@ -178,6 +174,12 @@ class BaseRAGEvaluator(ABC):
         self.eval_max_retries = int(os.getenv("EVAL_LLM_MAX_RETRIES", "5"))
         self.eval_timeout = int(os.getenv("EVAL_LLM_TIMEOUT", "180"))
 
+        # Custom headers for authentication (e.g., Nestle internal APIs)
+        extra_headers = {
+            "client_id": os.getenv("NESGEN_CLIENT_ID", ""),
+            "client_secret": os.getenv("NESGEN_CLIENT_SECRET", ""),
+        }
+
         llm_kwargs = {
             "model": self.eval_model,
             "api_key": eval_llm_api_key,
@@ -186,6 +188,8 @@ class BaseRAGEvaluator(ABC):
         }
         if self.eval_llm_base_url:
             llm_kwargs["base_url"] = self.eval_llm_base_url
+        if extra_headers.get("client_id"):  # Only add headers if they exist
+            llm_kwargs["default_headers"] = extra_headers
 
         # Embedding kwargs
         embedding_kwargs = {
@@ -194,6 +198,8 @@ class BaseRAGEvaluator(ABC):
         }
         if self.eval_embedding_base_url:
             embedding_kwargs["base_url"] = self.eval_embedding_base_url
+        if extra_headers.get("client_id"):  # Only add headers if they exist
+            embedding_kwargs["default_headers"] = extra_headers
 
         # Initialize LLM and Embeddings for RAGAS
         try:
@@ -298,6 +304,7 @@ class BaseRAGEvaluator(ABC):
         client: httpx.AsyncClient,
         mode: Optional[QueryMode] = None,
         reference_date: Optional[str] = None,
+        enable_rerank: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Query LightRAG API and get response with contexts.
@@ -307,6 +314,7 @@ class BaseRAGEvaluator(ABC):
             client: HTTP client
             mode: Query mode (defaults to self.query_mode)
             reference_date: Reference date for temporal queries
+            enable_rerank: Whether to enable reranking (defaults to env EVAL_ENABLE_RERANK or RERANK_BY_DEFAULT)
 
         Returns:
             Dictionary with 'answer', 'contexts', and metadata
@@ -322,6 +330,14 @@ class BaseRAGEvaluator(ABC):
                 "include_chunk_content": True,
                 "top_k": int(os.getenv("EVAL_QUERY_TOP_K", "10")),
             }
+
+            # Add enable_rerank if specified
+            if enable_rerank is not None:
+                payload["enable_rerank"] = enable_rerank
+            elif "EVAL_ENABLE_RERANK" in os.environ:
+                payload["enable_rerank"] = (
+                    os.getenv("EVAL_ENABLE_RERANK", "true").lower() == "true"
+                )
 
             # Add reference_date for temporal queries
             if reference_date and payload["mode"] == "temporal":
@@ -456,10 +472,10 @@ class BaseRAGEvaluator(ABC):
                 "test_number",
                 "question",
                 "mode",
-                "faithfulness",
+                "answer_correctness",
                 "answer_relevance",
-                "context_recall",
-                "context_precision",
+                "context_quality",
+                "semantic_equivalence",
                 "ragas_score",
                 "status",
                 "timestamp",
@@ -475,10 +491,10 @@ class BaseRAGEvaluator(ABC):
                         "test_number": result.get("test_number", 0),
                         "question": result.get("question", ""),
                         "mode": result.get("mode", self.query_mode),
-                        "faithfulness": f"{metrics.get('faithfulness', 0):.4f}",
+                        "answer_correctness": f"{metrics.get('answer_correctness', 0):.4f}",
                         "answer_relevance": f"{metrics.get('answer_relevance', 0):.4f}",
-                        "context_recall": f"{metrics.get('context_recall', 0):.4f}",
-                        "context_precision": f"{metrics.get('context_precision', 0):.4f}",
+                        "context_quality": f"{metrics.get('context_quality', 0):.4f}",
+                        "semantic_equivalence": f"{metrics.get('semantic_equivalence', 0):.4f}",
                         "ragas_score": f"{result.get('ragas_score', 0):.4f}",
                         "status": "success" if metrics else "error",
                         "timestamp": result.get("timestamp", ""),
@@ -506,10 +522,10 @@ class BaseRAGEvaluator(ABC):
 
         # Calculate averages for each metric
         metrics_data = {
-            "faithfulness": {"sum": 0.0, "count": 0},
+            "answer_correctness": {"sum": 0.0, "count": 0},
             "answer_relevance": {"sum": 0.0, "count": 0},
-            "context_recall": {"sum": 0.0, "count": 0},
-            "context_precision": {"sum": 0.0, "count": 0},
+            "context_quality": {"sum": 0.0, "count": 0},
+            "semantic_equivalence": {"sum": 0.0, "count": 0},
             "ragas_score": {"sum": 0.0, "count": 0},
         }
 
@@ -612,11 +628,11 @@ class BaseRAGEvaluator(ABC):
         logger.info("📈 BENCHMARK RESULTS (Average)")
         logger.info("-" * 70)
         avg = benchmark_stats["average_metrics"]
-        logger.info(f"Faithfulness:      {avg['faithfulness']:.4f}")
-        logger.info(f"Answer Relevance:  {avg['answer_relevance']:.4f}")
-        logger.info(f"Context Recall:    {avg['context_recall']:.4f}")
-        logger.info(f"Context Precision: {avg['context_precision']:.4f}")
-        logger.info(f"RAGAS Score:       {avg['ragas_score']:.4f}")
+        logger.info(f"Answer Correctness: {avg['answer_correctness']:.4f}")
+        logger.info(f"Answer Relevance:   {avg['answer_relevance']:.4f}")
+        logger.info(f"Context Quality:    {avg['context_quality']:.4f}")
+        logger.info(f"Semantic Equiv:     {avg.get('semantic_equivalence', 0):.4f}")
+        logger.info(f"RAGAS Score:        {avg['ragas_score']:.4f}")
         logger.info("-" * 70)
         logger.info(f"Min RAGAS Score:   {benchmark_stats['min_ragas_score']:.4f}")
         logger.info(f"Max RAGAS Score:   {benchmark_stats['max_ragas_score']:.4f}")

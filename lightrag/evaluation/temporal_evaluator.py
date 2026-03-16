@@ -28,6 +28,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
+from lightrag.functions import embedding_func
 from lightrag.utils import logger
 
 # Add parent directory to path for imports
@@ -42,12 +45,7 @@ from lightrag.evaluation.base_evaluator import (
 if RAGAS_AVAILABLE:
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics import (
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
-    )
+    from ragas.metrics import SimpleCriteriaScore
 
 
 class TemporalRAGEvaluator(BaseRAGEvaluator):
@@ -67,6 +65,7 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
         rag_api_url: Optional[str] = None,
         default_reference_date: Optional[str] = None,
         track_versions: bool = True,
+        enable_rerank: Optional[bool] = None,
     ):
         """
         Initialize the temporal evaluator.
@@ -78,6 +77,7 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
             default_reference_date: Default reference date for temporal queries
                                    (YYYY-MM-DD format, used when test case doesn't specify)
             track_versions: Whether to track and report version information
+            enable_rerank: Whether to enable reranking in queries
         """
         super().__init__(
             workspace=workspace,
@@ -90,9 +90,11 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
             "EVAL_DEFAULT_REFERENCE_DATE", datetime.now().strftime("%Y-%m-%d")
         )
         self.track_versions = track_versions
+        self.enable_rerank = enable_rerank
 
         logger.info(f"  • Default Reference Date: {self.default_reference_date}")
         logger.info(f"  • Track Versions:         {self.track_versions}")
+        logger.info(f"  • Enable Rerank:          {self.enable_rerank}")
 
     async def evaluate_single_case(
         self,
@@ -124,6 +126,7 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
                 client=client,
                 mode="temporal",
                 reference_date=reference_date,
+                enable_rerank=self.enable_rerank,
             )
         except Exception as e:
             logger.error(f"Error generating response for test {idx}: {str(e)}")
@@ -153,14 +156,30 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
         )
 
         try:
-            # Run RAGAS evaluation
+            # Define LLM-as-a-judge metrics with SimpleCriteriaScore
+            # Using definition-based evaluation (LLM judges based on criteria description)
+            answer_correctness_metric = SimpleCriteriaScore(
+                name="answer_correctness",
+                definition="Evaluate if the answer is factually correct and accurate compared to the reference ground truth. Score from 1 (completely incorrect) to 5 (perfectly accurate).",
+            )
+
+            answer_relevance_metric = SimpleCriteriaScore(
+                name="answer_relevance",
+                definition="Evaluate if the answer directly addresses the question asked. Score from 1 (completely irrelevant) to 5 (perfectly relevant with no extraneous information).",
+            )
+
+            context_quality_metric = SimpleCriteriaScore(
+                name="context_quality",
+                definition="Evaluate if the retrieved contexts are useful and contain relevant information for answering the question. Score from 1 (completely irrelevant) to 5 (perfectly relevant with all necessary information).",
+            )
+
+            # Run RAGAS evaluation with LLM-as-a-judge metrics
             eval_results = evaluate(
                 dataset=eval_dataset,
                 metrics=[
-                    Faithfulness(),
-                    AnswerRelevancy(),
-                    ContextRecall(),
-                    ContextPrecision(),
+                    answer_correctness_metric,
+                    answer_relevance_metric,
+                    context_quality_metric,
                 ],
                 llm=self.eval_llm,
                 embeddings=self.eval_embeddings,
@@ -169,13 +188,20 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
             df = eval_results.to_pandas()
             scores_row = df.iloc[0]
 
-            # Standard RAGAS metrics
+            # LLM-as-a-judge metrics (normalized to 0-1 scale)
             metrics = {
-                "faithfulness": float(scores_row.get("faithfulness", 0)),
-                "answer_relevance": float(scores_row.get("answer_relevancy", 0)),
-                "context_recall": float(scores_row.get("context_recall", 0)),
-                "context_precision": float(scores_row.get("context_precision", 0)),
+                "answer_correctness": float(scores_row.get("answer_correctness", 0))
+                / 5.0,
+                "answer_relevance": float(scores_row.get("answer_relevance", 0)) / 5.0,
+                "context_quality": float(scores_row.get("context_quality", 0)) / 5.0,
             }
+
+            # Calculate semantic equivalence between answer and ground truth
+            semantic_equivalence = await self._calculate_semantic_equivalence(
+                answer=rag_response["answer"],
+                ground_truth=ground_truth,
+            )
+            metrics["semantic_equivalence"] = semantic_equivalence
 
             # Calculate temporal-specific metrics
             temporal_metrics = self._calculate_temporal_metrics(
@@ -184,7 +210,7 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
                 reference_date=reference_date,
             )
 
-            # Calculate combined RAGAS score
+            # Calculate combined RAGAS score (including semantic equivalence)
             valid_metrics = [v for v in metrics.values() if not _is_nan(v)]
             ragas_score = (
                 sum(valid_metrics) / len(valid_metrics) if valid_metrics else 0
@@ -196,6 +222,9 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
                 "reference_date": reference_date,
                 "expected_version": expected_version,
                 "mode": "temporal",
+                "workspace": test_case.get(
+                    "workspace", test_case.get("project", self.workspace)
+                ),
                 "answer": rag_response["answer"][:200] + "..."
                 if len(rag_response["answer"]) > 200
                 else rag_response["answer"],
@@ -294,6 +323,51 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
             "sequence_consistency": sequence_consistency,
             "max_retrieved_version": max_retrieved_version,
         }
+
+    async def _calculate_semantic_equivalence(
+        self,
+        answer: str,
+        ground_truth: str,
+    ) -> float:
+        """
+        Calculate semantic equivalence between answer and ground truth using embeddings API.
+
+        Uses the standard embeddings API from functions.py for consistency with the
+        main LightRAG system.
+
+        Args:
+            answer: Generated answer from RAG system
+            ground_truth: Reference/expected answer
+
+        Returns:
+            Semantic equivalence score (0.0 - 1.0)
+        """
+        try:
+            # Get embeddings for both texts using the main embeddings API
+            answer_embedding = await embedding_func([answer])
+            ground_truth_embedding = await embedding_func([ground_truth])
+
+            # Extract the first (and only) embedding from the returned arrays
+            answer_vec = answer_embedding[0]  # First row
+            ground_truth_vec = ground_truth_embedding[0]  # First row
+
+            # Normalize vectors
+            answer_vec_norm = answer_vec / (np.linalg.norm(answer_vec) + 1e-10)
+            ground_truth_vec_norm = ground_truth_vec / (
+                np.linalg.norm(ground_truth_vec) + 1e-10
+            )
+
+            # Calculate cosine similarity
+            semantic_similarity = float(np.dot(answer_vec_norm, ground_truth_vec_norm))
+
+            # Ensure value is in [0, 1] range
+            semantic_similarity = max(0.0, min(1.0, semantic_similarity))
+
+            return semantic_similarity
+
+        except Exception as e:
+            logger.error(f"Error calculating semantic equivalence: {e}")
+            return 0.0
 
     def _calculate_benchmark_stats(
         self, results: List[Dict[str, Any]]

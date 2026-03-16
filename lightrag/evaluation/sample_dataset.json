@@ -3,42 +3,42 @@
     {
       "question": "What is the price per event for Boeing 787 TURN service?",
       "ground_truth": "$227.24",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the price per event for Boeing 787 RON service?",
       "ground_truth": "$391.93",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the price per event for Boeing Airbus deep cleaning service?",
       "ground_truth": "$1,211.10",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the cost per day for Airbus turn service?",
       "ground_truth": "$463.76",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the cost per day for 737 turn service?",
       "ground_truth": "$463.76",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the price per event for Narrowbody water service?",
       "ground_truth": "$46.61",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the price per event for Narrowbody lav service?",
       "ground_truth": "$46.97",
-      "project": "sea_cabin_cleaning"
+      "workspace": "sea_cabin_cleaning"
     },
     {
       "question": "What is the current rate for a wheelchair agent?",
       "ground_truth": "$34.40",
-      "project": "sea_vbc_wheelchair"
+      "workspace": "sea_vbc_wheelchair"
     }
   ]
 }
