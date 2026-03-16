@@ -22,6 +22,7 @@ import ChunksPanel from '@/components/graph/ChunksPanel'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
@@ -166,6 +167,37 @@ const GraphViewer = () => {
       }
     };
   }, []);
+
+  // Monitor workspace changes and reset graph data
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const prevWorkspaceRef = useRef<string | null>(null)
+  
+  useEffect(() => {
+    // Only clear graph when workspace actually changes (not on initial mount)
+    if (prevWorkspaceRef.current !== null && prevWorkspaceRef.current !== currentWorkspace) {
+      console.log('[GraphViewer] Workspace changed from', prevWorkspaceRef.current, 'to', currentWorkspace, 'clearing and refreshing...')
+      
+      try {
+        const state = useGraphStore.getState()
+        state.setRawGraph(null)
+        state.setSigmaGraph(null)
+        state.setSelectedNode(null)
+        state.setFocusedNode(null)
+        state.setSelectedEdge(null)
+        state.setFocusedEdge(null)
+        state.setSearchEngine(null)
+        // Reset fetch flags to allow re-fetching for new workspace
+        state.setGraphDataFetchAttempted(false)
+        state.setLabelsFetchAttempted(false)
+        // Increment version to trigger refresh
+        state.incrementGraphDataVersion()
+        console.log('[GraphViewer] Graph data cleared, refresh triggered')
+      } catch (error) {
+        console.error('[GraphViewer] Error resetting graph:', error)
+      }
+    }
+    prevWorkspaceRef.current = currentWorkspace
+  }, [currentWorkspace])
 
   // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
   // but testing showed it wasn't executing or having any effect, while the backup mechanism

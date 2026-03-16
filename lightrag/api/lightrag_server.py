@@ -50,11 +50,13 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     DEFAULT_LOG_MAX_BYTES,
 )
+from lightrag.exceptions import PipelineNotInitializedError
 from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
     finalize_share_data,
     get_default_workspace,
     get_namespace_data,
+    initialize_pipeline_status,
     set_default_workspace,
 )
 from lightrag.types import GPTKeywordExtractionFormat
@@ -1166,7 +1168,7 @@ def create_app(args):
     async def reload_rag_for_workspace(working_dir: str, workspace: str):
         """Reload RAG instance for a new workspace"""
         try:
-            logger.info(f"Finalizing current RAG storages...")
+            logger.info("Finalizing current RAG storages...")
             await rag.finalize_storages()
 
             # Update shared storage default workspace BEFORE updating RAG instance
@@ -1345,9 +1347,19 @@ def create_app(args):
             default_workspace = get_default_workspace()
             if workspace is None:
                 workspace = default_workspace
-            pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=workspace
-            )
+
+            # Try to get pipeline_status, but if not initialized, initialize it first
+            try:
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=workspace
+                )
+            except PipelineNotInitializedError:
+                # Pipeline status not initialized for this workspace, initialize it
+                logger.info(f"Initializing pipeline_status for workspace: {workspace}")
+                await initialize_pipeline_status(workspace=workspace)
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=workspace
+                )
 
             if not auth_configured:
                 auth_mode = "disabled"

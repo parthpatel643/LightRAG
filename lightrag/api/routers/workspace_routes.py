@@ -7,7 +7,7 @@ working directories and input directories.
 
 import os
 from pathlib import Path
-from typing import List, Optional, Callable
+from typing import Callable, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -65,7 +65,7 @@ def get_current_workspace_config() -> WorkspaceConfig:
 def set_rag_instance_and_reload_func(rag, reload_func: Callable):
     """
     Set the RAG instance and reload function for workspace switching.
-    
+
     Args:
         rag: LightRAG instance
         reload_func: Async function to reload RAG with new workspace
@@ -74,7 +74,6 @@ def set_rag_instance_and_reload_func(rag, reload_func: Callable):
     _rag_instance = rag
     _reload_rag_func = reload_func
     logger.debug("RAG instance and reload function registered for workspace management")
-
 
 
 @router.post("/switch", response_model=WorkspaceResponse)
@@ -109,9 +108,7 @@ async def switch_workspace(
         # Reload RAG instance if reload function is available
         if _reload_rag_func:
             try:
-                logger.info(
-                    f"Reloading RAG instance for workspace: {config.name}"
-                )
+                logger.info(f"Reloading RAG instance for workspace: {config.name}")
                 await _reload_rag_func(
                     working_dir=config.working_dir, workspace=config.name
                 )
@@ -171,46 +168,51 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
     List all available workspaces discovered from WORKING_DIR.
 
     Scans the WORKING_DIR for workspace subdirectories and returns their configurations.
+    If no subdirectories exist, returns the root workspace based on WORKING_DIR.
+    The first workspace in the returned list is considered the default.
     """
     try:
         working_dir = os.getenv("WORKING_DIR", "./rag_storage")
+        input_dir = os.getenv("INPUT_DIR", "./inputs")
+        # Check both WORKSPACE and WORKSPACE_NAME for compatibility
+        workspace_name = os.getenv("WORKSPACE") or os.getenv(
+            "WORKSPACE_NAME", "default"
+        )
         working_path = Path(working_dir)
 
         workspaces = []
-        discovered_workspace_names = set()
 
         # Discover workspaces from subdirectories in WORKING_DIR
         if working_path.exists() and working_path.is_dir():
             for item in working_path.iterdir():
                 if item.is_dir():
-                    workspace_name = item.name
-                    discovered_workspace_names.add(workspace_name)
+                    subdir_name = item.name
 
                     # Try to detect input dir relative to workspace
                     # Convention: input_dir in parent's INPUT_DIR or workspace-specific inputs
                     input_base = os.getenv("INPUT_DIR", "./inputs")
-                    workspace_input_dir = os.path.join(input_base, workspace_name)
+                    workspace_input_dir = os.path.join(input_base, subdir_name)
 
                     workspace_config = WorkspaceConfig(
-                        name=workspace_name,
+                        name=subdir_name,
                         working_dir=str(item),
                         input_dir=workspace_input_dir,
-                        description=f"Workspace: {workspace_name}",
+                        description=f"Workspace: {subdir_name}",
                     )
                     workspaces.append(workspace_config)
 
-        # Always include default workspace if not already discovered
-        if "default" not in discovered_workspace_names:
-            default_workspace = WorkspaceConfig(
-                name="default",
+        # If no subdirectory workspaces found, return the root workspace as configured
+        if not workspaces:
+            root_workspace = WorkspaceConfig(
+                name=workspace_name,
                 working_dir=working_dir,
-                input_dir=os.getenv("INPUT_DIR", "./inputs"),
-                description="Default workspace",
+                input_dir=input_dir,
+                description=f"Main workspace: {workspace_name}",
             )
-            workspaces.append(default_workspace)
-
-        # Sort by name for consistent ordering
-        workspaces.sort(key=lambda w: w.name)
+            workspaces.append(root_workspace)
+        else:
+            # Sort discovered workspaces by name - first one becomes the default
+            workspaces.sort(key=lambda w: w.name)
 
         logger.debug(
             f"Discovered {len(workspaces)} workspaces from {working_dir}: "

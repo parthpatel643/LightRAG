@@ -6,6 +6,7 @@ import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { useGraphStore } from '@/stores/graph'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
@@ -148,6 +149,16 @@ export default function RetrievalTesting() {
 
   // Smart switching logic: use Input for single line, Textarea for multi-line
   const hasMultipleLines = inputValue.includes('\n')
+
+  // Monitor workspace changes and reset retrieval state
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  useEffect(() => {
+    console.log('[RetrievalTesting] Workspace changed to:', currentWorkspace, 'clearing messages...')
+    // Clear messages and history when workspace changes
+    setMessages([])
+    setInputValue('')
+    useSettingsStore.getState().setRetrievalHistory([])
+  }, [currentWorkspace])
 
   // Enhanced event handlers for smart switching
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {

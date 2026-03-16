@@ -45,7 +45,7 @@ export default function WorkspaceSwitcher({
 }: WorkspaceSwitcherProps) {
   const { t } = useTranslation()
   const [workspaces, setWorkspaces] = useState<WorkspaceConfig[]>([])
-  const [selectedWorkspace, setSelectedWorkspace] = useState<string>(currentWorkspace || 'default')
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string>(currentWorkspace || '')
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
 
@@ -72,10 +72,15 @@ export default function WorkspaceSwitcher({
           if (serverWorkspaces && serverWorkspaces.length > 0) {
             setWorkspaces(serverWorkspaces)
             // Set the first workspace from server as current (it's the configured one)
-            setSelectedWorkspace(serverWorkspaces[0].name)
+            const firstWorkspace = serverWorkspaces[0]
+            setSelectedWorkspace(firstWorkspace.name)
             // Save to localStorage for offline access
             localStorage.setItem('lightrag_workspaces', JSON.stringify(serverWorkspaces))
-            console.log('Workspaces loaded from server:', serverWorkspaces[0].name)
+            console.log('Workspaces loaded from server:', firstWorkspace.name)
+            // Notify parent to update workspace store (only if not already set)
+            if (!currentWorkspace) {
+              onWorkspaceChange(firstWorkspace)
+            }
             return
           }
         } catch (serverError) {
@@ -99,33 +104,27 @@ export default function WorkspaceSwitcher({
           }
         }
 
-        // Initialize with default workspace as last resort
-        const defaultWorkspace: WorkspaceConfig = {
-          name: 'default',
-          workingDir: './rag_storage',
-          inputDir: './inputs',
-          description: 'Default workspace'
-        }
-        setWorkspaces([defaultWorkspace])
-        setSelectedWorkspace('default')
-        localStorage.setItem('lightrag_workspaces', JSON.stringify([defaultWorkspace]))
-        console.log('Using default workspace (no server or localStorage data)')
+        // If no workspaces available, show empty state
+        console.log('No workspaces available from server or localStorage')
+        setWorkspaces([])
+        setSelectedWorkspace('')
       } catch (error) {
         console.error('Unexpected error loading workspaces:', error)
-        // Don't show toast error - always have a fallback
-        const defaultWorkspace: WorkspaceConfig = {
-          name: 'default',
-          workingDir: './rag_storage',
-          inputDir: './inputs',
-          description: 'Default workspace'
-        }
-        setWorkspaces([defaultWorkspace])
-        setSelectedWorkspace('default')
+        // Show empty state on error
+        setWorkspaces([])
+        setSelectedWorkspace('')
       }
     }
 
     loadWorkspaces()
-  }, [t])
+  }, [t, currentWorkspace, onWorkspaceChange])
+
+  // Sync selectedWorkspace when currentWorkspace prop changes from outside
+  useEffect(() => {
+    if (currentWorkspace && currentWorkspace !== selectedWorkspace) {
+      setSelectedWorkspace(currentWorkspace)
+    }
+  }, [currentWorkspace, selectedWorkspace])
 
   // Save workspaces to localStorage
   const saveWorkspaces = useCallback((updatedWorkspaces: WorkspaceConfig[]) => {

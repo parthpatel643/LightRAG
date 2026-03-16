@@ -5,6 +5,7 @@ import StatusIndicator from '@/components/status/StatusIndicator'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
@@ -14,7 +15,7 @@ import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
 import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
 import { switchWorkspace } from '@/api/lightrag'
 import { toast } from 'sonner'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 interface NavigationTabProps {
   value: string
@@ -67,7 +68,11 @@ export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  const [currentWorkspace, setCurrentWorkspace] = useState<string>('default')
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const setCurrentWorkspace = useWorkspaceStore.use.setCurrentWorkspace()
+  
+  // Store previous workspace to detect changes
+  const [prevWorkspace, setPrevWorkspace] = useState<string | null>(null)
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -87,16 +92,24 @@ export default function SiteHeader() {
     try {
       // API function handles camelCase to snake_case conversion
       const response = await switchWorkspace(workspace)
+      // Update workspace store
       setCurrentWorkspace(workspace.name)
       toast.success(t('workspace.switchSuccess', 'Workspace switched successfully'))
-      
-      // Optionally refresh the page to reload with new workspace
-      // window.location.reload()
     } catch (error) {
       console.error('Failed to switch workspace:', error)
       toast.error(t('workspace.switchError', 'Failed to switch workspace'))
     }
   }
+
+  // Detect workspace changes and log them (actual refresh handled by individual components)
+  useEffect(() => {
+    if (currentWorkspace && currentWorkspace !== prevWorkspace) {
+      console.log(`[SiteHeader] Workspace changed from ${prevWorkspace} to ${currentWorkspace}`);
+      setPrevWorkspace(currentWorkspace);
+      // Note: Data refresh is handled by DocumentManager and GraphViewer via their own workspace listeners
+    }
+  }, [currentWorkspace, prevWorkspace])
+
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
@@ -133,13 +146,8 @@ export default function SiteHeader() {
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
-        {currentWorkspace && currentWorkspace !== 'default' && (
-          <div className="ml-2 self-center px-2 py-1 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-md font-medium">
-            📁 {currentWorkspace}
-          </div>
-        )}
         <WorkspaceSwitcher
-          currentWorkspace={currentWorkspace}
+          currentWorkspace={currentWorkspace || undefined}
           onWorkspaceChange={handleWorkspaceChange}
           className="ml-auto"
         />

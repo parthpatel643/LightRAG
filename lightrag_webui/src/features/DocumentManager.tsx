@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { useBackendState } from '@/stores/state'
 import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import {
@@ -549,6 +551,41 @@ export default function DocumentManager() {
       document.head.removeChild(style)
     }
   }, [])
+
+  // Monitor workspace changes and reset document state
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const prevDocWorkspaceRef = useRef<string | null>(null)
+  
+  useEffect(() => {
+    if (!isMountedRef.current) return;
+    
+    // Only trigger refresh when workspace actually changes (not on initial mount)
+    if (prevDocWorkspaceRef.current !== null && prevDocWorkspaceRef.current !== currentWorkspace) {
+      console.log('[DocumentManager] Workspace changed from', prevDocWorkspaceRef.current, 'to', currentWorkspace);
+      setDocs(null);
+      setCurrentPageDocs([]);
+      setSelectedDocIds([]);
+      setPagination({
+        page: 1,
+        page_size: documentsPageSize,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false
+      });
+      setPageByStatus({
+        all: 1,
+        processed: 1,
+        preprocessed: 1,
+        processing: 1,
+        pending: 1,
+        failed: 1,
+      });
+      // Trigger health check to refresh data
+      useBackendState.getState().check?.();
+    }
+    prevDocWorkspaceRef.current = currentWorkspace;
+  }, [currentWorkspace, documentsPageSize])
 
   // Reference to the card content element
   const cardContentRef = useRef<HTMLDivElement>(null);

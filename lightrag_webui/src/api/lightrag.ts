@@ -3,6 +3,7 @@ import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } f
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { navigationService } from '@/services/navigation'
 
 // Types
@@ -359,6 +360,7 @@ axiosInstance.interceptors.request.use((config) => {
 
   const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const currentWorkspace = useWorkspaceStore.getState().currentWorkspace;
 
   // Always include token if it exists, regardless of path
   if (token) {
@@ -366,6 +368,10 @@ axiosInstance.interceptors.request.use((config) => {
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+  // Include current workspace in requests
+  if (currentWorkspace) {
+    config.headers['LIGHTRAG-WORKSPACE'] = currentWorkspace
   }
   return config
 })
@@ -1084,6 +1090,8 @@ export const switchWorkspace = async (config: WorkspaceConfig): Promise<Workspac
     description: config.description
   }
   const response = await axiosInstance.post('/workspace/switch', apiPayload)
+  // Update workspace store after successful switch
+  useWorkspaceStore.getState().setCurrentWorkspace(config.name)
   return response.data
 }
 
