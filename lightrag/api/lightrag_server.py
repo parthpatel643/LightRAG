@@ -1162,6 +1162,31 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Create reload function for workspace switching
+    async def reload_rag_for_workspace(working_dir: str, workspace: str):
+        """Reload RAG instance for a new workspace"""
+        try:
+            logger.info(f"Finalizing current RAG storages...")
+            await rag.finalize_storages()
+
+            # Update shared storage default workspace BEFORE updating RAG instance
+            # This ensures initialize_storages() uses the correct workspace
+            set_default_workspace(workspace)
+
+            # Update RAG workspace and working_dir
+            rag.working_dir = working_dir
+            rag.workspace = workspace
+
+            logger.info(
+                f"Reinitializing RAG storages for workspace: {workspace} at {working_dir}"
+            )
+            await rag.initialize_storages()
+
+            logger.info(f"RAG successfully reloaded for workspace: {workspace}")
+        except Exception as e:
+            logger.error(f"Failed to reload RAG for workspace {workspace}: {e}")
+            raise
+
     # Add routes
     app.include_router(
         create_document_routes(
@@ -1172,6 +1197,11 @@ def create_app(args):
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+
+    # Register RAG instance and reload function with workspace routes
+    from lightrag.api.routers.workspace_routes import set_rag_instance_and_reload_func
+
+    set_rag_instance_and_reload_func(rag, reload_rag_for_workspace)
 
     # Add workspace management routes
     app.include_router(workspace_router)

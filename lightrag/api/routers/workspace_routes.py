@@ -7,7 +7,7 @@ working directories and input directories.
 
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -42,6 +42,8 @@ class WorkspaceResponse(BaseModel):
 # Global variable to track current workspace
 # In production, this should be stored in a database or session
 _current_workspace: Optional[WorkspaceConfig] = None
+_rag_instance = None
+_reload_rag_func: Optional[Callable] = None
 
 
 def get_current_workspace_config() -> WorkspaceConfig:
@@ -60,6 +62,21 @@ def get_current_workspace_config() -> WorkspaceConfig:
     return _current_workspace
 
 
+def set_rag_instance_and_reload_func(rag, reload_func: Callable):
+    """
+    Set the RAG instance and reload function for workspace switching.
+    
+    Args:
+        rag: LightRAG instance
+        reload_func: Async function to reload RAG with new workspace
+    """
+    global _rag_instance, _reload_rag_func
+    _rag_instance = rag
+    _reload_rag_func = reload_func
+    logger.debug("RAG instance and reload function registered for workspace management")
+
+
+
 @router.post("/switch", response_model=WorkspaceResponse)
 async def switch_workspace(
     config: WorkspaceConfig, _auth=Depends(get_combined_auth_dependency)
@@ -67,9 +84,8 @@ async def switch_workspace(
     """
     Switch to a different workspace configuration.
 
-    This updates the working directory and input directory for the LightRAG instance.
-    Note: In the current implementation, this requires restarting the server to take full effect.
-    For production use, consider implementing a workspace factory pattern.
+    This updates the working directory and input directory for the LightRAG instance
+    and reloads all storage backends to load data from the new workspace.
     """
     global _current_workspace
 
@@ -90,16 +106,43 @@ async def switch_workspace(
         # Update current workspace
         _current_workspace = config
 
+        # Reload RAG instance if reload function is available
+        if _reload_rag_func:
+            try:
+                logger.info(
+                    f"Reloading RAG instance for workspace: {config.name}"
+                )
+                await _reload_rag_func(
+                    working_dir=config.working_dir, workspace=config.name
+                )
+                logger.info(
+                    f"Successfully reloaded RAG instance for workspace: {config.name}"
+                )
+            except Exception as reload_error:
+                logger.error(
+                    f"Failed to reload RAG instance for workspace {config.name}: {reload_error}"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to reload RAG for workspace: {str(reload_error)}",
+                )
+        else:
+            logger.warning(
+                "Reload function not available. Workspace switching may not properly load graph data."
+            )
+
         logger.info(f"Switched to workspace: {config.name}")
         logger.info(f"  Working dir: {config.working_dir}")
         logger.info(f"  Input dir: {config.input_dir}")
 
         return WorkspaceResponse(
             status="success",
-            message=f"Switched to workspace: {config.name}. Note: Server restart recommended for full effect.",
+            message=f"Switched to workspace: {config.name}",
             workspace=config,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to switch workspace: {e}")
         raise HTTPException(
@@ -125,26 +168,54 @@ async def get_current_workspace(_auth=Depends(get_combined_auth_dependency)):
 @router.get("/list", response_model=List[WorkspaceConfig])
 async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
     """
-    List all available workspaces.
+    List all available workspaces discovered from WORKING_DIR.
 
-    Note: This is a simplified implementation that returns the current workspace.
-    In production, workspaces should be stored in a database or configuration file.
+    Scans the WORKING_DIR for workspace subdirectories and returns their configurations.
     """
     try:
-        # For now, return current workspace and a default workspace
-        current = get_current_workspace_config()
+        working_dir = os.getenv("WORKING_DIR", "./rag_storage")
+        working_path = Path(working_dir)
 
-        workspaces = [current]
+        workspaces = []
+        discovered_workspace_names = set()
 
-        # Add default workspace if not already current
-        if current.name != "default":
+        # Discover workspaces from subdirectories in WORKING_DIR
+        if working_path.exists() and working_path.is_dir():
+            for item in working_path.iterdir():
+                if item.is_dir():
+                    workspace_name = item.name
+                    discovered_workspace_names.add(workspace_name)
+
+                    # Try to detect input dir relative to workspace
+                    # Convention: input_dir in parent's INPUT_DIR or workspace-specific inputs
+                    input_base = os.getenv("INPUT_DIR", "./inputs")
+                    workspace_input_dir = os.path.join(input_base, workspace_name)
+
+                    workspace_config = WorkspaceConfig(
+                        name=workspace_name,
+                        working_dir=str(item),
+                        input_dir=workspace_input_dir,
+                        description=f"Workspace: {workspace_name}",
+                    )
+                    workspaces.append(workspace_config)
+
+        # Always include default workspace if not already discovered
+        if "default" not in discovered_workspace_names:
             default_workspace = WorkspaceConfig(
                 name="default",
-                working_dir="./rag_storage",
-                input_dir="./inputs",
+                working_dir=working_dir,
+                input_dir=os.getenv("INPUT_DIR", "./inputs"),
                 description="Default workspace",
             )
             workspaces.append(default_workspace)
+
+        # Sort by name for consistent ordering
+        workspaces.sort(key=lambda w: w.name)
+
+        logger.debug(
+            f"Discovered {len(workspaces)} workspaces from {working_dir}: "
+            f"{[w.name for w in workspaces]}"
+        )
 
         return workspaces
 
