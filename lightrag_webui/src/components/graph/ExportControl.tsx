@@ -2,19 +2,34 @@ import { useSigma } from '@react-sigma/core'
 import { Download, Image, FileCode } from 'lucide-react'
 import { toast } from 'sonner'
 import { useState } from 'react'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 export default function ExportControl() {
   const sigma = useSigma()
   const [isExporting, setIsExporting] = useState(false)
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+
+  const getFilename = (extension: string) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)
+    const workspace = currentWorkspace || 'default'
+    return `lightrag-graph-${workspace}-${timestamp}.${extension}`
+  }
 
   const exportToPNG = async () => {
     if (isExporting) return
     setIsExporting(true)
 
     try {
-      // Get the canvas element from the sigma container
+      // Get the container and find the main canvas element
       const container = sigma.getContainer()
-      const canvas = container.querySelector('canvas')
+      const canvases = container.querySelectorAll('canvas')
+      
+      // Find the main WebGL canvas (usually the largest or first one)
+      let canvas: HTMLCanvasElement | null = null
+      if (canvases.length > 0) {
+        // Try to find canvas with specific class or just use the first one
+        canvas = canvases[0] as HTMLCanvasElement
+      }
       
       if (!canvas) {
         throw new Error('Canvas not found')
@@ -22,20 +37,32 @@ export default function ExportControl() {
       
       // Create a new canvas with white background
       const exportCanvas = document.createElement('canvas')
-      exportCanvas.width = canvas.width
-      exportCanvas.height = canvas.height
+      const dpr = window.devicePixelRatio || 1
+      
+      // Use the display size, not the internal size
+      const displayWidth = canvas.clientWidth || canvas.width / dpr
+      const displayHeight = canvas.clientHeight || canvas.height / dpr
+      
+      exportCanvas.width = displayWidth * dpr
+      exportCanvas.height = displayHeight * dpr
+      exportCanvas.style.width = `${displayWidth}px`
+      exportCanvas.style.height = `${displayHeight}px`
+      
       const ctx = exportCanvas.getContext('2d')
       
       if (!ctx) {
         throw new Error('Could not get canvas context')
       }
 
+      // Scale for device pixel ratio
+      ctx.scale(dpr, dpr)
+
       // Fill with white background
       ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height)
+      ctx.fillRect(0, 0, displayWidth, displayHeight)
       
       // Draw the graph on top
-      ctx.drawImage(canvas, 0, 0)
+      ctx.drawImage(canvas, 0, 0, displayWidth, displayHeight)
 
       // Convert to blob and download
       exportCanvas.toBlob((blob) => {
@@ -47,7 +74,7 @@ export default function ExportControl() {
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
-        link.download = `lightrag-graph-${Date.now()}.png`
+        link.download = getFilename('png')
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
@@ -136,7 +163,7 @@ export default function ExportControl() {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `lightrag-graph-${Date.now()}.svg`
+      link.download = getFilename('svg')
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
