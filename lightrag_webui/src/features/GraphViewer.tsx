@@ -170,12 +170,31 @@ const GraphViewer = () => {
 
   // Monitor workspace changes and reset graph data
   const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const isSwitching = useWorkspaceStore.use.isSwitching()
   const prevWorkspaceRef = useRef<string | null>(null)
+  const prevIsSwitchingRef = useRef<boolean>(false)
   
   useEffect(() => {
-    // Only clear graph when workspace actually changes (not on initial mount)
-    if (prevWorkspaceRef.current !== null && prevWorkspaceRef.current !== currentWorkspace) {
-      console.log('[GraphViewer] Workspace changed from', prevWorkspaceRef.current, 'to', currentWorkspace, 'clearing and refreshing...')
+    // Skip if workspace is currently switching (prevents premature data fetch)
+    if (isSwitching) {
+      console.log('[GraphViewer] Workspace switching in progress, skipping refresh');
+      prevIsSwitchingRef.current = true;
+      return;
+    }
+    
+    // Check if switching just completed (was true, now false)
+    const switchingJustCompleted = prevIsSwitchingRef.current && !isSwitching;
+    prevIsSwitchingRef.current = isSwitching;
+    
+    // Trigger refresh if switching just completed OR workspace changed
+    const workspaceChanged = prevWorkspaceRef.current !== null && prevWorkspaceRef.current !== currentWorkspace;
+    
+    if (switchingJustCompleted || workspaceChanged) {
+      if (switchingJustCompleted) {
+        console.log('[GraphViewer] Workspace switching completed, refreshing graph for:', currentWorkspace);
+      } else {
+        console.log('[GraphViewer] Workspace changed from', prevWorkspaceRef.current, 'to', currentWorkspace, 'clearing and refreshing...')
+      }
       
       try {
         const state = useGraphStore.getState()
@@ -197,7 +216,7 @@ const GraphViewer = () => {
       }
     }
     prevWorkspaceRef.current = currentWorkspace
-  }, [currentWorkspace])
+  }, [currentWorkspace, isSwitching])
 
   // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
   // but testing showed it wasn't executing or having any effect, while the backup mechanism

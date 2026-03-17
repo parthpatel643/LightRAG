@@ -18,6 +18,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
 )
 from pydantic import BaseModel, Field, field_validator
@@ -3110,6 +3111,7 @@ def create_document_routes(
     )
     async def get_documents_paginated(
         request: DocumentsRequest,
+        http_request: Request,
     ) -> PaginatedDocsResponse:
         """
         Get documents with pagination support.
@@ -3120,6 +3122,7 @@ def create_document_routes(
 
         Args:
             request (DocumentsRequest): The request body containing pagination parameters
+            http_request (Request): FastAPI request object to extract workspace header
 
         Returns:
             PaginatedDocsResponse: A response object containing:
@@ -3131,6 +3134,17 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving documents (500).
         """
         try:
+            # Log the workspace from request header
+            workspace_header = http_request.headers.get("LIGHTRAG-WORKSPACE", "")
+            logger.info(
+                f"[get_documents_paginated] Workspace header: '{workspace_header}', RAG workspace: '{rag.workspace}'"
+            )
+
+            # Verify workspace matches
+            if workspace_header and workspace_header != rag.workspace:
+                logger.warning(
+                    f"[get_documents_paginated] Workspace mismatch! Header: '{workspace_header}', RAG: '{rag.workspace}'"
+                )
             # Get paginated documents and status counts in parallel
             docs_task = rag.doc_status.get_docs_paginated(
                 status_filter=request.status_filter,

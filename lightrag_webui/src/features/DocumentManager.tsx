@@ -35,7 +35,6 @@ import {
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
-import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, Search, X as XCircle, Trash2 } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
@@ -552,41 +551,6 @@ export default function DocumentManager() {
     }
   }, [])
 
-  // Monitor workspace changes and reset document state
-  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
-  const prevDocWorkspaceRef = useRef<string | null>(null)
-  
-  useEffect(() => {
-    if (!isMountedRef.current) return;
-    
-    // Only trigger refresh when workspace actually changes (not on initial mount)
-    if (prevDocWorkspaceRef.current !== null && prevDocWorkspaceRef.current !== currentWorkspace) {
-      console.log('[DocumentManager] Workspace changed from', prevDocWorkspaceRef.current, 'to', currentWorkspace);
-      setDocs(null);
-      setCurrentPageDocs([]);
-      setSelectedDocIds([]);
-      setPagination({
-        page: 1,
-        page_size: documentsPageSize,
-        total_count: 0,
-        total_pages: 0,
-        has_next: false,
-        has_prev: false
-      });
-      setPageByStatus({
-        all: 1,
-        processed: 1,
-        preprocessed: 1,
-        processing: 1,
-        pending: 1,
-        failed: 1,
-      });
-      // Trigger health check to refresh data
-      useBackendState.getState().check?.();
-    }
-    prevDocWorkspaceRef.current = currentWorkspace;
-  }, [currentWorkspace, documentsPageSize])
-
   // Reference to the card content element
   const cardContentRef = useRef<HTMLDivElement>(null)
 
@@ -877,6 +841,70 @@ export default function DocumentManager() {
   const fetchDocuments = useCallback(async () => {
     await fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
   }, [fetchPaginatedDocuments, pagination.page, pagination.page_size, statusFilter]);
+
+  // Monitor workspace changes and reset document state
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const isSwitching = useWorkspaceStore.use.isSwitching()
+  const prevDocWorkspaceRef = useRef<string | null>(null)
+  const prevIsSwitchingRef = useRef<boolean>(false)
+  
+  useEffect(() => {
+    if (!isMountedRef.current) return;
+    
+    // Skip if workspace is currently switching (prevents premature data fetch)
+    if (isSwitching) {
+      console.log('[DocumentManager] Workspace switching in progress, skipping refresh');
+      prevIsSwitchingRef.current = true;
+      return;
+    }
+    
+    // Check if switching just completed (was true, now false)
+    const switchingJustCompleted = prevIsSwitchingRef.current && !isSwitching;
+    prevIsSwitchingRef.current = isSwitching;
+    
+    // Trigger refresh if switching just completed OR workspace changed
+    const workspaceChanged = prevDocWorkspaceRef.current !== null && prevDocWorkspaceRef.current !== currentWorkspace;
+    
+    if (switchingJustCompleted || workspaceChanged) {
+      if (switchingJustCompleted) {
+        console.log('[DocumentManager] Workspace switching completed, refreshing documents for:', currentWorkspace);
+      } else {
+        console.log('[DocumentManager] Workspace changed from', prevDocWorkspaceRef.current, 'to', currentWorkspace, '- refreshing documents...');
+      }
+      
+      // Clear current state
+      setDocs(null);
+      setCurrentPageDocs([]);
+      setSelectedDocIds([]);
+      setPagination({
+        page: 1,
+        page_size: documentsPageSize,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false
+      });
+      setPageByStatus({
+        all: 1,
+        processed: 1,
+        preprocessed: 1,
+        processing: 1,
+        pending: 1,
+        failed: 1,
+      });
+      
+      // Trigger immediate data refresh for new workspace
+      // Use a small delay to ensure workspace header has propagated
+      setTimeout(() => {
+        if (isMountedRef.current) {
+          handleIntelligentRefresh(1, true).catch(error => {
+            console.error('[DocumentManager] Failed to refresh after workspace change:', error);
+          });
+        }
+      }, 100);
+    }
+    prevDocWorkspaceRef.current = currentWorkspace;
+  }, [currentWorkspace, isSwitching, documentsPageSize, handleIntelligentRefresh]);
 
   // Function to clear current polling interval
   const clearPollingInterval = useCallback(() => {

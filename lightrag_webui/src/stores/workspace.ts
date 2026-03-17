@@ -4,14 +4,18 @@ import { createSelectors } from '@/lib/utils'
 
 interface WorkspaceState {
   currentWorkspace: string | null
+  isSwitching: boolean
   setCurrentWorkspace: (workspace: string | null) => void
+  setIsSwitching: (switching: boolean) => void
 }
 
 const useWorkspaceStoreBase = create<WorkspaceState>()(
   persist(
     (set) => ({
       currentWorkspace: null,
-      setCurrentWorkspace: (workspace) => set({ currentWorkspace: workspace })
+      isSwitching: true,  // Start as true to block initial data fetches until workspace is synced
+      setCurrentWorkspace: (workspace) => set({ currentWorkspace: workspace }),
+      setIsSwitching: (switching) => set({ isSwitching: switching })
     }),
     {
       name: 'lightrag-workspace',

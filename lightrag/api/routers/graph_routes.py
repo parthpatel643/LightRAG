@@ -2,12 +2,14 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
+
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
@@ -158,6 +160,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
+        request: Request,
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
         max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
@@ -169,6 +172,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             2. Followed by the degree of the nodes
 
         Args:
+            request (Request): FastAPI request object to extract workspace header
             label (str): Label of the starting node
             max_depth (int, optional): Maximum depth of the subgraph,Defaults to 3
             max_nodes: Maxiumu nodes to return
@@ -177,6 +181,18 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             Dict[str, List[str]]: Knowledge graph for label
         """
         try:
+            # Log workspace information
+            workspace_header = request.headers.get("LIGHTRAG-WORKSPACE", "")
+            logger.info(
+                f"[get_knowledge_graph] Workspace header: '{workspace_header}', RAG workspace: '{rag.workspace}'"
+            )
+
+            # Verify workspace matches
+            if workspace_header and workspace_header != rag.workspace:
+                logger.warning(
+                    f"[get_knowledge_graph] Workspace mismatch! Header: '{workspace_header}', RAG: '{rag.workspace}'"
+                )
+
             # Log the label parameter to check for leading spaces
             logger.debug(
                 f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {repr(label)})"

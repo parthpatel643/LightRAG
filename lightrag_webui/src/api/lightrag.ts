@@ -369,8 +369,10 @@ axiosInstance.interceptors.request.use((config) => {
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
   }
-  // Include current workspace in requests
-  if (currentWorkspace) {
+  // Include current workspace in requests, but EXCLUDE workspace management endpoints
+  // to avoid warnings during initial sync when frontend and backend workspaces may differ
+  const isWorkspaceManagementEndpoint = config.url?.startsWith('/workspace/');
+  if (currentWorkspace && !isWorkspaceManagementEndpoint) {
     config.headers['LIGHTRAG-WORKSPACE'] = currentWorkspace
   }
   return config
@@ -1094,8 +1096,8 @@ export const switchWorkspace = async (config: WorkspaceConfig): Promise<Workspac
   if (!response.data || typeof response.data !== 'object') {
     throw new Error('Invalid workspace switch response from server')
   }
-  // Update workspace store after successful switch
-  useWorkspaceStore.getState().setCurrentWorkspace(config.name)
+  // Note: Workspace store is updated by the caller before this API call
+  // to ensure subsequent requests use the correct workspace header
   return response.data
 }
 

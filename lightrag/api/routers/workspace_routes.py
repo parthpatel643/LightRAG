@@ -76,13 +76,13 @@ def set_rag_instance_and_reload_func(rag, reload_func: Callable):
     global _rag_instance, _reload_rag_func, _root_working_dir, _root_input_dir
     _rag_instance = rag
     _reload_rag_func = reload_func
-    
+
     # Store the root working directory on first initialization
     if _root_working_dir is None:
         _root_working_dir = os.getenv("WORKING_DIR", "./rag_storage")
         _root_input_dir = os.getenv("INPUT_DIR", "./inputs")
         logger.debug(f"Initialized root working directory: {_root_working_dir}")
-    
+
     logger.debug("RAG instance and reload function registered for workspace management")
 
 
@@ -104,7 +104,9 @@ async def switch_workspace(
         # so passing a workspace-specific working_dir would create nested paths like
         # <root>/<workspace>/<workspace>/..., resulting in stale/empty data.
         global _root_working_dir, _root_input_dir
-        root_working_dir = _root_working_dir or os.getenv("WORKING_DIR", "./rag_storage")
+        root_working_dir = _root_working_dir or os.getenv(
+            "WORKING_DIR", "./rag_storage"
+        )
         root_input_dir = _root_input_dir or os.getenv("INPUT_DIR", "./inputs")
 
         # Validate directories exist or can be created
@@ -127,6 +129,11 @@ async def switch_workspace(
         _current_workspace = config
 
         # Reload RAG instance if reload function is available
+        print(
+            f"[WORKSPACE-SWITCH-DEBUG] _reload_rag_func is: {_reload_rag_func}",
+            flush=True,
+        )
+        logger.info(f"[DEBUG] _reload_rag_func is: {_reload_rag_func}")
         if _reload_rag_func:
             try:
                 logger.info(f"Reloading RAG instance for workspace: {config.name}")
@@ -198,11 +205,11 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
         # Use root working directory for discovery, not the current workspace directory
         # This ensures all workspaces are discovered even after switching
         global _root_working_dir, _root_input_dir
-        
+
         # If root directories not initialized, use environment variables
         working_dir = _root_working_dir or os.getenv("WORKING_DIR", "./rag_storage")
         input_dir = _root_input_dir or os.getenv("INPUT_DIR", "./inputs")
-        
+
         # Check both WORKSPACE and WORKSPACE_NAME for compatibility
         workspace_name = os.getenv("WORKSPACE") or os.getenv(
             "WORKSPACE_NAME", "default"
@@ -221,15 +228,17 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
                         subdir_name = item.name
 
                         # Skip hidden directories (starting with .)
-                        if subdir_name.startswith('.'):
+                        if subdir_name.startswith("."):
                             continue
 
                         # Try to detect input dir relative to workspace
                         # If root input_dir is workspace-specific (from env), extract parent directory
                         # Otherwise use root input_dir as the base
                         input_path = Path(input_dir)
-                        
-                        if input_path.is_absolute() and workspace_name in str(input_path):
+
+                        if input_path.is_absolute() and workspace_name in str(
+                            input_path
+                        ):
                             # Root INPUT_DIR is workspace-specific, use parent as base for all workspaces
                             input_parent = input_path.parent
                             workspace_input_dir = str(input_parent / subdir_name)
@@ -246,7 +255,9 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
                         workspaces.append(workspace_config)
                         logger.debug(f"Discovered workspace: {subdir_name}")
                     except Exception as item_error:
-                        logger.warning(f"Failed to process workspace directory {item.name}: {item_error}")
+                        logger.warning(
+                            f"Failed to process workspace directory {item.name}: {item_error}"
+                        )
                         continue
 
         # If no subdirectory workspaces found, return the root workspace as configured

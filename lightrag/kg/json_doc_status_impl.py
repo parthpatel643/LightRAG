@@ -92,6 +92,10 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         """Initialize storage data"""
+        print(
+            f"[DOCSTORAGE-DEBUG] JsonDocStatusStorage.initialize() called for namespace={self.namespace}, workspace={self.workspace}",
+            flush=True,
+        )
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
@@ -103,11 +107,19 @@ class JsonDocStatusStorage(DocStatusStorage):
             need_init = await try_initialize_namespace(
                 self.namespace, workspace=self.workspace
             )
+            print(
+                f"[DOCSTORAGE-DEBUG] namespace={self.namespace}, workspace={self.workspace}, need_init={need_init}, file={self._file_name}",
+                flush=True,
+            )
             self._data = await get_namespace_data(
                 self.namespace, workspace=self.workspace
             )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
+                print(
+                    f"[DOCSTORAGE-DEBUG] Loaded {len(loaded_data)} records from {self._file_name}",
+                    flush=True,
+                )
                 # Sanitize loaded data to remove invalid records
                 sanitized_data = self._sanitize_data(loaded_data)
                 if len(sanitized_data) < len(loaded_data):

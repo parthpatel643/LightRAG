@@ -58,6 +58,7 @@ export default function WorkspaceSwitcher({
   })
 
   // Load workspaces from server, falling back to localStorage
+  // This effect runs only once on mount to avoid re-fetching on every workspace change
   useEffect(() => {
     const loadWorkspaces = async () => {
       try {
@@ -71,15 +72,32 @@ export default function WorkspaceSwitcher({
           
           if (serverWorkspaces && serverWorkspaces.length > 0) {
             setWorkspaces(serverWorkspaces)
-            // Set the first workspace from server as current (it's the configured one)
-            const firstWorkspace = serverWorkspaces[0]
-            setSelectedWorkspace(firstWorkspace.name)
             // Save to localStorage for offline access
             localStorage.setItem('lightrag_workspaces', JSON.stringify(serverWorkspaces))
-            console.log('Workspaces loaded from server:', firstWorkspace.name)
-            // Notify parent to update workspace store (only if not already set)
-            if (!currentWorkspace) {
+            
+            // If currentWorkspace is already set, use it; otherwise use first workspace
+            const initialWorkspace = currentWorkspace || null
+            if (initialWorkspace) {
+              // Verify the current workspace exists in the list
+              const workspaceConfig = serverWorkspaces.find(w => w.name === initialWorkspace)
+              if (workspaceConfig) {
+                setSelectedWorkspace(initialWorkspace)
+                // Sync backend with stored workspace on initial load
+                onWorkspaceChange(workspaceConfig)
+                console.log('Workspaces loaded from server, syncing backend with stored workspace:', initialWorkspace)
+              } else {
+                // Current workspace doesn't exist, fall back to first
+                const firstWorkspace = serverWorkspaces[0]
+                setSelectedWorkspace(firstWorkspace.name)
+                onWorkspaceChange(firstWorkspace)
+                console.log('Current workspace not found, switching to:', firstWorkspace.name)
+              }
+            } else {
+              // No current workspace set, initialize with first one
+              const firstWorkspace = serverWorkspaces[0]
+              setSelectedWorkspace(firstWorkspace.name)
               onWorkspaceChange(firstWorkspace)
+              console.log('Workspaces loaded from server, initializing with:', firstWorkspace.name)
             }
             return
           }
@@ -117,7 +135,8 @@ export default function WorkspaceSwitcher({
     }
 
     loadWorkspaces()
-  }, [t, currentWorkspace, onWorkspaceChange])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Run only once on mount
 
   // Sync selectedWorkspace when currentWorkspace prop changes from outside
   useEffect(() => {

@@ -43,6 +43,7 @@ from lightrag.api.utils_api import (
     display_splash_screen,
     get_combined_auth_dependency,
 )
+from lightrag.base import StoragesStatus
 from lightrag.constants import (
     DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_LLM_TIMEOUT,
@@ -59,7 +60,6 @@ from lightrag.kg.shared_storage import (
     initialize_pipeline_status,
     set_default_workspace,
 )
-from lightrag.base import StoragesStatus
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
 
@@ -1169,30 +1169,137 @@ def create_app(args):
     async def reload_rag_for_workspace(working_dir: str, workspace: str):
         """Reload RAG instance for a new workspace"""
         try:
-            logger.info("Finalizing current RAG storages...")
+            logger.info(
+                f"[reload_rag_for_workspace] Starting reload for workspace: {workspace}"
+            )
+            logger.info(
+                f"[reload_rag_for_workspace] Current RAG workspace before reload: {rag.workspace}"
+            )
+
+            logger.info("[reload_rag_for_workspace] Finalizing current RAG storages...")
             await rag.finalize_storages()
 
             # Update shared storage default workspace BEFORE updating RAG instance
             # This ensures initialize_storages() uses the correct workspace
             set_default_workspace(workspace)
+            logger.info(
+                f"[reload_rag_for_workspace] Set default workspace to: {workspace}"
+            )
 
             # Update RAG workspace and working_dir
             rag.working_dir = working_dir
             rag.workspace = workspace
+            logger.info(
+                f"[reload_rag_for_workspace] Updated RAG instance - workspace: {rag.workspace}, working_dir: {rag.working_dir}"
+            )
+
+            # CRITICAL: Update workspace attribute on ALL storage instances.
+            # Storage objects were created with the original workspace and use self.workspace
+            # for data isolation. Without updating these, storages continue to access old workspace data.
+            storage_instances = [
+                rag.full_docs,
+                rag.text_chunks,
+                rag.full_entities,
+                rag.full_relations,
+                rag.entity_chunks,
+                rag.relation_chunks,
+                rag.entities_vdb,
+                rag.relationships_vdb,
+                rag.chunks_vdb,
+                rag.chunk_entity_relation_graph,
+                rag.llm_response_cache,
+                rag.doc_status,
+            ]
+            for storage in storage_instances:
+                if storage:
+                    logger.info(
+                        f"[reload_rag_for_workspace] Processing storage: {type(storage).__name__}, namespace: {storage.namespace}"
+                    )
+                    storage.workspace = workspace
+                    workspace_dir = os.path.join(working_dir, workspace)
+
+                    # CRITICAL: Update file paths for all storage backends
+                    # File paths are set in __post_init__() and won't automatically
+                    # update when workspace changes. We need to rebuild the paths.
+
+                    # JSON KV Storage (full_docs, text_chunks, entities, relations, etc.)
+                    if hasattr(storage, "_file_name"):
+                        storage._file_name = os.path.join(
+                            workspace_dir, f"kv_store_{storage.namespace}.json"
+                        )
+
+                    # NetworkX Graph Storage
+                    if hasattr(storage, "_graphml_xml_file"):
+                        old_file = storage._graphml_xml_file
+                        storage._graphml_xml_file = os.path.join(
+                            workspace_dir, f"graph_{storage.namespace}.graphml"
+                        )
+                        logger.info(
+                            f"[reload_rag_for_workspace] Updating graph file: {old_file} -> {storage._graphml_xml_file}"
+                        )
+                        # Reload the graph from the new workspace file
+                        from lightrag.kg.networkx_impl import NetworkXStorage
+
+                        preloaded_graph = NetworkXStorage.load_nx_graph(
+                            storage._graphml_xml_file
+                        )
+                        if preloaded_graph is not None:
+                            storage._graph = preloaded_graph
+                            logger.info(
+                                f"[{workspace}] Reloaded graph from {storage._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes"
+                            )
+                        else:
+                            import networkx as nx
+
+                            storage._graph = nx.Graph()
+                            logger.info(
+                                f"[{workspace}] Created new empty graph for workspace"
+                            )
+
+                    # NanoVectorDB Storage
+                    if hasattr(storage, "_client_file_name"):
+                        storage._client_file_name = os.path.join(
+                            workspace_dir, f"vdb_{storage.namespace}.json"
+                        )
+                        # Recreate the NanoVectorDB client with new file path
+                        from nano_vectordb import NanoVectorDB
+
+                        storage._client = NanoVectorDB(
+                            storage.embedding_func.embedding_dim,
+                            storage_file=storage._client_file_name,
+                        )
+                        logger.info(
+                            f"[{workspace}] Recreated vector DB client for {storage.namespace} with file {storage._client_file_name}"
+                        )
+            logger.info(
+                "[reload_rag_for_workspace] Updated workspace on all storage instances"
+            )
 
             # CRITICAL: Reset storage status back to CREATED so initialize_storages() will run.
             # Without this, initialize_storages() sees status==FINALIZED and skips initialization,
             # leaving the RAG instance pointing to stale workspace data.
             rag._storages_status = StoragesStatus.CREATED
+            logger.info("[reload_rag_for_workspace] Reset storage status to CREATED")
 
+            print(
+                f"[RELOAD-DEBUG] Starting reinitialization for workspace: {workspace}",
+                flush=True,
+            )
             logger.info(
-                f"Reinitializing RAG storages for workspace: {workspace} at {working_dir}"
+                f"[reload_rag_for_workspace] Reinitializing RAG storages for workspace: {workspace} at {working_dir}"
             )
             await rag.initialize_storages()
 
-            logger.info(f"RAG successfully reloaded for workspace: {workspace}")
+            logger.info(
+                f"[reload_rag_for_workspace] RAG successfully reloaded for workspace: {workspace}"
+            )
+            logger.info(
+                f"[reload_rag_for_workspace] Final RAG workspace after reload: {rag.workspace}"
+            )
         except Exception as e:
-            logger.error(f"Failed to reload RAG for workspace {workspace}: {e}")
+            logger.error(
+                f"[reload_rag_for_workspace] Failed to reload RAG for workspace {workspace}: {e}"
+            )
             raise
 
     # Add routes

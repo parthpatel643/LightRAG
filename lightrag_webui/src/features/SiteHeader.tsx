@@ -89,15 +89,34 @@ export default function SiteHeader() {
   }
 
   const handleWorkspaceChange = async (workspace: WorkspaceConfig) => {
+    const { setIsSwitching } = useWorkspaceStore.getState()
+    
     try {
+      // Set switching flag to prevent premature data fetches
+      setIsSwitching(true)
+      
+      // Call the API to switch workspace on the backend FIRST
       // API function handles camelCase to snake_case conversion
       const response = await switchWorkspace(workspace)
-      // Update workspace store
+      
+      // Add a delay after workspace switch to ensure backend reload completes
+      // The backend needs time to finalize old storages and initialize new ones
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // ONLY update workspace store AFTER backend switch succeeds
+      // This ensures subsequent API calls use the correct workspace header
+      // that matches the backend's current workspace
       setCurrentWorkspace(workspace.name)
+      
+      // Clear switching flag to allow data fetches
+      setIsSwitching(false)
+      
       toast.success(t('workspace.switchSuccess', 'Workspace switched successfully'))
     } catch (error) {
       console.error('Failed to switch workspace:', error)
       toast.error(t('workspace.switchError', 'Failed to switch workspace'))
+      // Don't update workspace store on error - it should stay at the previous value
+      setIsSwitching(false)
     }
   }
 

@@ -5,19 +5,20 @@ from typing import Any, final
 from lightrag.base import (
     BaseKVStorage,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from lightrag.utils import (
     load_json,
     logger,
     write_json,
 )
-from lightrag.exceptions import StorageNotInitializedError
+
 from .shared_storage import (
+    clear_all_update_flags,
+    get_data_init_lock,
     get_namespace_data,
     get_namespace_lock,
-    get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
-    clear_all_update_flags,
     try_initialize_namespace,
 )
 
@@ -44,6 +45,10 @@ class JsonKVStorage(BaseKVStorage):
 
     async def initialize(self):
         """Initialize storage data"""
+        print(
+            f"[STORAGE-DEBUG] JsonKVStorage.initialize() called for namespace={self.namespace}, workspace={self.workspace}",
+            flush=True,
+        )
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
@@ -55,11 +60,19 @@ class JsonKVStorage(BaseKVStorage):
             need_init = await try_initialize_namespace(
                 self.namespace, workspace=self.workspace
             )
+            print(
+                f"[STORAGE-DEBUG] namespace={self.namespace}, workspace={self.workspace}, need_init={need_init}",
+                flush=True,
+            )
             self._data = await get_namespace_data(
                 self.namespace, workspace=self.workspace
             )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
+                print(
+                    f"[STORAGE-DEBUG] Loading from file: {self._file_name}, records: {len(loaded_data)}",
+                    flush=True,
+                )
                 async with self._storage_lock:
                     # Migrate legacy cache structure if needed
                     if self.namespace.endswith("_cache"):
@@ -121,7 +134,7 @@ class JsonKVStorage(BaseKVStorage):
         async with self._storage_lock:
             # Process all records in a single pass for improved performance
             results = []
-            
+
             # Using a list comprehension for better performance
             for id in ids:
                 data = self._data.get(id, None)
