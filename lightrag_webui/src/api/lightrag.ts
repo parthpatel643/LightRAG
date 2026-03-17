@@ -1090,6 +1090,10 @@ export const switchWorkspace = async (config: WorkspaceConfig): Promise<Workspac
     description: config.description
   }
   const response = await axiosInstance.post('/workspace/switch', apiPayload)
+  // Validate response
+  if (!response.data || typeof response.data !== 'object') {
+    throw new Error('Invalid workspace switch response from server')
+  }
   // Update workspace store after successful switch
   useWorkspaceStore.getState().setCurrentWorkspace(config.name)
   return response.data
@@ -1099,9 +1103,18 @@ export const switchWorkspace = async (config: WorkspaceConfig): Promise<Workspac
  * Get the current workspace configuration
  * @returns Promise with current workspace config
  */
-export const getCurrentWorkspace = async (): Promise<WorkspaceConfig> => {
-  const response = await axiosInstance.get('/workspace/current')
-  return response.data
+export const getCurrentWorkspace = async (): Promise<WorkspaceConfig | null> => {
+  try {
+    const response = await axiosInstance.get('/workspace/current')
+    if (!response.data || typeof response.data !== 'object') {
+      console.warn('Invalid current workspace response:', response.data)
+      return null
+    }
+    return response.data
+  } catch (error) {
+    console.error('Failed to get current workspace:', error)
+    return null
+  }
 }
 
 /**
@@ -1110,6 +1123,11 @@ export const getCurrentWorkspace = async (): Promise<WorkspaceConfig> => {
  */
 export const listWorkspaces = async (): Promise<WorkspaceConfig[]> => {
   const response = await axiosInstance.get('/workspace/list')
+  // Validate that response.data is an array
+  if (!response.data || !Array.isArray(response.data)) {
+    console.warn('Invalid workspace list response:', response.data)
+    return []
+  }
   // Transform snake_case from API to camelCase for frontend
   return response.data.map((ws: any) => ({
     name: ws.name,

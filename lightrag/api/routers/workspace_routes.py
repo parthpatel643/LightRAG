@@ -44,6 +44,9 @@ class WorkspaceResponse(BaseModel):
 _current_workspace: Optional[WorkspaceConfig] = None
 _rag_instance = None
 _reload_rag_func: Optional[Callable] = None
+# Store the root working directory for workspace discovery (don't change this when switching workspaces)
+_root_working_dir: Optional[str] = None
+_root_input_dir: Optional[str] = None
 
 
 def get_current_workspace_config() -> WorkspaceConfig:
@@ -70,9 +73,16 @@ def set_rag_instance_and_reload_func(rag, reload_func: Callable):
         rag: LightRAG instance
         reload_func: Async function to reload RAG with new workspace
     """
-    global _rag_instance, _reload_rag_func
+    global _rag_instance, _reload_rag_func, _root_working_dir, _root_input_dir
     _rag_instance = rag
     _reload_rag_func = reload_func
+    
+    # Store the root working directory on first initialization
+    if _root_working_dir is None:
+        _root_working_dir = os.getenv("WORKING_DIR", "./rag_storage")
+        _root_input_dir = os.getenv("INPUT_DIR", "./inputs")
+        logger.debug(f"Initialized root working directory: {_root_working_dir}")
+    
     logger.debug("RAG instance and reload function registered for workspace management")
 
 
@@ -89,7 +99,17 @@ async def switch_workspace(
     global _current_workspace
 
     try:
+        # Use cached root directories for storage isolation.
+        # Storage backends already incorporate `workspace` into their on-disk paths,
+        # so passing a workspace-specific working_dir would create nested paths like
+        # <root>/<workspace>/<workspace>/..., resulting in stale/empty data.
+        global _root_working_dir, _root_input_dir
+        root_working_dir = _root_working_dir or os.getenv("WORKING_DIR", "./rag_storage")
+        root_input_dir = _root_input_dir or os.getenv("INPUT_DIR", "./inputs")
+
         # Validate directories exist or can be created
+        # Note: We still create the directories referenced by the requested config
+        # so existing clients relying on these paths won't break.
         working_path = Path(config.working_dir)
         input_path = Path(config.input_dir)
 
@@ -97,9 +117,10 @@ async def switch_workspace(
         working_path.mkdir(parents=True, exist_ok=True)
         input_path.mkdir(parents=True, exist_ok=True)
 
-        # Update environment variables
-        os.environ["WORKING_DIR"] = config.working_dir
-        os.environ["INPUT_DIR"] = config.input_dir
+        # Update environment variables.
+        # Keep WORKING_DIR/INPUT_DIR pointing at ROOT dirs; workspace name determines isolation.
+        os.environ["WORKING_DIR"] = root_working_dir
+        os.environ["INPUT_DIR"] = root_input_dir
         os.environ["WORKSPACE_NAME"] = config.name
 
         # Update current workspace
@@ -110,7 +131,7 @@ async def switch_workspace(
             try:
                 logger.info(f"Reloading RAG instance for workspace: {config.name}")
                 await _reload_rag_func(
-                    working_dir=config.working_dir, workspace=config.name
+                    working_dir=root_working_dir, workspace=config.name
                 )
                 logger.info(
                     f"Successfully reloaded RAG instance for workspace: {config.name}"
@@ -129,8 +150,10 @@ async def switch_workspace(
             )
 
         logger.info(f"Switched to workspace: {config.name}")
-        logger.info(f"  Working dir: {config.working_dir}")
-        logger.info(f"  Input dir: {config.input_dir}")
+        logger.info(f"  Root working dir: {root_working_dir}")
+        logger.info(f"  Root input dir: {root_input_dir}")
+        logger.info(f"  Requested working dir: {config.working_dir}")
+        logger.info(f"  Requested input dir: {config.input_dir}")
 
         return WorkspaceResponse(
             status="success",
@@ -172,8 +195,14 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
     The first workspace in the returned list is considered the default.
     """
     try:
-        working_dir = os.getenv("WORKING_DIR", "./rag_storage")
-        input_dir = os.getenv("INPUT_DIR", "./inputs")
+        # Use root working directory for discovery, not the current workspace directory
+        # This ensures all workspaces are discovered even after switching
+        global _root_working_dir, _root_input_dir
+        
+        # If root directories not initialized, use environment variables
+        working_dir = _root_working_dir or os.getenv("WORKING_DIR", "./rag_storage")
+        input_dir = _root_input_dir or os.getenv("INPUT_DIR", "./inputs")
+        
         # Check both WORKSPACE and WORKSPACE_NAME for compatibility
         workspace_name = os.getenv("WORKSPACE") or os.getenv(
             "WORKSPACE_NAME", "default"
@@ -182,24 +211,43 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
 
         workspaces = []
 
-        # Discover workspaces from subdirectories in WORKING_DIR
+        # Discover workspace names from subdirectories in the ROOT working dir.
+        # IMPORTANT: returned `working_dir` should remain the ROOT directory.
+        # Storage backends already incorporate workspace into paths.
         if working_path.exists() and working_path.is_dir():
             for item in working_path.iterdir():
                 if item.is_dir():
-                    subdir_name = item.name
+                    try:
+                        subdir_name = item.name
 
-                    # Try to detect input dir relative to workspace
-                    # Convention: input_dir in parent's INPUT_DIR or workspace-specific inputs
-                    input_base = os.getenv("INPUT_DIR", "./inputs")
-                    workspace_input_dir = os.path.join(input_base, subdir_name)
+                        # Skip hidden directories (starting with .)
+                        if subdir_name.startswith('.'):
+                            continue
 
-                    workspace_config = WorkspaceConfig(
-                        name=subdir_name,
-                        working_dir=str(item),
-                        input_dir=workspace_input_dir,
-                        description=f"Workspace: {subdir_name}",
-                    )
-                    workspaces.append(workspace_config)
+                        # Try to detect input dir relative to workspace
+                        # If root input_dir is workspace-specific (from env), extract parent directory
+                        # Otherwise use root input_dir as the base
+                        input_path = Path(input_dir)
+                        
+                        if input_path.is_absolute() and workspace_name in str(input_path):
+                            # Root INPUT_DIR is workspace-specific, use parent as base for all workspaces
+                            input_parent = input_path.parent
+                            workspace_input_dir = str(input_parent / subdir_name)
+                        else:
+                            # INPUT_DIR is generic or relative, join with workspace name
+                            workspace_input_dir = os.path.join(input_dir, subdir_name)
+
+                        workspace_config = WorkspaceConfig(
+                            name=subdir_name,
+                            working_dir=str(working_path),
+                            input_dir=workspace_input_dir,
+                            description=f"Workspace: {subdir_name}",
+                        )
+                        workspaces.append(workspace_config)
+                        logger.debug(f"Discovered workspace: {subdir_name}")
+                    except Exception as item_error:
+                        logger.warning(f"Failed to process workspace directory {item.name}: {item_error}")
+                        continue
 
         # If no subdirectory workspaces found, return the root workspace as configured
         if not workspaces:
@@ -218,6 +266,11 @@ async def list_workspaces(_auth=Depends(get_combined_auth_dependency)):
             f"Discovered {len(workspaces)} workspaces from {working_dir}: "
             f"{[w.name for w in workspaces]}"
         )
+
+        if len(workspaces) == 0:
+            logger.warning(
+                f"No workspace subdirectories found in {working_dir}, returning root workspace"
+            )
 
         return workspaces
 

@@ -588,7 +588,7 @@ export default function DocumentManager() {
   }, [currentWorkspace, documentsPageSize])
 
   // Reference to the card content element
-  const cardContentRef = useRef<HTMLDivElement>(null);
+  const cardContentRef = useRef<HTMLDivElement>(null)
 
   // Add tooltip position adjustment for fixed positioning
   useEffect(() => {

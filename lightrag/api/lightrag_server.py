@@ -59,6 +59,7 @@ from lightrag.kg.shared_storage import (
     initialize_pipeline_status,
     set_default_workspace,
 )
+from lightrag.base import StoragesStatus
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
 
@@ -1178,6 +1179,11 @@ def create_app(args):
             # Update RAG workspace and working_dir
             rag.working_dir = working_dir
             rag.workspace = workspace
+
+            # CRITICAL: Reset storage status back to CREATED so initialize_storages() will run.
+            # Without this, initialize_storages() sees status==FINALIZED and skips initialization,
+            # leaving the RAG instance pointing to stale workspace data.
+            rag._storages_status = StoragesStatus.CREATED
 
             logger.info(
                 f"Reinitializing RAG storages for workspace: {workspace} at {working_dir}"
