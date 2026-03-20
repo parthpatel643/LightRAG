@@ -6,7 +6,7 @@ Latest: March 2026 | Status: Production-Ready | [GitHub](https://github.com/HKUD
 
 ---
 
-## � Core Documentation (6 Guides)
+## 📖 Core Documentation (7 Guides)
 
 ### 1. **[Getting Started](./GETTING_STARTED.md)**
 Start here for first-time users. Covers installation, setup, and your first queries.
@@ -57,7 +57,17 @@ Guide to temporal features: versioning, time-travel queries, and implementation 
 - ✅ Production deployment
 - ✅ Troubleshooting
 
-### 6. **[Deployment Guide](./DEPLOYMENT_GUIDE.md)**
+### 6. **[Evaluation Guide](./EVALUATION_GUIDE.md)**
+RAG quality evaluation using RAGAS metrics with temporal and workspace support.
+
+- ✅ Semantic equivalence & RAGAS evaluation
+- ✅ Temporal evaluation with reference dates
+- ✅ Workspace-specific testing
+- ✅ Custom dataset creation
+- ✅ Performance metrics & best practices
+- ✅ CLI reference & troubleshooting
+
+### 7. **[Deployment Guide](./DEPLOYMENT_GUIDE.md)**
 Production deployment, infrastructure setup, and operational procedures.
 
 - ✅ Local development setup & Docker deployment
@@ -101,6 +111,7 @@ This documentation has been consolidated from **42+ separate files** into **6 co
 | RETRIEVAL_LOGIC.md, Algorithm.md, ARCHITECTURE_BOTTLENECKS.md | **ARCHITECTURE.md** |
 | CLI_DESIGN.md, CLI_IMPLEMENTATION_SUMMARY.md, CLI_MIGRATION_GUIDE.md | **CLI_REFERENCE.md** |
 | PROFILING_GUIDE.md, PRODUCTION_DEPLOYMENT_CHECKLIST.md, AWS_*.md | **DEPLOYMENT_GUIDE.md** |
+| README_TEMPORAL_EVALUATION.md, evaluation/*.md | **EVALUATION_GUIDE.md** |
 | FrontendBuildGuide.md | **GETTING_STARTED.md** |
 | TEMPORAL_COMPLETE_IMPLEMENTATION.md, TEMPORAL_API_REFERENCE.md + 8 others | **TEMPORAL.md** |
 | WEBUI_FEATURES.md, UI_UX_IMPROVEMENTS.md | **USER_GUIDE.md** |
@@ -119,6 +130,7 @@ This documentation has been consolidated from **42+ separate files** into **6 co
 | Deploy to production | [Deployment Guide](./DEPLOYMENT_GUIDE.md) | 1-2 hrs |
 | Understand the system | [Architecture](./ARCHITECTURE.md) | 45 min |
 | Query historical data | [Temporal](./TEMPORAL.md) | 30 min |
+| Test RAG quality | [Evaluation Guide](./EVALUATION_GUIDE.md) | 45 min |
 
 ---
 
@@ -143,6 +155,7 @@ User Guide           - Workflows, best practices, WebUI features
 CLI Reference        - Command-line interface, all commands
 Architecture         - System design, optimization, bottlenecks
 Temporal             - Time-travel queries, versioning, API
+Evaluation Guide     - RAG quality testing, RAGAS metrics, datasets
 Deployment Guide     - Production setup, monitoring, troubleshooting
 ```
 

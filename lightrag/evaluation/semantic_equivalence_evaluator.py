@@ -171,7 +171,9 @@ class SemanticEquivalenceEvaluator:
 
     def _setup_paths(self, test_dataset_path: Optional[str]):
         """Set up paths for datasets and results."""
-        eval_dir = Path(__file__).parent
+        # Use project root evaluation folder, not lightrag/evaluation
+        eval_dir = Path(__file__).parent.parent.parent / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
 
         # Results directory: workspace-specific
         self.results_dir = eval_dir / "results" / self.workspace
@@ -188,10 +190,17 @@ class SemanticEquivalenceEvaluator:
             if workspace_dataset.exists():
                 self.test_dataset_path = workspace_dataset
             else:
-                # Fall back to default temporal dataset
-                self.test_dataset_path = (
+                # Fall back to default temporal dataset or raise error
+                temporal_dataset = (
                     eval_dir / "datasets" / "temporal" / "evaluation_dataset.json"
                 )
+                if temporal_dataset.exists():
+                    self.test_dataset_path = temporal_dataset
+                else:
+                    raise FileNotFoundError(
+                        f"No evaluation dataset found for workspace '{self.workspace}' "
+                        f"and no temporal dataset at {temporal_dataset}"
+                    )
 
     def _load_test_dataset(self) -> List[Dict[str, Any]]:
         """Load test dataset from JSON file."""
@@ -229,10 +238,7 @@ class SemanticEquivalenceEvaluator:
         if self.workspace and self.workspace != "default":
             headers["LIGHTRAG-WORKSPACE"] = self.workspace
 
-        # Add API key if configured
-        api_key = os.getenv("LIGHTRAG_API_KEY")
-        if api_key:
-            headers["X-API-Key"] = api_key
+        # Note: Authentication disabled on server, no auth headers needed
 
         return headers
 
@@ -514,16 +520,17 @@ class SemanticEquivalenceEvaluator:
                 read=READ_TIMEOUT_SECONDS,
                 write=30.0,
                 pool=30.0,
-            )
+            ),
+            trust_env=False
         ) as client:
-            # Create all evaluation tasks
-            tasks = [
-                evaluate_with_semaphore(idx, test_case, client)
-                for idx, test_case in enumerate(self.test_cases, 1)
-            ]
+                # Create all evaluation tasks
+                tasks = [
+                    evaluate_with_semaphore(idx, test_case, client)
+                    for idx, test_case in enumerate(self.test_cases, 1)
+                ]
 
-            # Run all tasks concurrently with the semaphore limit
-            await asyncio.gather(*tasks)
+                # Run all tasks concurrently with the semaphore limit
+                await asyncio.gather(*tasks)
 
         # Return results in order
         return [results_dict[i] for i in range(1, len(self.test_cases) + 1)]

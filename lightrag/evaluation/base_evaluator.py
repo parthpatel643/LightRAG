@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from lightrag.functions import llm_model_func
 from lightrag.utils import logger
 
 # Suppress deprecation warnings
@@ -139,74 +140,66 @@ class BaseRAGEvaluator(ABC):
         self._display_configuration()
 
     def _init_eval_models(self):
-        """Initialize LLM and embedding models for RAGAS evaluation."""
-        # Get evaluation LLM configuration from environment
-        eval_llm_api_key = (
-            os.getenv("EVAL_LLM_BINDING_API_KEY")
-            or os.getenv("LLM_BINDING_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-        )
-
-        if not eval_llm_api_key:
+        """Initialize LLM and embedding models for RAGAS evaluation.
+        
+        Reuses the existing LLM and embedding configuration from lightrag.functions
+        to eliminate duplication and ensure consistency with the main system.
+        """
+        # Verify main LightRAG models are configured
+        if not os.getenv("LLM_BINDING_API_KEY"):
             raise ValueError(
-                "No API key found for evaluation LLM. Set EVAL_LLM_BINDING_API_KEY, "
-                "LLM_BINDING_API_KEY, or OPENAI_API_KEY environment variable."
+                "No API key found for LLM. Set LLM_BINDING_API_KEY environment variable."
+            )
+        if not os.getenv("EMBEDDING_API_KEY"):
+            raise ValueError(
+                "No API key found for embeddings. Set EMBEDDING_API_KEY environment variable."
             )
 
-        # LLM configuration
-        self.eval_model = os.getenv("EVAL_LLM_MODEL", "gpt-4o-mini")
-        self.eval_llm_base_url = os.getenv("EVAL_LLM_BINDING_HOST") or os.getenv(
-            "LLM_BINDING_HOST"
-        )
-
-        # Embedding configuration (fallback to LLM config)
-        eval_embedding_api_key = (
-            os.getenv("EVAL_EMBEDDING_BINDING_API_KEY") or eval_llm_api_key
-        )
-        self.eval_embedding_model = os.getenv(
-            "EVAL_EMBEDDING_MODEL", "text-embedding-3-large"
-        )
-        self.eval_embedding_base_url = (
-            os.getenv("EVAL_EMBEDDING_BINDING_HOST") or self.eval_llm_base_url
-        )
-
-        # LLM kwargs
+        # Use the same configuration as main LightRAG system
+        self.eval_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+        self.eval_llm_base_url = os.getenv("LLM_BINDING_HOST")
+        self.eval_embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+        self.eval_embedding_base_url = os.getenv("EMBEDDING_BINDING_HOST")
+        
+        # Performance settings (with reasonable defaults)
         self.eval_max_retries = int(os.getenv("EVAL_LLM_MAX_RETRIES", "5"))
         self.eval_timeout = int(os.getenv("EVAL_LLM_TIMEOUT", "180"))
 
-        # Custom headers for authentication (e.g., Nestle internal APIs)
+        # Custom headers for authentication (e.g., internal APIs)
         extra_headers = {
             "client_id": os.getenv("NESGEN_CLIENT_ID", ""),
             "client_secret": os.getenv("NESGEN_CLIENT_SECRET", ""),
         }
 
+        # Create LangChain-compatible LLM and embeddings for RAGAS
         llm_kwargs = {
             "model": self.eval_model,
-            "api_key": eval_llm_api_key,
+            "api_key": os.getenv("LLM_BINDING_API_KEY"),
             "timeout": self.eval_timeout,
             "max_retries": self.eval_max_retries,
         }
+        
         if self.eval_llm_base_url:
             llm_kwargs["base_url"] = self.eval_llm_base_url
         if extra_headers.get("client_id"):  # Only add headers if they exist
             llm_kwargs["default_headers"] = extra_headers
 
-        # Embedding kwargs
+        # Embedding kwargs using same config as main system
         embedding_kwargs = {
             "model": self.eval_embedding_model,
-            "api_key": eval_embedding_api_key,
+            "api_key": os.getenv("EMBEDDING_API_KEY"),
         }
         if self.eval_embedding_base_url:
             embedding_kwargs["base_url"] = self.eval_embedding_base_url
         if extra_headers.get("client_id"):  # Only add headers if they exist
             embedding_kwargs["default_headers"] = extra_headers
 
-        # Initialize LLM and Embeddings for RAGAS
+        # Initialize LLM and Embeddings for RAGAS compatibility
         try:
             base_llm = ChatOpenAI(**llm_kwargs)
             self.eval_embeddings = OpenAIEmbeddings(**embedding_kwargs)
 
-            # Wrap for RAGAS compatibility with bypass_n mode
+            # Wrap for RAGAS compatibility
             try:
                 self.eval_llm = LangchainLLMWrapper(
                     langchain_llm=base_llm,
@@ -215,7 +208,7 @@ class BaseRAGEvaluator(ABC):
             except Exception:
                 self.eval_llm = LangchainLLMWrapper(base_llm)
 
-            logger.info("✓ Evaluation LLM and Embeddings initialized successfully")
+            logger.info("✓ Evaluation models initialized using main LightRAG configuration")
 
         except Exception as e:
             logger.error(f"Failed to initialize evaluation models: {e}")
@@ -223,7 +216,9 @@ class BaseRAGEvaluator(ABC):
 
     def _setup_paths(self, test_dataset_path: Optional[str]):
         """Set up paths for datasets and results."""
-        eval_dir = Path(__file__).parent
+        # Use project root evaluation folder, not lightrag/evaluation
+        eval_dir = Path(__file__).parent.parent.parent / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
 
         # Results directory: workspace-specific
         self.results_dir = eval_dir / "results" / self.workspace
@@ -240,8 +235,13 @@ class BaseRAGEvaluator(ABC):
             if workspace_dataset.exists():
                 self.test_dataset_path = workspace_dataset
             else:
-                # Fall back to default
-                self.test_dataset_path = eval_dir / "sample_dataset.json"
+                # Fall back to sample dataset in project root evaluation
+                sample_path = eval_dir / "sample_dataset.json"
+                if sample_path.exists():
+                    self.test_dataset_path = sample_path
+                else:
+                    # Try original location as fallback
+                    self.test_dataset_path = Path(__file__).parent / "sample_dataset.json"
 
     def _display_configuration(self):
         """Display evaluation configuration."""
@@ -249,8 +249,8 @@ class BaseRAGEvaluator(ABC):
         logger.info(f"🔍 RAGAS Evaluation - Workspace: {self.workspace}")
         logger.info("=" * 70)
         logger.info("Evaluation Models:")
-        logger.info(f"  • LLM Model:            {self.eval_model}")
-        logger.info(f"  • Embedding Model:      {self.eval_embedding_model}")
+        logger.info(f"  • LLM Model:            {self.eval_model} (from main LightRAG config)")
+        logger.info(f"  • Embedding Model:      {self.eval_embedding_model} (from main LightRAG config)")
         logger.info(
             f"  • LLM Endpoint:         {self.eval_llm_base_url or 'OpenAI Official API'}"
         )
@@ -427,7 +427,7 @@ class BaseRAGEvaluator(ABC):
         rag_semaphore = asyncio.Semaphore(max_async * 2)
         eval_semaphore = asyncio.Semaphore(max_async)
 
-        # Create shared HTTP client
+        # Create shared HTTP client bypassing corporate proxy
         timeout = httpx.Timeout(
             TOTAL_TIMEOUT_SECONDS,
             connect=CONNECT_TIMEOUT_SECONDS,
@@ -438,14 +438,14 @@ class BaseRAGEvaluator(ABC):
             max_keepalive_connections=max_async + 1,
         )
 
-        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-            tasks = [
-                self._evaluate_with_semaphores(
-                    idx, test_case, client, rag_semaphore, eval_semaphore
-                )
-                for idx, test_case in enumerate(self.test_cases, 1)
-            ]
-            results = await asyncio.gather(*tasks)
+        async with httpx.AsyncClient(timeout=timeout, limits=limits, trust_env=False) as client:
+                tasks = [
+                    self._evaluate_with_semaphores(
+                        idx, test_case, client, rag_semaphore, eval_semaphore
+                    )
+                    for idx, test_case in enumerate(self.test_cases, 1)
+                ]
+                results = await asyncio.gather(*tasks)
 
         return list(results)
 

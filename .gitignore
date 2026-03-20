@@ -52,6 +52,7 @@ data/
 
 # Evaluation results
 lightrag/evaluation/results/
+evaluation/
 
 # Miscellaneous
 .DS_Store
