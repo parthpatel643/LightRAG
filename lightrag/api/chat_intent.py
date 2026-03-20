@@ -11,8 +11,10 @@ For memory_recall and out_of_scope, a direct response is also synthesised
 so the route handler does not need a second LLM call.
 """
 
+import inspect
 import json
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
@@ -91,17 +93,46 @@ def _format_last_turns(history: List[Dict[str, str]], n_turns: int = 3) -> str:
 
 
 def _parse_llm_json(raw: str) -> dict:
-    """Best-effort JSON parser that strips markdown code fences if present."""
+    """Best-effort JSON parser: tries direct parse, fence stripping, and brace extraction.
+
+    Handles:
+    - Clean JSON strings
+    - Markdown code-fenced JSON (```json ... ```)
+    - Prose-wrapped responses where the JSON object appears anywhere in the text
+    """
     text = raw.strip()
-    # Strip ```json ... ``` or ``` ... ``` fences
-    if text.startswith("```"):
+
+    # 1. Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Strip ``` code fences (fence may appear anywhere, not just at the start)
+    if "```" in text:
         lines = text.splitlines()
-        # Drop first and last fence lines
-        inner = lines[1:] if lines[0].startswith("```") else lines
-        if inner and inner[-1].strip() == "```":
-            inner = inner[:-1]
-        text = "\n".join(inner).strip()
-    return json.loads(text)
+        inner, in_fence = [], False
+        for line in lines:
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            inner.append(line)
+        fenced_text = "\n".join(inner).strip()
+        try:
+            return json.loads(fenced_text)
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Extract the first complete {...} block (handles prose-wrapped responses)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not extract JSON from LLM response: {text!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +157,33 @@ async def classify_intent(
     )
 
     try:
-        raw_response: str = await rag.llm_model_func(
+        raw_response = await rag.llm_model_func(
             prompt,
             system_prompt=None,
             history_messages=[],
+            stream=False,
         )
+
+        # Guard: some LLM bindings return an async generator even when stream=False
+        # is passed (e.g. if the underlying function ignores the kwarg).  Collect it.
+        if inspect.isasyncgen(raw_response):
+            logger.warning(
+                "[IntentClassifier] llm_model_func returned an async generator "
+                "despite stream=False — collecting chunks."
+            )
+            chunks = []
+            async for chunk in raw_response:
+                if isinstance(chunk, str):
+                    chunks.append(chunk)
+                elif hasattr(chunk, "choices"):
+                    for choice in chunk.choices:
+                        delta = getattr(choice, "delta", None)
+                        if delta and getattr(delta, "content", None):
+                            chunks.append(delta.content)
+            raw_response = "".join(chunks)
+
+        logger.debug(f"[IntentClassifier] Raw LLM response: {raw_response!r}")
+
         parsed = _parse_llm_json(raw_response)
 
         intent_str = parsed.get("intent", "rag_query").strip().lower()
@@ -146,6 +199,9 @@ async def classify_intent(
             )
             intent = Intent.RAG_QUERY
 
+        logger.debug(
+            f"[IntentClassifier] '{query[:60]}' → {intent.value}"
+        )
         return IntentResult(intent=intent, direct_response=direct_response)
 
     except Exception as exc:

@@ -77,6 +77,16 @@ Production deployment, infrastructure setup, and operational procedures.
 - ✅ Performance profiling
 - ✅ Monitoring & disaster recovery
 
+### 8. **[Chat Implementation](./CHAT_IMPLEMENTATION.md)**
+Multi-turn conversational system built on top of the RAG pipeline.
+
+- ✅ Session management (in-memory store, TTL eviction)
+- ✅ Intent classification (rag_query, chit_chat, memory_recall, out_of_scope)
+- ✅ Route handler logic for `/query` and `/query/stream`
+- ✅ Frontend integration (session tracking, intent toggle)
+- ✅ REST API reference for session endpoints
+- ✅ Configuration variables & test coverage
+
 ---
 
 ## 🚀 Quick Start
@@ -131,6 +141,7 @@ This documentation has been consolidated from **42+ separate files** into **6 co
 | Understand the system | [Architecture](./ARCHITECTURE.md) | 45 min |
 | Query historical data | [Temporal](./TEMPORAL.md) | 30 min |
 | Test RAG quality | [Evaluation Guide](./EVALUATION_GUIDE.md) | 45 min |
+| Build a chat interface | [Chat Implementation](./CHAT_IMPLEMENTATION.md) | 30 min |
 
 ---
 
@@ -140,6 +151,7 @@ This documentation has been consolidated from **42+ separate files** into **6 co
 ✅ **Version Tracking** - Track all changes to entities across documents
 ✅ **Audit Trails** - Complete history with sequence numbers
 ✅ **Multi-Mode Queries** - Local, Global, Hybrid, Temporal, Mix
+✅ **Conversational Chat** - Multi-turn sessions with intent routing and memory
 ✅ **Production Ready** - Distributed locking, ACID transactions, monitoring
 ✅ **Scalable** - 50+ concurrent users, millions of entities
 ✅ **Flexible** - Multiple LLM providers & storage backends
@@ -157,6 +169,7 @@ Architecture         - System design, optimization, bottlenecks
 Temporal             - Time-travel queries, versioning, API
 Evaluation Guide     - RAG quality testing, RAGAS metrics, datasets
 Deployment Guide     - Production setup, monitoring, troubleshooting
+Chat Implementation  - Sessions, intent classification, conversational API
 ```
 
 ---
