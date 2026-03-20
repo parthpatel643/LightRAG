@@ -667,6 +667,27 @@ export default function QuerySettings() {
                   disabled={querySettings.include_references === false}
                 />
               </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="enable_intent_classification" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.enableIntentClassification', 'Intent Classification')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.enableIntentClassificationTooltip', 'Classify each message (chit-chat, memory recall, out-of-scope) before RAG retrieval. Disable for raw RAG-only mode.')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="enable_intent_classification"
+                  checked={querySettings.enable_intent_classification !== false}
+                  onCheckedChange={(checked) => handleChange('enable_intent_classification', checked)}
+                />
+              </div>
             </>
 
           </div>

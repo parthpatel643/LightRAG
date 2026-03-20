@@ -12,7 +12,7 @@ import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import QueryHistoryDialog from '@/components/retrieval/QueryHistoryDialog'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon, History } from 'lucide-react'
+import { EraserIcon, SendIcon, CopyIcon, History, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -109,7 +109,10 @@ export default function RetrievalTesting() {
   // Get current tab to determine if this tab is active (for performance optimization)
   const currentTab = useSettingsStore.use.currentTab()
   const isRetrievalTabActive = currentTab === 'retrieval'
-  
+
+  // Chat session tracking – persisted across page reloads, reset on workspace change
+  const chatSessionId = useSettingsStore((s) => s.chatSessionId)
+
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
 
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
@@ -154,10 +157,11 @@ export default function RetrievalTesting() {
   const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
   useEffect(() => {
     console.log('[RetrievalTesting] Workspace changed to:', currentWorkspace, 'clearing messages...')
-    // Clear messages and history when workspace changes
+    // Clear messages, history, and active session when workspace changes
     setMessages([])
     setInputValue('')
     useSettingsStore.getState().setRetrievalHistory([])
+    useSettingsStore.getState().setChatSessionId(null)
   }, [currentWorkspace])
 
   // Enhanced event handlers for smart switching
@@ -369,6 +373,8 @@ export default function RetrievalTesting() {
         ? 3
         : configuredHistoryTurns
 
+      const currentSessionId = useSettingsStore.getState().chatSessionId
+
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
@@ -379,16 +385,21 @@ export default function RetrievalTesting() {
             .slice(-effectiveHistoryTurns * 2)
             .map((m) => ({ role: m.role, content: m.content }))
           : [],
-        ...(modeOverride ? { mode: modeOverride } : {})
+        ...(modeOverride ? { mode: modeOverride } : {}),
+        // Session management – server auto-creates a session if null
+        session_id: currentSessionId || undefined,
       }
 
       try {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          })
+          await queryTextStream(
+            queryParams,
+            updateAssistantMessage,
+            (error) => { errorMessage += error },
+            (sid) => { useSettingsStore.getState().setChatSessionId(sid) }
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -421,7 +432,10 @@ export default function RetrievalTesting() {
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
-          
+          if (response.session_id) {
+            useSettingsStore.getState().setChatSessionId(response.session_id)
+          }
+
           // Store references/chunks in the graph store if available
           if (response.references && response.references.length > 0) {
             const selectedNode = useGraphStore.getState().selectedNode
@@ -672,7 +686,14 @@ export default function RetrievalTesting() {
   const clearMessages = useCallback(() => {
     setMessages([])
     useSettingsStore.getState().setRetrievalHistory([])
+    useSettingsStore.getState().setChatSessionId(null)
   }, [setMessages])
+
+  /** Start a new session without clearing the visible chat history. */
+  const newSession = useCallback(() => {
+    useSettingsStore.getState().setChatSessionId(null)
+    toast.success(t('retrievePanel.retrieval.newSessionStarted', 'New session started'))
+  }, [t])
 
   // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(async (message: MessageWithError) => {
@@ -823,6 +844,18 @@ export default function RetrievalTesting() {
             tooltip="View query history"
           >
             <History />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={newSession}
+            disabled={isLoading}
+            size="sm"
+            tooltip={chatSessionId
+              ? t('retrievePanel.retrieval.newSessionTooltip', `Active session: ${chatSessionId.slice(0, 8)}… — click to reset`)
+              : t('retrievePanel.retrieval.noSessionTooltip', 'No active session')}
+          >
+            <RefreshCw className={chatSessionId ? 'text-green-500' : 'text-muted-foreground'} />
           </Button>
           <div className="flex-1 relative">
             <label htmlFor="query-input" className="sr-only">

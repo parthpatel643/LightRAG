@@ -21,7 +21,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.api.utils_api import get_combined_auth_dependency
@@ -151,14 +151,13 @@ class ScanResponse(BaseModel):
     )
     track_id: str = Field(description="Tracking ID for monitoring scanning progress")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "scanning_started",
-                "message": "Scanning process has been initiated in the background",
-                "track_id": "scan_20250729_170612_abc123",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status": "scanning_started",
+            "message": "Scanning process has been initiated in the background",
+            "track_id": "scan_20250729_170612_abc123",
         }
+    })
 
 
 class ReprocessResponse(BaseModel):
@@ -179,14 +178,13 @@ class ReprocessResponse(BaseModel):
         description="Always empty string. Reprocessed documents retain their original track_id from initial upload.",
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "reprocessing_started",
-                "message": "Reprocessing of failed documents has been initiated in background",
-                "track_id": "",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status": "reprocessing_started",
+            "message": "Reprocessing of failed documents has been initiated in background",
+            "track_id": "",
         }
+    })
 
 
 class CancelPipelineResponse(BaseModel):
@@ -202,13 +200,12 @@ class CancelPipelineResponse(BaseModel):
     )
     message: str = Field(description="Human-readable message describing the operation")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "cancellation_requested",
-                "message": "Pipeline cancellation has been requested. Documents will be marked as FAILED.",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status": "cancellation_requested",
+            "message": "Pipeline cancellation has been requested. Documents will be marked as FAILED.",
         }
+    })
 
 
 class InsertTextRequest(BaseModel):
@@ -235,13 +232,12 @@ class InsertTextRequest(BaseModel):
     def strip_source_after(cls, file_source: str) -> str:
         return file_source.strip()
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "text": "This is a sample text to be inserted into the RAG system.",
-                "file_source": "Source of the text (optional)",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "text": "This is a sample text to be inserted into the RAG system.",
+            "file_source": "Source of the text (optional)",
         }
+    })
 
 
 class InsertTextsRequest(BaseModel):
@@ -270,18 +266,17 @@ class InsertTextsRequest(BaseModel):
     def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
         return [file_source.strip() for file_source in file_sources]
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "texts": [
-                    "This is the first text to be inserted.",
-                    "This is the second text to be inserted.",
-                ],
-                "file_sources": [
-                    "First file source (optional)",
-                ],
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "texts": [
+                "This is the first text to be inserted.",
+                "This is the second text to be inserted.",
+            ],
+            "file_sources": [
+                "First file source (optional)",
+            ],
         }
+    })
 
 
 class InsertResponse(BaseModel):
@@ -299,14 +294,13 @@ class InsertResponse(BaseModel):
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "success",
-                "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
-                "track_id": "upload_20250729_170612_abc123",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status": "success",
+            "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
+            "track_id": "upload_20250729_170612_abc123",
         }
+    })
 
 
 class ClearDocumentsResponse(BaseModel):
@@ -322,13 +316,12 @@ class ClearDocumentsResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "success",
-                "message": "All documents cleared successfully. Deleted 15 files.",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status": "success",
+            "message": "All documents cleared successfully. Deleted 15 files.",
         }
+    })
 
 
 class ClearCacheRequest(BaseModel):
@@ -338,8 +331,7 @@ class ClearCacheRequest(BaseModel):
     All cache will be cleared regardless of the request content.
     """
 
-    class Config:
-        json_schema_extra = {"example": {}}
+    model_config = ConfigDict(json_schema_extra={"example": {}})
 
 
 class ClearCacheResponse(BaseModel):
@@ -355,13 +347,12 @@ class ClearCacheResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "success",
-                "message": "Successfully cleared cache for modes: ['default', 'naive']",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status": "success",
+            "message": "Successfully cleared cache for modes: ['default', 'naive']",
         }
+    })
 
 
 """Response model for document status
@@ -454,22 +445,21 @@ class DocStatusResponse(BaseModel):
     )
     file_path: str = Field(description="Path to the document file")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "doc_123456",
-                "content_summary": "Research paper on machine learning",
-                "content_length": 15240,
-                "status": "processed",
-                "created_at": "2025-03-31T12:34:56",
-                "updated_at": "2025-03-31T12:35:30",
-                "track_id": "upload_20250729_170612_abc123",
-                "chunks_count": 12,
-                "error": None,
-                "metadata": {"author": "John Doe", "year": 2025},
-                "file_path": "research_paper.pdf",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "id": "doc_123456",
+            "content_summary": "Research paper on machine learning",
+            "content_length": 15240,
+            "status": "processed",
+            "created_at": "2025-03-31T12:34:56",
+            "updated_at": "2025-03-31T12:35:30",
+            "track_id": "upload_20250729_170612_abc123",
+            "chunks_count": 12,
+            "error": None,
+            "metadata": {"author": "John Doe", "year": 2025},
+            "file_path": "research_paper.pdf",
         }
+    })
 
 
 class DocsStatusesResponse(BaseModel):
@@ -484,58 +474,57 @@ class DocsStatusesResponse(BaseModel):
         description="Dictionary mapping document status to lists of document status responses",
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "statuses": {
-                    "PENDING": [
-                        {
-                            "id": "doc_123",
-                            "content_summary": "Pending document",
-                            "content_length": 5000,
-                            "status": "pending",
-                            "created_at": "2025-03-31T10:00:00",
-                            "updated_at": "2025-03-31T10:00:00",
-                            "track_id": "upload_20250331_100000_abc123",
-                            "chunks_count": None,
-                            "error": None,
-                            "metadata": None,
-                            "file_path": "pending_doc.pdf",
-                        }
-                    ],
-                    "PREPROCESSED": [
-                        {
-                            "id": "doc_789",
-                            "content_summary": "Document pending final indexing",
-                            "content_length": 7200,
-                            "status": "preprocessed",
-                            "created_at": "2025-03-31T09:30:00",
-                            "updated_at": "2025-03-31T09:35:00",
-                            "track_id": "upload_20250331_093000_xyz789",
-                            "chunks_count": 10,
-                            "error": None,
-                            "metadata": None,
-                            "file_path": "preprocessed_doc.pdf",
-                        }
-                    ],
-                    "PROCESSED": [
-                        {
-                            "id": "doc_456",
-                            "content_summary": "Processed document",
-                            "content_length": 8000,
-                            "status": "processed",
-                            "created_at": "2025-03-31T09:00:00",
-                            "updated_at": "2025-03-31T09:05:00",
-                            "track_id": "insert_20250331_090000_def456",
-                            "chunks_count": 8,
-                            "error": None,
-                            "metadata": {"author": "John Doe"},
-                            "file_path": "processed_doc.pdf",
-                        }
-                    ],
-                }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "statuses": {
+                "PENDING": [
+                    {
+                        "id": "doc_123",
+                        "content_summary": "Pending document",
+                        "content_length": 5000,
+                        "status": "pending",
+                        "created_at": "2025-03-31T10:00:00",
+                        "updated_at": "2025-03-31T10:00:00",
+                        "track_id": "upload_20250331_100000_abc123",
+                        "chunks_count": None,
+                        "error": None,
+                        "metadata": None,
+                        "file_path": "pending_doc.pdf",
+                    }
+                ],
+                "PREPROCESSED": [
+                    {
+                        "id": "doc_789",
+                        "content_summary": "Document pending final indexing",
+                        "content_length": 7200,
+                        "status": "preprocessed",
+                        "created_at": "2025-03-31T09:30:00",
+                        "updated_at": "2025-03-31T09:35:00",
+                        "track_id": "upload_20250331_093000_xyz789",
+                        "chunks_count": 10,
+                        "error": None,
+                        "metadata": None,
+                        "file_path": "preprocessed_doc.pdf",
+                    }
+                ],
+                "PROCESSED": [
+                    {
+                        "id": "doc_456",
+                        "content_summary": "Processed document",
+                        "content_length": 8000,
+                        "status": "processed",
+                        "created_at": "2025-03-31T09:00:00",
+                        "updated_at": "2025-03-31T09:05:00",
+                        "track_id": "insert_20250331_090000_def456",
+                        "chunks_count": 8,
+                        "error": None,
+                        "metadata": {"author": "John Doe"},
+                        "file_path": "processed_doc.pdf",
+                    }
+                ],
             }
         }
+    })
 
 
 class TrackStatusResponse(BaseModel):
@@ -555,29 +544,28 @@ class TrackStatusResponse(BaseModel):
     total_count: int = Field(description="Total number of documents for this track_id")
     status_summary: Dict[str, int] = Field(description="Count of documents by status")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "track_id": "upload_20250729_170612_abc123",
-                "documents": [
-                    {
-                        "id": "doc_123456",
-                        "content_summary": "Research paper on machine learning",
-                        "content_length": 15240,
-                        "status": "PROCESSED",
-                        "created_at": "2025-03-31T12:34:56",
-                        "updated_at": "2025-03-31T12:35:30",
-                        "track_id": "upload_20250729_170612_abc123",
-                        "chunks_count": 12,
-                        "error": None,
-                        "metadata": {"author": "John Doe", "year": 2025},
-                        "file_path": "research_paper.pdf",
-                    }
-                ],
-                "total_count": 1,
-                "status_summary": {"PROCESSED": 1},
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "track_id": "upload_20250729_170612_abc123",
+            "documents": [
+                {
+                    "id": "doc_123456",
+                    "content_summary": "Research paper on machine learning",
+                    "content_length": 15240,
+                    "status": "PROCESSED",
+                    "created_at": "2025-03-31T12:34:56",
+                    "updated_at": "2025-03-31T12:35:30",
+                    "track_id": "upload_20250729_170612_abc123",
+                    "chunks_count": 12,
+                    "error": None,
+                    "metadata": {"author": "John Doe", "year": 2025},
+                    "file_path": "research_paper.pdf",
+                }
+            ],
+            "total_count": 1,
+            "status_summary": {"PROCESSED": 1},
         }
+    })
 
 
 class DocumentsRequest(BaseModel):
@@ -605,16 +593,15 @@ class DocumentsRequest(BaseModel):
         default="desc", description="Sort direction"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status_filter": "PROCESSED",
-                "page": 1,
-                "page_size": 50,
-                "sort_field": "updated_at",
-                "sort_direction": "desc",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status_filter": "PROCESSED",
+            "page": 1,
+            "page_size": 50,
+            "sort_field": "updated_at",
+            "sort_direction": "desc",
         }
+    })
 
 
 class PaginationInfo(BaseModel):
@@ -636,17 +623,16 @@ class PaginationInfo(BaseModel):
     has_next: bool = Field(description="Whether there is a next page")
     has_prev: bool = Field(description="Whether there is a previous page")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "page": 1,
-                "page_size": 50,
-                "total_count": 150,
-                "total_pages": 3,
-                "has_next": True,
-                "has_prev": False,
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "page": 1,
+            "page_size": 50,
+            "total_count": 150,
+            "total_pages": 3,
+            "has_next": True,
+            "has_prev": False,
         }
+    })
 
 
 class PaginatedDocsResponse(BaseModel):
@@ -666,41 +652,40 @@ class PaginatedDocsResponse(BaseModel):
         description="Count of documents by status for all documents"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "documents": [
-                    {
-                        "id": "doc_123456",
-                        "content_summary": "Research paper on machine learning",
-                        "content_length": 15240,
-                        "status": "PROCESSED",
-                        "created_at": "2025-03-31T12:34:56",
-                        "updated_at": "2025-03-31T12:35:30",
-                        "track_id": "upload_20250729_170612_abc123",
-                        "chunks_count": 12,
-                        "error_msg": None,
-                        "metadata": {"author": "John Doe", "year": 2025},
-                        "file_path": "research_paper.pdf",
-                    }
-                ],
-                "pagination": {
-                    "page": 1,
-                    "page_size": 50,
-                    "total_count": 150,
-                    "total_pages": 3,
-                    "has_next": True,
-                    "has_prev": False,
-                },
-                "status_counts": {
-                    "PENDING": 10,
-                    "PROCESSING": 5,
-                    "PREPROCESSED": 5,
-                    "PROCESSED": 130,
-                    "FAILED": 5,
-                },
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "documents": [
+                {
+                    "id": "doc_123456",
+                    "content_summary": "Research paper on machine learning",
+                    "content_length": 15240,
+                    "status": "PROCESSED",
+                    "created_at": "2025-03-31T12:34:56",
+                    "updated_at": "2025-03-31T12:35:30",
+                    "track_id": "upload_20250729_170612_abc123",
+                    "chunks_count": 12,
+                    "error_msg": None,
+                    "metadata": {"author": "John Doe", "year": 2025},
+                    "file_path": "research_paper.pdf",
+                }
+            ],
+            "pagination": {
+                "page": 1,
+                "page_size": 50,
+                "total_count": 150,
+                "total_pages": 3,
+                "has_next": True,
+                "has_prev": False,
+            },
+            "status_counts": {
+                "PENDING": 10,
+                "PROCESSING": 5,
+                "PREPROCESSED": 5,
+                "PROCESSED": 130,
+                "FAILED": 5,
+            },
         }
+    })
 
 
 class StatusCountsResponse(BaseModel):
@@ -712,18 +697,17 @@ class StatusCountsResponse(BaseModel):
 
     status_counts: Dict[str, int] = Field(description="Count of documents by status")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status_counts": {
-                    "PENDING": 10,
-                    "PROCESSING": 5,
-                    "PREPROCESSED": 5,
-                    "PROCESSED": 130,
-                    "FAILED": 5,
-                }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "status_counts": {
+                "PENDING": 10,
+                "PROCESSING": 5,
+                "PREPROCESSED": 5,
+                "PROCESSED": 130,
+                "FAILED": 5,
             }
         }
+    })
 
 
 class PipelineStatusResponse(BaseModel):
@@ -761,8 +745,7 @@ class PipelineStatusResponse(BaseModel):
         """Process datetime and return as ISO format string with timezone"""
         return format_datetime(value)
 
-    class Config:
-        extra = "allow"  # Allow additional fields from the pipeline status
+    model_config = ConfigDict(extra="allow")  # Allow additional fields from the pipeline status
 
 
 class DocumentManager:

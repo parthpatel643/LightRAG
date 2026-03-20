@@ -36,6 +36,7 @@ from lightrag.api.routers.document_routes import (
 from lightrag.api.routers.document_sequencing_routes import create_sequencing_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.chat_session import session_store
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.workspace_routes import router as workspace_router
 from lightrag.api.utils_api import (
@@ -1318,7 +1319,39 @@ def create_app(args):
             api_key,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, store=session_store))
+
+    # -------------------------------------------------------------------------
+    # Session management endpoints
+    # -------------------------------------------------------------------------
+    @app.get(
+        "/sessions/{session_id}",
+        dependencies=[Depends(combined_auth)],
+        summary="Get session history",
+        description="Returns the conversation history for the given session_id.",
+        tags=["sessions"],
+    )
+    async def get_session(session_id: str):
+        """Retrieve conversation history for a session."""
+        history = session_store.get_history(session_id)
+        if not history and session_id not in session_store.list_sessions():
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        return {"session_id": session_id, "history": history}
+
+    @app.delete(
+        "/sessions/{session_id}",
+        dependencies=[Depends(combined_auth)],
+        summary="Delete a session",
+        description="Deletes the session and all its history. Subsequent requests with the same session_id will create a new session.",
+        tags=["sessions"],
+    )
+    async def delete_session(session_id: str):
+        """Delete a session and its conversation history."""
+        deleted = session_store.delete(session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+        return {"session_id": session_id, "status": "deleted"}
+
     app.include_router(create_graph_routes(rag, api_key))
 
     # Register RAG instance and reload function with workspace routes

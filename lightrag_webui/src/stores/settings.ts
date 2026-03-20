@@ -62,6 +62,10 @@ interface SettingsState {
   querySettings: Omit<QueryRequest, 'query'>
   updateQuerySettings: (settings: Partial<QueryRequest>) => void
 
+  /** Active chat session ID. Null means no session started yet (auto-created on first query). */
+  chatSessionId: string | null
+  setChatSessionId: (id: string | null) => void
+
   // Auth settings
   apiKey: string | null
   setApiKey: (key: string | null) => void
@@ -141,8 +145,11 @@ const useSettingsStoreBase = create<SettingsState>()(
         hl_keywords: [],
         ll_keywords: [],
         include_references: true,
-        include_chunk_content: false
+        include_chunk_content: false,
+        enable_intent_classification: true,
       },
+
+      chatSessionId: null,
 
       setTheme: (theme: Theme) => set({ theme }),
 
@@ -198,6 +205,8 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
 
+      setChatSessionId: (id: string | null) => set({ chatSessionId: id }),
+
       updateQuerySettings: (settings: Partial<QueryRequest>) => {
         // Allow history_turns to be updated - it will be used for conversation context
         set((state) => ({
@@ -246,7 +255,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 22,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -364,6 +373,14 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 21) {
           // Add showApiTab field for older versions (default to false for general users)
           state.showApiTab = false
+        }
+        if (version < 22) {
+          // Add chat session tracking and intent classification toggle
+          state.chatSessionId = null
+          if (state.querySettings) {
+            state.querySettings.enable_intent_classification =
+              state.querySettings.enable_intent_classification !== false
+          }
         }
         return state
       }

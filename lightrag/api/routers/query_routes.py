@@ -14,6 +14,10 @@ from lightrag.utils import logger
 
 router = APIRouter(tags=["query"])
 
+# Session store and intent classifier are imported lazily inside
+# create_query_routes() so that the module can still be imported even if
+# the chat helpers have not been created yet.
+
 
 class QueryRequest(BaseModel):
     query: str = Field(
@@ -119,6 +123,19 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
     )
 
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session identifier. If omitted, a new session is created automatically.",
+    )
+
+    enable_intent_classification: Optional[bool] = Field(
+        default=None,
+        description=(
+            "When True, run LLM-based intent classification before RAG retrieval. "
+            "Defaults to the CHAT_INTENT_ENABLED environment variable (true)."
+        ),
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
@@ -143,7 +160,8 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True,
+            exclude={"query", "include_chunk_content", "session_id", "enable_intent_classification"},
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -171,6 +189,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session identifier (echo or newly created). Use this in subsequent requests.",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -187,6 +209,10 @@ class QueryDataResponse(BaseModel):
 class StreamChunkResponse(BaseModel):
     """Response model for streaming chunks in NDJSON format"""
 
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session identifier emitted in the first NDJSON chunk",
+    )
     references: Optional[List[Dict[str, str]]] = Field(
         default=None,
         description="Reference list (only in first chunk when include_references=True)",
@@ -199,10 +225,30 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60, store=None):
+    """Create query routes.
+
+    Args:
+        rag: LightRAG instance.
+        api_key: Optional API key for authentication.
+        top_k: Default top-k retrieval count.
+        store: Optional SessionStore instance.  When None the module-level
+               singleton from chat_session is used.
+    """
+    from lightrag.api.chat_intent import Intent, IntentResult, classify_intent
+    from lightrag.api.chat_intent import INTENT_ENABLED_DEFAULT
+    from lightrag.api.chat_session import session_store as _default_store
+
+    _store = store if store is not None else _default_store
+
     combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.post(
+    # Create a fresh router each call so that different _store closures don't
+    # collide on the module-level router when create_query_routes is invoked
+    # more than once (e.g. in tests).
+    _router = APIRouter(tags=["query"])
+
+    @_router.post(
         "/query",
         response_model=QueryResponse,
         dependencies=[Depends(combined_auth)],
@@ -411,58 +457,125 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
-            param = request.to_query_params(
-                False
-            )  # Ensure stream=False for non-streaming endpoint
-            # Force stream=False for /query endpoint regardless of include_references setting
-            param.stream = False
+            # ----------------------------------------------------------------
+            # 1. Session management
+            # ----------------------------------------------------------------
+            session_id, stored_history = _store.get_or_create(request.session_id)
+            merged_history = stored_history + (request.conversation_history or [])
 
-            # Unified approach: always use aquery_llm for both cases
-            result = await rag.aquery_llm(request.query, param=param)
+            # ----------------------------------------------------------------
+            # 2. Intent classification
+            # ----------------------------------------------------------------
+            use_intent = (
+                request.enable_intent_classification
+                if request.enable_intent_classification is not None
+                else INTENT_ENABLED_DEFAULT
+            )
 
-            # Extract LLM response and references from unified result
-            llm_response = result.get("llm_response", {})
-            data = result.get("data", {})
-            references = data.get("references", [])
-
-            # Get the non-streaming response content
-            response_content = llm_response.get("content", "")
-            if not response_content:
-                response_content = "No relevant context found for the query."
-
-            # Enrich references with chunk content if requested
-            if request.include_references and request.include_chunk_content:
-                chunks = data.get("chunks", [])
-                # Create a mapping from reference_id to chunk content
-                ref_id_to_content = {}
-                for chunk in chunks:
-                    ref_id = chunk.get("reference_id", "")
-                    content = chunk.get("content", "")
-                    if ref_id and content:
-                        # Collect chunk content; join later to avoid quadratic string concatenation
-                        ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                # Add content to references
-                enriched_references = []
-                for ref in references:
-                    ref_copy = ref.copy()
-                    ref_id = ref.get("reference_id", "")
-                    if ref_id in ref_id_to_content:
-                        # Keep content as a list of chunks (one file may have multiple chunks)
-                        ref_copy["content"] = ref_id_to_content[ref_id]
-                    enriched_references.append(ref_copy)
-                references = enriched_references
-
-            # Return response with or without references based on request
-            if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+            if use_intent:
+                intent_result = await classify_intent(
+                    request.query, merged_history, rag
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                intent_result = IntentResult(intent=Intent.RAG_QUERY)
+
+            # ----------------------------------------------------------------
+            # 3. Route by intent
+            # ----------------------------------------------------------------
+            intent = intent_result.intent
+            response_content: str = ""
+            references = []
+
+            if intent == Intent.OUT_OF_SCOPE:
+                # Return polite refusal immediately – no RAG call
+                response_content = (
+                    intent_result.direct_response
+                    or "I'm sorry, that topic is outside the scope of what I can help with."
+                )
+                # Do not append out-of-scope exchanges to session by design
+                return QueryResponse(
+                    response=response_content,
+                    references=None,
+                    session_id=session_id,
+                )
+
+            elif intent == Intent.MEMORY_RECALL:
+                # Answer synthesised inside the classifier – no RAG call
+                response_content = (
+                    intent_result.direct_response
+                    or "I don't have any conversation history to recall yet."
+                )
+                _store.append(session_id, request.query, response_content)
+                return QueryResponse(
+                    response=response_content,
+                    references=None,
+                    session_id=session_id,
+                )
+
+            else:
+                # CHIT_CHAT → bypass mode (direct LLM, with history)
+                # RAG_QUERY → normal retrieval (with history as context)
+                param = request.to_query_params(False)
+                param.stream = False
+                param.conversation_history = merged_history
+
+                if intent == Intent.CHIT_CHAT:
+                    param.mode = "bypass"
+
+                result = await rag.aquery_llm(request.query, param=param)
+
+                llm_response = result.get("llm_response", {})
+                data = result.get("data", {})
+                references = data.get("references", [])
+
+                response_content = llm_response.get("content", "")
+                if not response_content:
+                    response_content = "No relevant context found for the query."
+
+                # Enrich references with chunk content if requested
+                if request.include_references and request.include_chunk_content:
+                    chunks = data.get("chunks", [])
+                    ref_id_to_content: Dict[str, List[str]] = {}
+                    for chunk in chunks:
+                        ref_id = chunk.get("reference_id", "")
+                        content = chunk.get("content", "")
+                        if ref_id and content:
+                            ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                    enriched_references = []
+                    for ref in references:
+                        ref_copy = ref.copy()
+                        ref_id = ref.get("reference_id", "")
+                        if ref_id in ref_id_to_content:
+                            ref_copy["content"] = ref_id_to_content[ref_id]
+                        enriched_references.append(ref_copy)
+                    references = enriched_references
+
+            # ----------------------------------------------------------------
+            # 4. Persist to session
+            # ----------------------------------------------------------------
+            _store.append(session_id, request.query, response_content)
+
+            # ----------------------------------------------------------------
+            # 5. Return response
+            # ----------------------------------------------------------------
+            if request.include_references:
+                return QueryResponse(
+                    response=response_content,
+                    references=references,
+                    session_id=session_id,
+                )
+            else:
+                return QueryResponse(
+                    response=response_content,
+                    references=None,
+                    session_id=session_id,
+                )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.post(
+    @_router.post(
         "/query/stream",
         dependencies=[Depends(combined_auth)],
         responses={
@@ -669,13 +782,94 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
         """
         try:
-            # Use the stream parameter from the request, defaulting to True if not specified
-            stream_mode = request.stream if request.stream is not None else True
-            param = request.to_query_params(stream_mode)
-
             from fastapi.responses import StreamingResponse
 
-            # Unified approach: always use aquery_llm for all cases
+            # ----------------------------------------------------------------
+            # 1. Session management
+            # ----------------------------------------------------------------
+            session_id, stored_history = _store.get_or_create(request.session_id)
+            merged_history = stored_history + (request.conversation_history or [])
+
+            # ----------------------------------------------------------------
+            # 2. Intent classification
+            # ----------------------------------------------------------------
+            use_intent = (
+                request.enable_intent_classification
+                if request.enable_intent_classification is not None
+                else INTENT_ENABLED_DEFAULT
+            )
+
+            if use_intent:
+                intent_result = await classify_intent(
+                    request.query, merged_history, rag
+                )
+            else:
+                intent_result = IntentResult(intent=Intent.RAG_QUERY)
+
+            intent = intent_result.intent
+
+            # ----------------------------------------------------------------
+            # 3. Short-circuit intents that don't need streaming
+            # ----------------------------------------------------------------
+            if intent == Intent.OUT_OF_SCOPE:
+                direct = (
+                    intent_result.direct_response
+                    or "I'm sorry, that topic is outside the scope of what I can help with."
+                )
+
+                async def _out_of_scope_gen():
+                    payload: Dict[str, Any] = {
+                        "session_id": session_id,
+                        "response": direct,
+                    }
+                    yield f"{json.dumps(payload)}\n"
+
+                return StreamingResponse(
+                    _out_of_scope_gen(),
+                    media_type="application/x-ndjson",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Content-Type": "application/x-ndjson",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
+            if intent == Intent.MEMORY_RECALL:
+                direct = (
+                    intent_result.direct_response
+                    or "I don't have any conversation history to recall yet."
+                )
+                _store.append(session_id, request.query, direct)
+
+                async def _memory_recall_gen():
+                    payload: Dict[str, Any] = {
+                        "session_id": session_id,
+                        "response": direct,
+                    }
+                    yield f"{json.dumps(payload)}\n"
+
+                return StreamingResponse(
+                    _memory_recall_gen(),
+                    media_type="application/x-ndjson",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Content-Type": "application/x-ndjson",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
+            # ----------------------------------------------------------------
+            # 4. RAG_QUERY or CHIT_CHAT – call aquery_llm
+            # ----------------------------------------------------------------
+            stream_mode = request.stream if request.stream is not None else True
+            param = request.to_query_params(stream_mode)
+            param.conversation_history = merged_history
+
+            if intent == Intent.CHIT_CHAT:
+                param.mode = "bypass"
+
             result = await rag.aquery_llm(request.query, param=param)
 
             async def stream_generator():
@@ -687,52 +881,61 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 if request.include_references and request.include_chunk_content:
                     data = result.get("data", {})
                     chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
+                    ref_id_to_content: Dict[str, List[str]] = {}
                     for chunk in chunks:
                         ref_id = chunk.get("reference_id", "")
                         content = chunk.get("content", "")
                         if ref_id and content:
-                            # Collect chunk content
                             ref_id_to_content.setdefault(ref_id, []).append(content)
 
-                    # Add content to references
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
                         ref_id = ref.get("reference_id", "")
                         if ref_id in ref_id_to_content:
-                            # Keep content as a list of chunks (one file may have multiple chunks)
                             ref_copy["content"] = ref_id_to_content[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
 
                 if llm_response.get("is_streaming"):
-                    # Streaming mode: send references first, then stream response chunks
+                    # First chunk: session_id (and optionally references)
+                    first_chunk: Dict[str, Any] = {"session_id": session_id}
                     if request.include_references:
-                        yield f"{json.dumps({'references': references})}\n"
+                        first_chunk["references"] = references
+                    yield f"{json.dumps(first_chunk)}\n"
 
                     response_stream = llm_response.get("response_iterator")
+                    accumulated: List[str] = []
                     if response_stream:
                         try:
                             async for chunk in response_stream:
-                                if chunk:  # Only send non-empty content
+                                if chunk:
+                                    accumulated.append(chunk)
                                     yield f"{json.dumps({'response': chunk})}\n"
                         except Exception as e:
                             logger.error(f"Streaming error: {str(e)}")
                             yield f"{json.dumps({'error': str(e)})}\n"
+
+                    # Persist full response to session after stream ends
+                    full_response = "".join(accumulated) or "No relevant context found for the query."
+                    _store.append(session_id, request.query, full_response)
+
                 else:
                     # Non-streaming mode: send complete response in one message
                     response_content = llm_response.get("content", "")
                     if not response_content:
                         response_content = "No relevant context found for the query."
 
-                    # Create complete response object
-                    complete_response = {"response": response_content}
+                    complete_response: Dict[str, Any] = {
+                        "session_id": session_id,
+                        "response": response_content,
+                    }
                     if request.include_references:
                         complete_response["references"] = references
 
                     yield f"{json.dumps(complete_response)}\n"
+
+                    _store.append(session_id, request.query, response_content)
 
             return StreamingResponse(
                 stream_generator(),
@@ -748,7 +951,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.post(
+    @_router.post(
         "/query/data",
         response_model=QueryDataResponse,
         dependencies=[Depends(combined_auth)],
@@ -1165,4 +1368,4 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
-    return router
+    return _router

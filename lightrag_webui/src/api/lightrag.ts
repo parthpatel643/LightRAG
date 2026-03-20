@@ -149,6 +149,17 @@ export type QueryRequest = {
   include_references?: boolean
   /** If True, includes actual chunk text content in references. Only applies when include_references=True. */
   include_chunk_content?: boolean
+  /**
+   * Session identifier for multi-turn chat.
+   * If omitted, a new session is created automatically and the returned session_id
+   * should be passed in subsequent requests to maintain conversation context.
+   */
+  session_id?: string | null
+  /**
+   * When true, run LLM-based intent classification before RAG retrieval.
+   * Intent classification enables chit-chat, memory recall, and out-of-scope routing.
+   */
+  enable_intent_classification?: boolean
 }
 
 export type QueryResponse = {
@@ -158,6 +169,8 @@ export type QueryResponse = {
     file_path: string
     content?: string[]
   }>
+  /** Session identifier returned by the server. Pass this in subsequent requests. */
+  session_id?: string
 }
 
 export type EntityUpdateResponse = {
@@ -539,7 +552,8 @@ export const queryText = async (request: QueryRequest): Promise<QueryResponse> =
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  onSessionId?: (sessionId: string) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -610,6 +624,7 @@ export const queryTextStream = async (
                 if (line.trim()) {
                   try {
                     const parsed = JSON.parse(line);
+                    if (parsed.session_id && onSessionId) onSessionId(parsed.session_id);
                     if (parsed.response) {
                       onChunk(parsed.response);
                     } else if (parsed.error) {
@@ -627,6 +642,7 @@ export const queryTextStream = async (
             if (buffer.trim()) {
               try {
                 const parsed = JSON.parse(buffer);
+                if (parsed.session_id && onSessionId) onSessionId(parsed.session_id);
                 if (parsed.response) {
                   onChunk(parsed.response);
                 } else if (parsed.error) {
@@ -693,6 +709,7 @@ export const queryTextStream = async (
         if (line.trim()) {
           try {
             const parsed = JSON.parse(line);
+            if (parsed.session_id && onSessionId) onSessionId(parsed.session_id);
             if (parsed.response) {
               onChunk(parsed.response);
             } else if (parsed.error && onError) {
@@ -710,6 +727,7 @@ export const queryTextStream = async (
     if (buffer.trim()) {
       try {
         const parsed = JSON.parse(buffer);
+        if (parsed.session_id && onSessionId) onSessionId(parsed.session_id);
         if (parsed.response) {
           onChunk(parsed.response);
         } else if (parsed.error && onError) {
@@ -1357,5 +1375,38 @@ export const replaceSequencedDocument = async (
         : undefined
     }
   )
+  return response.data
+}
+
+// ============================================================================
+// Session Management API
+// ============================================================================
+
+export type SessionHistoryResponse = {
+  session_id: string
+  history: Array<{ role: string; content: string }>
+}
+
+export type SessionDeleteResponse = {
+  session_id: string
+  status: 'deleted'
+}
+
+/**
+ * Retrieve conversation history for a session.
+ * @param sessionId The session ID to fetch
+ */
+export const getSession = async (sessionId: string): Promise<SessionHistoryResponse> => {
+  const response = await axiosInstance.get(`/sessions/${encodeURIComponent(sessionId)}`)
+  return response.data
+}
+
+/**
+ * Delete a session and all its conversation history.
+ * The next request with this session_id will create a fresh session.
+ * @param sessionId The session ID to delete
+ */
+export const deleteSession = async (sessionId: string): Promise<SessionDeleteResponse> => {
+  const response = await axiosInstance.delete(`/sessions/${encodeURIComponent(sessionId)}`)
   return response.data
 }
