@@ -1069,7 +1069,11 @@ def create_app(args):
                     args.rerank_binding_host = default_base_url
 
         async def server_rerank_func(
-            query: str, documents: list, top_n: int = None, extra_body: dict = None
+            query: str,
+            documents: list,
+            top_n: int = None,
+            extra_body: dict = None,
+            verify_ssl: bool = False,
         ):
             """Server rerank function with configuration from environment variables"""
             # Prepare kwargs for rerank function
@@ -1091,6 +1095,10 @@ def create_app(args):
                 kwargs["max_tokens_per_doc"] = int(
                     os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
                 )
+
+            # Pass verify_ssl if the selected rerank function supports it
+            if "verify_ssl" in inspect.signature(selected_rerank_func).parameters:
+                kwargs["verify_ssl"] = verify_ssl
 
             return await selected_rerank_func(**kwargs, extra_body=extra_body)
 
