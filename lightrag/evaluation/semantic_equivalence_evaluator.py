@@ -703,6 +703,63 @@ class SemanticEquivalenceEvaluator:
         logger.info(f"   CSV:  {csv_path}")
         logger.info("=" * 70)
 
+    async def _switch_workspace(self, client: httpx.AsyncClient) -> None:
+        """
+        Switch the LightRAG server to the configured workspace via the API.
+
+        Fetches the workspace list to obtain the full WorkspaceConfig for the
+        requested workspace, then calls POST /workspace/switch.
+
+        Raises:
+            Exception: if the workspace is not found or the switch call fails.
+        """
+        logger.info(f"Switching server workspace to: {self.workspace}")
+
+        # 1. List available workspaces
+        try:
+            list_response = await client.get(
+                f"{self.rag_api_url}/workspace/list",
+                timeout=CONNECT_TIMEOUT_SECONDS,
+            )
+            list_response.raise_for_status()
+            workspaces: List[Dict[str, Any]] = list_response.json()
+        except httpx.ConnectError as e:
+            raise Exception(
+                f"Cannot connect to LightRAG API at {self.rag_api_url}: {str(e)}"
+            )
+        except httpx.HTTPStatusError as e:
+            raise Exception(
+                f"Failed to list workspaces ({e.response.status_code}): {e.response.text}"
+            )
+
+        # 2. Find the matching workspace config
+        workspace_config = next(
+            (ws for ws in workspaces if ws.get("name") == self.workspace), None
+        )
+        if workspace_config is None:
+            available = [ws.get("name") for ws in workspaces]
+            raise Exception(
+                f"Workspace '{self.workspace}' not found on server. "
+                f"Available workspaces: {available}"
+            )
+
+        # 3. Switch to the target workspace
+        try:
+            switch_response = await client.post(
+                f"{self.rag_api_url}/workspace/switch",
+                json=workspace_config,
+                timeout=TOTAL_TIMEOUT_SECONDS,
+            )
+            switch_response.raise_for_status()
+            result = switch_response.json()
+            logger.info(
+                f"Workspace switch successful: {result.get('message', 'OK')}"
+            )
+        except httpx.HTTPStatusError as e:
+            raise Exception(
+                f"Workspace switch failed ({e.response.status_code}): {e.response.text}"
+            )
+
     async def run(self) -> Dict[str, Any]:
         """
         Run the full evaluation pipeline.
@@ -713,6 +770,18 @@ class SemanticEquivalenceEvaluator:
         logger.info("\n🚀 Starting Semantic Equivalence Evaluation...")
 
         start_time = time.time()
+
+        # Switch the server to the requested workspace before running queries
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=CONNECT_TIMEOUT_SECONDS,
+                read=READ_TIMEOUT_SECONDS,
+                write=30.0,
+                pool=30.0,
+            ),
+            trust_env=False,
+        ) as client:
+            await self._switch_workspace(client)
 
         # Run evaluations
         results = await self.evaluate_responses()

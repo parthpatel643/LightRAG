@@ -1,5 +1,5 @@
 # 🔬 LightRAG Evaluation Guide
-
+`for d in evaluation/datasets/*/; do python -m lightrag.evaluation.semantic_equivalence_evaluator --workspace "$(basename "$d")" --max-concurrent 2; done`
 Comprehensive guide to evaluating RAG quality using RAGAS metrics with full support for **temporal queries** and **workspace-specific evaluation**.
 
 **Status**: ✅ **Production-Ready**  

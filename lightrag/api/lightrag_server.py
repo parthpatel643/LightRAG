@@ -935,11 +935,13 @@ def create_app(args):
     # Try to import custom functions from functions.py if it exists
     custom_llm_func = None
     custom_embedding_func = None
+    custom_rerank_func = None
     try:
         from lightrag.functions import embedding_func as custom_embedding_func
         from lightrag.functions import llm_model_func as custom_llm_func
+        from lightrag.functions import rerank_model_func as custom_rerank_func
 
-        logger.info("Using custom LLM and embedding functions from functions.py")
+        logger.info("Using custom LLM, embedding, and rerank functions from functions.py")
     except ImportError:
         logger.debug("functions.py not found, using server's optimized functions")
 
@@ -1034,78 +1036,84 @@ def create_app(args):
             "Embedding max_token_size: None (Embedding token limit is disabled)."
         )
 
-    # Configure rerank function based on args.rerank_bindingparameter
+    # Configure rerank function based on args.rerank_binding parameter
     rerank_model_func = None
     if args.rerank_binding != "null":
-        from lightrag.rerank import ali_rerank, cohere_rerank, jina_rerank
+        if custom_rerank_func is not None:
+            rerank_model_func = custom_rerank_func
+            logger.info(
+                f"Reranking is enabled: using custom rerank function from functions.py with {args.rerank_binding} provider"
+            )
+        else:
+            from lightrag.rerank import ali_rerank, cohere_rerank, jina_rerank
 
-        # Map rerank binding to corresponding function
-        rerank_functions = {
-            "cohere": cohere_rerank,
-            "jina": jina_rerank,
-            "aliyun": ali_rerank,
-        }
-
-        # Select the appropriate rerank function based on binding
-        selected_rerank_func = rerank_functions.get(args.rerank_binding)
-        if not selected_rerank_func:
-            logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
-            raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
-
-        # Get default values from selected_rerank_func if args values are None
-        if args.rerank_model is None or args.rerank_binding_host is None:
-            sig = inspect.signature(selected_rerank_func)
-
-            # Set default model if args.rerank_model is None
-            if args.rerank_model is None and "model" in sig.parameters:
-                default_model = sig.parameters["model"].default
-                if default_model != inspect.Parameter.empty:
-                    args.rerank_model = default_model
-
-            # Set default base_url if args.rerank_binding_host is None
-            if args.rerank_binding_host is None and "base_url" in sig.parameters:
-                default_base_url = sig.parameters["base_url"].default
-                if default_base_url != inspect.Parameter.empty:
-                    args.rerank_binding_host = default_base_url
-
-        async def server_rerank_func(
-            query: str,
-            documents: list,
-            top_n: int = None,
-            extra_body: dict = None,
-            verify_ssl: bool = False,
-        ):
-            """Server rerank function with configuration from environment variables"""
-            # Prepare kwargs for rerank function
-            kwargs = {
-                "query": query,
-                "documents": documents,
-                "top_n": top_n,
-                "api_key": args.rerank_binding_api_key,
-                "model": args.rerank_model,
-                "base_url": args.rerank_binding_host,
+            # Map rerank binding to corresponding function
+            rerank_functions = {
+                "cohere": cohere_rerank,
+                "jina": jina_rerank,
+                "aliyun": ali_rerank,
             }
 
-            # Add Cohere-specific parameters if using cohere binding
-            if args.rerank_binding == "cohere":
-                # Enable chunking if configured (useful for models with token limits like ColBERT)
-                kwargs["enable_chunking"] = (
-                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
-                )
-                kwargs["max_tokens_per_doc"] = int(
-                    os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
-                )
+            # Select the appropriate rerank function based on binding
+            selected_rerank_func = rerank_functions.get(args.rerank_binding)
+            if not selected_rerank_func:
+                logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
+                raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
 
-            # Pass verify_ssl if the selected rerank function supports it
-            if "verify_ssl" in inspect.signature(selected_rerank_func).parameters:
-                kwargs["verify_ssl"] = verify_ssl
+            # Get default values from selected_rerank_func if args values are None
+            if args.rerank_model is None or args.rerank_binding_host is None:
+                sig = inspect.signature(selected_rerank_func)
 
-            return await selected_rerank_func(**kwargs, extra_body=extra_body)
+                # Set default model if args.rerank_model is None
+                if args.rerank_model is None and "model" in sig.parameters:
+                    default_model = sig.parameters["model"].default
+                    if default_model != inspect.Parameter.empty:
+                        args.rerank_model = default_model
 
-        rerank_model_func = server_rerank_func
-        logger.info(
-            f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
-        )
+                # Set default base_url if args.rerank_binding_host is None
+                if args.rerank_binding_host is None and "base_url" in sig.parameters:
+                    default_base_url = sig.parameters["base_url"].default
+                    if default_base_url != inspect.Parameter.empty:
+                        args.rerank_binding_host = default_base_url
+
+            async def server_rerank_func(
+                query: str,
+                documents: list,
+                top_n: int = None,
+                extra_body: dict = None,
+                verify_ssl: bool = False,
+            ):
+                """Server rerank function with configuration from environment variables"""
+                # Prepare kwargs for rerank function
+                kwargs = {
+                    "query": query,
+                    "documents": documents,
+                    "top_n": top_n,
+                    "api_key": args.rerank_binding_api_key,
+                    "model": args.rerank_model,
+                    "base_url": args.rerank_binding_host,
+                }
+
+                # Add Cohere-specific parameters if using cohere binding
+                if args.rerank_binding == "cohere":
+                    # Enable chunking if configured (useful for models with token limits like ColBERT)
+                    kwargs["enable_chunking"] = (
+                        os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+                    )
+                    kwargs["max_tokens_per_doc"] = int(
+                        os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
+                    )
+
+                # Pass verify_ssl if the selected rerank function supports it
+                if "verify_ssl" in inspect.signature(selected_rerank_func).parameters:
+                    kwargs["verify_ssl"] = verify_ssl
+
+                return await selected_rerank_func(**kwargs, extra_body=extra_body)
+
+            rerank_model_func = server_rerank_func
+            logger.info(
+                f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
+            )
     else:
         logger.info("Reranking is disabled")
 
