@@ -280,7 +280,7 @@ class RedisKVStorage(BaseKVStorage):
                 return None
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error for id {id}: {e}")
-                return None
+                raise
 
     @redis_retry
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -305,7 +305,7 @@ class RedisKVStorage(BaseKVStorage):
                 return processed_results
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error in batch get: {e}")
-                return [None] * len(ids)
+                raise
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._get_redis_connection() as redis:
@@ -681,11 +681,12 @@ class RedisDocStatusStorage(DocStatusStorage):
                             logger.error(
                                 f"[{self.workspace}] JSON decode error in get_by_ids: {e}"
                             )
-                            ordered_results.append(None)
+                            raise
                     else:
                         ordered_results.append(None)
             except Exception as e:
                 logger.error(f"[{self.workspace}] Error in get_by_ids: {e}")
+                raise
         return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
@@ -901,7 +902,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                 return json.loads(data) if data else None
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error for id {id}: {e}")
-                return None
+                raise
 
     async def delete(self, doc_ids: list[str]) -> None:
         """Delete specific records from storage by their IDs"""

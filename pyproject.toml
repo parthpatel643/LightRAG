@@ -127,6 +127,7 @@ offline-storage = [
     # AWS Neptune dependencies
     "gremlinpython>=3.7.0,<4.0.0",
     "requests-aws4auth>=1.2.0,<2.0.0",
+    "opensearch-py>=3.0.0,<4.0.0",
 ]
 
 offline-llm = [
@@ -171,6 +172,7 @@ observability = [
 lightrag = "lightrag.cli:cli"
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
+lightrag-hash-password = "lightrag.tools.hash_password:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
 lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 
