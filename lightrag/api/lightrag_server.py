@@ -2,80 +2,126 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, Request
+import configparser
+import logging
+import logging.config
+import os
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import pipmaster as pm
+import uvicorn
+from ascii_colors import ASCIIColors
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
-import os
-import logging
-import logging.config
-import sys
-import uvicorn
-import pipmaster as pm
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
-from pathlib import Path
-import configparser
-from ascii_colors import ASCIIColors
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-from lightrag.api.utils_api import (
-    get_combined_auth_dependency,
-    display_splash_screen,
-    check_env_file,
-)
-from .config import (
-    global_args,
-    update_uvicorn_mode_config,
-    get_default_host,
-)
-from lightrag.utils import get_env_value
-from lightrag import LightRAG, __version__ as core_version
+
+from lightrag import LightRAG
+from lightrag import __version__ as core_version
 from lightrag.api import __api_version__
-from lightrag.types import GPTKeywordExtractionFormat
-from lightrag.utils import EmbeddingFunc
-from lightrag.constants import (
-    DEFAULT_LOG_MAX_BYTES,
-    DEFAULT_LOG_BACKUP_COUNT,
-    DEFAULT_LOG_FILENAME,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
-)
+from lightrag.api.auth import auth_handler
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
 )
-from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.document_sequencing_routes import create_sequencing_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
-
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.workspace_routes import router as workspace_router
+from lightrag.api.utils_api import (
+    check_env_file,
+    display_splash_screen,
+    get_combined_auth_dependency,
+)
+from lightrag.base import StoragesStatus
+from lightrag.constants import (
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_FILENAME,
+    DEFAULT_LOG_MAX_BYTES,
+)
+from lightrag.exceptions import PipelineNotInitializedError
 from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_default_workspace,
-    # set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
+    get_default_workspace,
+    get_namespace_data,
+    initialize_pipeline_status,
+    set_default_workspace,
 )
-from fastapi.security import OAuth2PasswordRequestForm
-from lightrag.api.auth import auth_handler
+from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
+
+from .config import (
+    get_default_host,
+    global_args,
+    update_uvicorn_mode_config,
+)
+
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+def _load_dotenv_from_path():
+    """Load .env file from current dir, then project root, then script dir."""
+    from pathlib import Path
+
+    # Try paths in order
+    paths_to_try = [
+        Path.cwd() / ".env",  # Current working directory
+        Path(__file__).parent.parent.parent
+        / ".env",  # Project root (lightrag/api/.. = root)
+    ]
+
+    for env_path in paths_to_try:
+        if env_path.exists():
+            load_dotenv(dotenv_path=str(env_path), override=False)
+            return str(env_path)
+
+    # If no .env found, still call load_dotenv (will load from environment)
+    load_dotenv(override=False)
+    return None
+
+
+_dotenv_path = _load_dotenv_from_path()
 
 
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
 
-# Initialize config parser
+
+# Initialize config parser and load config.ini from current dir or project root
+def _load_config_ini():
+    """Load config.ini file from current dir or project root."""
+    from pathlib import Path
+
+    paths_to_try = [
+        Path.cwd() / "config.ini",
+        Path(__file__).parent.parent.parent / "config.ini",
+    ]
+
+    for config_path in paths_to_try:
+        if config_path.exists():
+            return str(config_path)
+
+    return None
+
+
 config = configparser.ConfigParser()
-config.read("config.ini")
+config_ini_path = _load_config_ini()
+if config_ini_path:
+    config.read(config_ini_path)
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
@@ -886,6 +932,19 @@ def create_app(args):
 
         return embedding_func_instance
 
+    # Try to import custom functions from functions.py if it exists
+    custom_llm_func = None
+    custom_embedding_func = None
+    custom_rerank_func = None
+    try:
+        from lightrag.functions import embedding_func as custom_embedding_func
+        from lightrag.functions import llm_model_func as custom_llm_func
+        from lightrag.functions import rerank_model_func as custom_rerank_func
+
+        logger.info("Using custom LLM, embedding, and rerank functions from functions.py")
+    except ImportError:
+        logger.debug("functions.py not found, using server's optimized functions")
+
     llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
     embedding_timeout = get_env_value(
         "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
@@ -977,70 +1036,84 @@ def create_app(args):
             "Embedding max_token_size: None (Embedding token limit is disabled)."
         )
 
-    # Configure rerank function based on args.rerank_bindingparameter
+    # Configure rerank function based on args.rerank_binding parameter
     rerank_model_func = None
     if args.rerank_binding != "null":
-        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+        if custom_rerank_func is not None:
+            rerank_model_func = custom_rerank_func
+            logger.info(
+                f"Reranking is enabled: using custom rerank function from functions.py with {args.rerank_binding} provider"
+            )
+        else:
+            from lightrag.rerank import ali_rerank, cohere_rerank, jina_rerank
 
-        # Map rerank binding to corresponding function
-        rerank_functions = {
-            "cohere": cohere_rerank,
-            "jina": jina_rerank,
-            "aliyun": ali_rerank,
-        }
-
-        # Select the appropriate rerank function based on binding
-        selected_rerank_func = rerank_functions.get(args.rerank_binding)
-        if not selected_rerank_func:
-            logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
-            raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
-
-        # Get default values from selected_rerank_func if args values are None
-        if args.rerank_model is None or args.rerank_binding_host is None:
-            sig = inspect.signature(selected_rerank_func)
-
-            # Set default model if args.rerank_model is None
-            if args.rerank_model is None and "model" in sig.parameters:
-                default_model = sig.parameters["model"].default
-                if default_model != inspect.Parameter.empty:
-                    args.rerank_model = default_model
-
-            # Set default base_url if args.rerank_binding_host is None
-            if args.rerank_binding_host is None and "base_url" in sig.parameters:
-                default_base_url = sig.parameters["base_url"].default
-                if default_base_url != inspect.Parameter.empty:
-                    args.rerank_binding_host = default_base_url
-
-        async def server_rerank_func(
-            query: str, documents: list, top_n: int = None, extra_body: dict = None
-        ):
-            """Server rerank function with configuration from environment variables"""
-            # Prepare kwargs for rerank function
-            kwargs = {
-                "query": query,
-                "documents": documents,
-                "top_n": top_n,
-                "api_key": args.rerank_binding_api_key,
-                "model": args.rerank_model,
-                "base_url": args.rerank_binding_host,
+            # Map rerank binding to corresponding function
+            rerank_functions = {
+                "cohere": cohere_rerank,
+                "jina": jina_rerank,
+                "aliyun": ali_rerank,
             }
 
-            # Add Cohere-specific parameters if using cohere binding
-            if args.rerank_binding == "cohere":
-                # Enable chunking if configured (useful for models with token limits like ColBERT)
-                kwargs["enable_chunking"] = (
-                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
-                )
-                kwargs["max_tokens_per_doc"] = int(
-                    os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
-                )
+            # Select the appropriate rerank function based on binding
+            selected_rerank_func = rerank_functions.get(args.rerank_binding)
+            if not selected_rerank_func:
+                logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
+                raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
 
-            return await selected_rerank_func(**kwargs, extra_body=extra_body)
+            # Get default values from selected_rerank_func if args values are None
+            if args.rerank_model is None or args.rerank_binding_host is None:
+                sig = inspect.signature(selected_rerank_func)
 
-        rerank_model_func = server_rerank_func
-        logger.info(
-            f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
-        )
+                # Set default model if args.rerank_model is None
+                if args.rerank_model is None and "model" in sig.parameters:
+                    default_model = sig.parameters["model"].default
+                    if default_model != inspect.Parameter.empty:
+                        args.rerank_model = default_model
+
+                # Set default base_url if args.rerank_binding_host is None
+                if args.rerank_binding_host is None and "base_url" in sig.parameters:
+                    default_base_url = sig.parameters["base_url"].default
+                    if default_base_url != inspect.Parameter.empty:
+                        args.rerank_binding_host = default_base_url
+
+            async def server_rerank_func(
+                query: str,
+                documents: list,
+                top_n: int = None,
+                extra_body: dict = None,
+                verify_ssl: bool = False,
+            ):
+                """Server rerank function with configuration from environment variables"""
+                # Prepare kwargs for rerank function
+                kwargs = {
+                    "query": query,
+                    "documents": documents,
+                    "top_n": top_n,
+                    "api_key": args.rerank_binding_api_key,
+                    "model": args.rerank_model,
+                    "base_url": args.rerank_binding_host,
+                }
+
+                # Add Cohere-specific parameters if using cohere binding
+                if args.rerank_binding == "cohere":
+                    # Enable chunking if configured (useful for models with token limits like ColBERT)
+                    kwargs["enable_chunking"] = (
+                        os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+                    )
+                    kwargs["max_tokens_per_doc"] = int(
+                        os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
+                    )
+
+                # Pass verify_ssl if the selected rerank function supports it
+                if "verify_ssl" in inspect.signature(selected_rerank_func).parameters:
+                    kwargs["verify_ssl"] = verify_ssl
+
+                return await selected_rerank_func(**kwargs, extra_body=extra_body)
+
+            rerank_model_func = server_rerank_func
+            logger.info(
+                f"Reranking is enabled: {args.rerank_model or 'default model'} using {args.rerank_binding} provider"
+            )
     else:
         logger.info("Reranking is disabled")
 
@@ -1053,10 +1126,18 @@ def create_app(args):
 
     # Initialize RAG with unified configuration
     try:
+        # Use custom functions from functions.py if available, otherwise use server's optimized functions
+        llm_func = (
+            custom_llm_func
+            if custom_llm_func
+            else create_llm_model_func(args.llm_binding)
+        )
+        embed_func = custom_embedding_func if custom_embedding_func else embedding_func
+
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
+            llm_model_func=llm_func,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             summary_max_tokens=args.summary_max_tokens,
@@ -1065,8 +1146,10 @@ def create_app(args):
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs=create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
-            ),
-            embedding_func=embedding_func,
+            )
+            if not custom_llm_func
+            else {},
+            embedding_func=embed_func,
             default_llm_timeout=llm_timeout,
             default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
@@ -1087,9 +1170,153 @@ def create_app(args):
             },
             ollama_server_infos=ollama_server_infos,
         )
+        # Initialize global default workspace for storage access
+        set_default_workspace(args.workspace)
+
+        # Set environment variables for workspace routes to access
+        os.environ["WORKSPACE_NAME"] = args.workspace
+        os.environ["WORKING_DIR"] = str(args.working_dir)
+        os.environ["INPUT_DIR"] = str(args.input_dir)
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    # Create reload function for workspace switching
+    async def reload_rag_for_workspace(working_dir: str, workspace: str):
+        """Reload RAG instance for a new workspace"""
+        try:
+            logger.info(
+                f"[reload_rag_for_workspace] Starting reload for workspace: {workspace}"
+            )
+            logger.info(
+                f"[reload_rag_for_workspace] Current RAG workspace before reload: {rag.workspace}"
+            )
+
+            logger.info("[reload_rag_for_workspace] Finalizing current RAG storages...")
+            await rag.finalize_storages()
+
+            # Update shared storage default workspace BEFORE updating RAG instance
+            # This ensures initialize_storages() uses the correct workspace
+            set_default_workspace(workspace)
+            logger.info(
+                f"[reload_rag_for_workspace] Set default workspace to: {workspace}"
+            )
+
+            # Update RAG workspace and working_dir
+            rag.working_dir = working_dir
+            rag.workspace = workspace
+            logger.info(
+                f"[reload_rag_for_workspace] Updated RAG instance - workspace: {rag.workspace}, working_dir: {rag.working_dir}"
+            )
+
+            # CRITICAL: Update workspace attribute on ALL storage instances.
+            # Storage objects were created with the original workspace and use self.workspace
+            # for data isolation. Without updating these, storages continue to access old workspace data.
+            storage_instances = [
+                rag.full_docs,
+                rag.text_chunks,
+                rag.full_entities,
+                rag.full_relations,
+                rag.entity_chunks,
+                rag.relation_chunks,
+                rag.entities_vdb,
+                rag.relationships_vdb,
+                rag.chunks_vdb,
+                rag.chunk_entity_relation_graph,
+                rag.llm_response_cache,
+                rag.doc_status,
+            ]
+            for storage in storage_instances:
+                if storage:
+                    logger.info(
+                        f"[reload_rag_for_workspace] Processing storage: {type(storage).__name__}, namespace: {storage.namespace}"
+                    )
+                    storage.workspace = workspace
+                    workspace_dir = os.path.join(working_dir, workspace)
+
+                    # CRITICAL: Update file paths for all storage backends
+                    # File paths are set in __post_init__() and won't automatically
+                    # update when workspace changes. We need to rebuild the paths.
+
+                    # JSON KV Storage (full_docs, text_chunks, entities, relations, etc.)
+                    if hasattr(storage, "_file_name"):
+                        storage._file_name = os.path.join(
+                            workspace_dir, f"kv_store_{storage.namespace}.json"
+                        )
+
+                    # NetworkX Graph Storage
+                    if hasattr(storage, "_graphml_xml_file"):
+                        old_file = storage._graphml_xml_file
+                        storage._graphml_xml_file = os.path.join(
+                            workspace_dir, f"graph_{storage.namespace}.graphml"
+                        )
+                        logger.info(
+                            f"[reload_rag_for_workspace] Updating graph file: {old_file} -> {storage._graphml_xml_file}"
+                        )
+                        # Reload the graph from the new workspace file
+                        from lightrag.kg.networkx_impl import NetworkXStorage
+
+                        preloaded_graph = NetworkXStorage.load_nx_graph(
+                            storage._graphml_xml_file
+                        )
+                        if preloaded_graph is not None:
+                            storage._graph = preloaded_graph
+                            logger.info(
+                                f"[{workspace}] Reloaded graph from {storage._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes"
+                            )
+                        else:
+                            import networkx as nx
+
+                            storage._graph = nx.Graph()
+                            logger.info(
+                                f"[{workspace}] Created new empty graph for workspace"
+                            )
+
+                    # NanoVectorDB Storage
+                    if hasattr(storage, "_client_file_name"):
+                        storage._client_file_name = os.path.join(
+                            workspace_dir, f"vdb_{storage.namespace}.json"
+                        )
+                        # Recreate the NanoVectorDB client with new file path
+                        from nano_vectordb import NanoVectorDB
+
+                        storage._client = NanoVectorDB(
+                            storage.embedding_func.embedding_dim,
+                            storage_file=storage._client_file_name,
+                        )
+                        logger.info(
+                            f"[{workspace}] Recreated vector DB client for {storage.namespace} with file {storage._client_file_name}"
+                        )
+            logger.info(
+                "[reload_rag_for_workspace] Updated workspace on all storage instances"
+            )
+
+            # CRITICAL: Reset storage status back to CREATED so initialize_storages() will run.
+            # Without this, initialize_storages() sees status==FINALIZED and skips initialization,
+            # leaving the RAG instance pointing to stale workspace data.
+            rag._storages_status = StoragesStatus.CREATED
+            logger.info("[reload_rag_for_workspace] Reset storage status to CREATED")
+
+            print(
+                f"[RELOAD-DEBUG] Starting reinitialization for workspace: {workspace}",
+                flush=True,
+            )
+            logger.info(
+                f"[reload_rag_for_workspace] Reinitializing RAG storages for workspace: {workspace} at {working_dir}"
+            )
+            await rag.initialize_storages()
+
+            logger.info(
+                f"[reload_rag_for_workspace] RAG successfully reloaded for workspace: {workspace}"
+            )
+            logger.info(
+                f"[reload_rag_for_workspace] Final RAG workspace after reload: {rag.workspace}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[reload_rag_for_workspace] Failed to reload RAG for workspace {workspace}: {e}"
+            )
+            raise
 
     # Add routes
     app.include_router(
@@ -1101,6 +1328,17 @@ def create_app(args):
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+
+    # Register RAG instance and reload function with workspace routes
+    from lightrag.api.routers.workspace_routes import set_rag_instance_and_reload_func
+
+    set_rag_instance_and_reload_func(rag, reload_rag_for_workspace)
+
+    # Add workspace management routes
+    app.include_router(workspace_router)
+
+    # Add document sequencing routes
+    app.include_router(create_sequencing_routes(rag, api_key))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
@@ -1238,9 +1476,19 @@ def create_app(args):
             default_workspace = get_default_workspace()
             if workspace is None:
                 workspace = default_workspace
-            pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=workspace
-            )
+
+            # Try to get pipeline_status, but if not initialized, initialize it first
+            try:
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=workspace
+                )
+            except PipelineNotInitializedError:
+                # Pipeline status not initialized for this workspace, initialize it
+                logger.info(f"Initializing pipeline_status for workspace: {workspace}")
+                await initialize_pipeline_status(workspace=workspace)
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=workspace
+                )
 
             if not auth_configured:
                 auth_mode = "disabled"

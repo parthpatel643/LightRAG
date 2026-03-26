@@ -16,7 +16,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
-import { RotateCcw } from 'lucide-react'
+import { RotateCcw, Zap, MapPin, Globe, Layers, Shuffle, FastForward, Clock } from 'lucide-react'
 
 export default function QuerySettings() {
   const { t } = useTranslation()
@@ -62,10 +62,10 @@ export default function QuerySettings() {
           <button
             type="button"
             onClick={onClick}
-            className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            className="mr-1 p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             title={title}
           >
-            <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+            <RotateCcw className="h-3 w-3 text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200" />
           </button>
         </TooltipTrigger>
         <TooltipContent side="left">
@@ -139,13 +139,48 @@ export default function QuerySettings() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
-                      <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
-                      <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
-                      <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
-                      <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
-                      <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
-                      <SelectItem value="temporal">{t('retrievePanel.querySettings.queryModeOptions.temporal', 'Temporal')}</SelectItem>
+                      <SelectItem value="naive">
+                        <div className="flex items-center gap-2">
+                          <Zap className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.naive')}</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="local">
+                        <div className="flex items-center gap-2">
+                          <MapPin className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.local')}</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="global">
+                        <div className="flex items-center gap-2">
+                          <Globe className="h-4 w-4 text-green-600 dark:text-green-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.global')}</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="hybrid">
+                        <div className="flex items-center gap-2">
+                          <Layers className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="mix">
+                        <div className="flex items-center gap-2">
+                          <Shuffle className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.mix')}</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="bypass">
+                        <div className="flex items-center gap-2">
+                          <FastForward className="h-4 w-4 text-red-600 dark:text-red-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.bypass')}</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="temporal">
+                        <div className="flex items-center gap-2">
+                          <Clock className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.temporal', 'Temporal')}</span>
+                        </div>
+                      </SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>

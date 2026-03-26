@@ -10,6 +10,7 @@ import {
   DialogFooter
 } from '@/components/ui/Dialog'
 import Input from '@/components/ui/Input'
+import BulkOperationProgress from '@/components/ui/BulkOperationProgress'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { deleteDocuments } from '@/api/lightrag'
@@ -186,6 +187,13 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* Progress indicator */}
+      <BulkOperationProgress
+        isActive={isDeleting}
+        message={t('documentPanel.deleteDocuments.deleting')}
+        count={selectedDocIds.length}
+      />
     </Dialog>
   )
 }

@@ -136,11 +136,51 @@ export const ChatMessage = ({
     h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
     ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
-    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
+    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>,
+    table: ({ children }: { children?: ReactNode }) => (
+      <div className="my-4 overflow-x-auto">
+        <table className="w-full border-collapse border border-border">{children}</table>
+      </div>
+    ),
+    thead: ({ children }: { children?: ReactNode }) => (
+      <thead className="bg-muted">{children}</thead>
+    ),
+    tbody: ({ children }: { children?: ReactNode }) => (
+      <tbody>{children}</tbody>
+    ),
+    tr: ({ children }: { children?: ReactNode }) => (
+      <tr className="border border-border">{children}</tr>
+    ),
+    th: ({ children }: { children?: ReactNode }) => (
+      <th className="px-3 py-2 text-left font-semibold border border-border bg-muted/50">{children}</th>
+    ),
+    td: ({ children }: { children?: ReactNode }) => (
+      <td className="px-3 py-2 border border-border">{children}</td>
+    ),
   }), [message.mermaidRendered, message.role]);
 
   const thinkingMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
+    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />),
+    table: ({ children }: { children?: ReactNode }) => (
+      <div className="my-4 overflow-x-auto">
+        <table className="w-full border-collapse border border-border">{children}</table>
+      </div>
+    ),
+    thead: ({ children }: { children?: ReactNode }) => (
+      <thead className="bg-muted">{children}</thead>
+    ),
+    tbody: ({ children }: { children?: ReactNode }) => (
+      <tbody>{children}</tbody>
+    ),
+    tr: ({ children }: { children?: ReactNode }) => (
+      <tr className="border border-border">{children}</tr>
+    ),
+    th: ({ children }: { children?: ReactNode }) => (
+      <th className="px-3 py-2 text-left font-semibold border border-border bg-muted/50">{children}</th>
+    ),
+    td: ({ children }: { children?: ReactNode }) => (
+      <td className="px-3 py-2 border border-border">{children}</td>
+    ),
   }), [message.mermaidRendered, message.role]);
 
   return (

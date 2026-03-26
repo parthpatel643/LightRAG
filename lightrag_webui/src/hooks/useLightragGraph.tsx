@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph, RawNodeType, RawEdgeType } from '@/stores/graph'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { toast } from 'sonner'
 import { queryGraphs } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
@@ -269,6 +270,7 @@ const useLightrangeGraph = () => {
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
   const graphDataVersion = useGraphStore.use.graphDataVersion()
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
 
 
   // Use ref to track if data has been loaded and initial load
@@ -303,8 +305,14 @@ const useLightrangeGraph = () => {
       state.setLabelsFetchAttempted(false)
       dataLoadedRef.current = false
       initialLoadRef.current = false
+      emptyDataHandledRef.current = false
     }
   }, [queryLabel, rawGraph, sigmaGraph])
+
+  // Reset empty data handler when workspace changes to allow immediate refetch
+  useEffect(() => {
+    emptyDataHandledRef.current = false
+  }, [currentWorkspace])
 
   // Graph data fetching logic
   useEffect(() => {
@@ -455,7 +463,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, currentWorkspace])
 
   // Handle node expansion
   useEffect(() => {

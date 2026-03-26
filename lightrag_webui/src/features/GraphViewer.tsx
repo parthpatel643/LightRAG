@@ -8,11 +8,9 @@ import { NodeBorderProgram } from '@sigma/node-border'
 import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
 
 import FocusOnNode from '@/components/graph/FocusOnNode'
-import LayoutsControl from '@/components/graph/LayoutsControl'
 import GraphControl from '@/components/graph/GraphControl'
+import CollapsibleControlPanel from '@/components/graph/CollapsibleControlPanel'
 // import ThemeToggle from '@/components/ThemeToggle'
-import ZoomControl from '@/components/graph/ZoomControl'
-import FullScreenControl from '@/components/graph/FullScreenControl'
 import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
@@ -24,6 +22,7 @@ import ChunksPanel from '@/components/graph/ChunksPanel'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
@@ -169,6 +168,56 @@ const GraphViewer = () => {
     };
   }, []);
 
+  // Monitor workspace changes and reset graph data
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const isSwitching = useWorkspaceStore.use.isSwitching()
+  const prevWorkspaceRef = useRef<string | null>(null)
+  const prevIsSwitchingRef = useRef<boolean>(false)
+  
+  useEffect(() => {
+    // Skip if workspace is currently switching (prevents premature data fetch)
+    if (isSwitching) {
+      console.log('[GraphViewer] Workspace switching in progress, skipping refresh');
+      prevIsSwitchingRef.current = true;
+      return;
+    }
+    
+    // Check if switching just completed (was true, now false)
+    const switchingJustCompleted = prevIsSwitchingRef.current && !isSwitching;
+    prevIsSwitchingRef.current = isSwitching;
+    
+    // Trigger refresh if switching just completed OR workspace changed
+    const workspaceChanged = prevWorkspaceRef.current !== null && prevWorkspaceRef.current !== currentWorkspace;
+    
+    if (switchingJustCompleted || workspaceChanged) {
+      if (switchingJustCompleted) {
+        console.log('[GraphViewer] Workspace switching completed, refreshing graph for:', currentWorkspace);
+      } else {
+        console.log('[GraphViewer] Workspace changed from', prevWorkspaceRef.current, 'to', currentWorkspace, 'clearing and refreshing...')
+      }
+      
+      try {
+        const state = useGraphStore.getState()
+        state.setRawGraph(null)
+        state.setSigmaGraph(null)
+        state.setSelectedNode(null)
+        state.setFocusedNode(null)
+        state.setSelectedEdge(null)
+        state.setFocusedEdge(null)
+        state.setSearchEngine(null)
+        // Reset fetch flags to allow re-fetching for new workspace
+        state.setGraphDataFetchAttempted(false)
+        state.setLabelsFetchAttempted(false)
+        // Increment version to trigger refresh
+        state.incrementGraphDataVersion()
+        console.log('[GraphViewer] Graph data cleared, refresh triggered')
+      } catch (error) {
+        console.error('[GraphViewer] Error resetting graph:', error)
+      }
+    }
+    prevWorkspaceRef.current = currentWorkspace
+  }, [currentWorkspace, isSwitching])
+
   // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
   // but testing showed it wasn't executing or having any effect, while the backup mechanism
   // in GraphControl was sufficient. This code was removed to simplify implementation
@@ -238,14 +287,7 @@ const GraphViewer = () => {
           </div>
         </div>
 
-        <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-          <LayoutsControl />
-          <ZoomControl />
-          <FullScreenControl />
-          <LegendButton />
-          <Settings />
-          {/* <ThemeToggle /> */}
-        </div>
+        <CollapsibleControlPanel />
 
         {showPropertyPanel && (
           <div className="absolute top-2 right-2 z-10 flex flex-col gap-2 max-w-96">

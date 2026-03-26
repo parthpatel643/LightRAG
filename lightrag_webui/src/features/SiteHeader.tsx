@@ -1,14 +1,21 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
+import StatusIndicator from '@/components/status/StatusIndicator'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
 import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
+import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
+import { switchWorkspace } from '@/api/lightrag'
+import { toast } from 'sonner'
+import { useState, useEffect } from 'react'
 
 interface NavigationTabProps {
   value: string
@@ -32,6 +39,7 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
 
 function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
+  const showApiTab = useSettingsStore.use.showApiTab()
   const { t } = useTranslation()
 
   return (
@@ -46,9 +54,11 @@ function TabsNavigation() {
         <NavigationTab value="retrieval" currentTab={currentTab}>
           {t('header.retrieval')}
         </NavigationTab>
-        <NavigationTab value="api" currentTab={currentTab}>
-          {t('header.api')}
-        </NavigationTab>
+        {showApiTab && (
+          <NavigationTab value="api" currentTab={currentTab}>
+            {t('header.api')}
+          </NavigationTab>
+        )}
       </TabsList>
     </div>
   )
@@ -57,6 +67,12 @@ function TabsNavigation() {
 export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  const setCurrentWorkspace = useWorkspaceStore.use.setCurrentWorkspace()
+  
+  // Store previous workspace to detect changes
+  const [prevWorkspace, setPrevWorkspace] = useState<string | null>(null)
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -71,6 +87,48 @@ export default function SiteHeader() {
   const handleLogout = () => {
     navigationService.navigateToLogin();
   }
+
+  const handleWorkspaceChange = async (workspace: WorkspaceConfig) => {
+    const { setIsSwitching } = useWorkspaceStore.getState()
+    
+    try {
+      // Set switching flag to prevent premature data fetches
+      setIsSwitching(true)
+      
+      // Call the API to switch workspace on the backend FIRST
+      // API function handles camelCase to snake_case conversion
+      const response = await switchWorkspace(workspace)
+      
+      // Add a delay after workspace switch to ensure backend reload completes
+      // The backend needs time to finalize old storages and initialize new ones
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // ONLY update workspace store AFTER backend switch succeeds
+      // This ensures subsequent API calls use the correct workspace header
+      // that matches the backend's current workspace
+      setCurrentWorkspace(workspace.name)
+      
+      // Clear switching flag to allow data fetches
+      setIsSwitching(false)
+      
+      toast.success(t('workspace.switchSuccess', 'Workspace switched successfully'))
+    } catch (error) {
+      console.error('Failed to switch workspace:', error)
+      toast.error(t('workspace.switchError', 'Failed to switch workspace'))
+      // Don't update workspace store on error - it should stay at the previous value
+      setIsSwitching(false)
+    }
+  }
+
+  // Detect workspace changes and log them (actual refresh handled by individual components)
+  useEffect(() => {
+    if (currentWorkspace && currentWorkspace !== prevWorkspace) {
+      console.log(`[SiteHeader] Workspace changed from ${prevWorkspace} to ${currentWorkspace}`);
+      setPrevWorkspace(currentWorkspace);
+      // Note: Data refresh is handled by DocumentManager and GraphViewer via their own workspace listeners
+    }
+  }, [currentWorkspace, prevWorkspace])
+
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
@@ -100,22 +158,28 @@ export default function SiteHeader() {
         )}
       </div>
 
-      <div className="flex h-10 flex-1 items-center justify-center">
+      <div className="flex h-10 flex-1 items-center justify-center gap-4">
         <TabsNavigation />
         {isGuestMode && (
           <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
+        <WorkspaceSwitcher
+          currentWorkspace={currentWorkspace || undefined}
+          onWorkspaceChange={handleWorkspaceChange}
+          className="ml-auto"
+        />
       </div>
 
       <nav className="w-[200px] flex items-center justify-end">
         <div className="flex items-center gap-2">
+          {enableHealthCheck && <StatusIndicator />}
           {versionDisplay && (
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1 cursor-default">
+                  <span className="text-xs text-gray-600 dark:text-gray-400 mr-1 cursor-default">
                     v{versionDisplay}
                   </span>
                 </TooltipTrigger>

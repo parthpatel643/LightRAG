@@ -310,6 +310,11 @@ class MongoDocStatusStorage(DocStatusStorage):
                 data["error_msg"] = data.pop("error")
             else:
                 data.pop("error", None)
+
+        # Convert status string to DocStatus enum
+        if "status" in data and isinstance(data["status"], str):
+            data["status"] = DocStatus(data["status"])
+
         return data
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):

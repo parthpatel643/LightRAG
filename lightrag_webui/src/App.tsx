@@ -1,8 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/status/StatusIndicator'
+import ErrorBanner from '@/components/ui/ErrorBanner'
+import KeyboardShortcutsDialog from '@/components/KeyboardShortcutsDialog'
 import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
@@ -10,6 +12,8 @@ import { getAuthStatus } from '@/api/lightrag'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
+import { useTranslation } from 'react-i18next'
 
 import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
@@ -19,13 +23,24 @@ import ApiSite from '@/features/ApiSite'
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
 function App() {
+  const { i18n } = useTranslation()
   const message = useBackendState.use.message()
+  const health = useBackendState.use.health()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
+  const [showErrorBanner, setShowErrorBanner] = useState(false)
+  const [showShortcutsDialog, setShowShortcutsDialog] = useState(false)
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
+
+  // RTL Support: Set HTML dir attribute based on language
+  useEffect(() => {
+    const rtlLanguages = ['ar', 'he', 'fa', 'ur']
+    const isRTL = rtlLanguages.includes(i18n.language)
+    document.documentElement.dir = isRTL ? 'rtl' : 'ltr'
+  }, [i18n.language])
 
   const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
     setApiKeyAlertOpen(open)
@@ -162,6 +177,69 @@ function App() {
     }
   }, [message])
 
+  // Show error banner when backend is disconnected
+  useEffect(() => {
+    if (enableHealthCheck && !health && !initializing) {
+      setShowErrorBanner(true)
+    } else {
+      setShowErrorBanner(false)
+    }
+  }, [health, enableHealthCheck, initializing])
+
+  // Keyboard shortcuts
+  const shortcuts = useMemo(() => [
+    {
+      key: '1',
+      ctrlKey: true,
+      action: () => useSettingsStore.getState().setCurrentTab('documents'),
+      description: 'Go to Documents tab'
+    },
+    {
+      key: '2',
+      ctrlKey: true,
+      action: () => useSettingsStore.getState().setCurrentTab('knowledge-graph'),
+      description: 'Go to Knowledge Graph tab'
+    },
+    {
+      key: '3',
+      ctrlKey: true,
+      action: () => useSettingsStore.getState().setCurrentTab('retrieval'),
+      description: 'Go to Retrieval tab'
+    },
+    {
+      key: '/',
+      ctrlKey: true,
+      action: () => {
+        // Focus on search input if available
+        const searchInput = document.querySelector('input[type="search"]') as HTMLInputElement
+        if (searchInput) {
+          searchInput.focus()
+        }
+      },
+      description: 'Focus search'
+    },
+    {
+      key: 'k',
+      ctrlKey: true,
+      action: () => {
+        // Focus on query input in retrieval tab
+        const queryInput = document.querySelector('#query-input') as HTMLInputElement
+        if (queryInput) {
+          queryInput.focus()
+        }
+      },
+      description: 'Focus query input'
+    },
+    {
+      key: '?',
+      shiftKey: true,
+      action: () => setShowShortcutsDialog(true),
+      description: 'Show keyboard shortcuts'
+    }
+  ], [])
+
+  useKeyboardShortcuts(shortcuts, !initializing)
+
   return (
     <ThemeProvider>
       <TabVisibilityProvider>
@@ -203,6 +281,13 @@ function App() {
               onValueChange={handleTabChange}
             >
               <SiteHeader />
+              {showErrorBanner && (
+                <ErrorBanner
+                  message="Backend connection lost. Some features may not work properly. Check your connection and refresh the page."
+                  persistent={true}
+                  className="flex-shrink-0"
+                />
+              )}
               <div className="relative grow">
                 <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
                   <DocumentManager />
@@ -218,8 +303,8 @@ function App() {
                 </TabsContent>
               </div>
             </Tabs>
-            {enableHealthCheck && <StatusIndicator />}
             <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={handleApiKeyAlertOpenChange} />
+            <KeyboardShortcutsDialog open={showShortcutsDialog} onOpenChange={setShowShortcutsDialog} />
           </main>
         )}
       </TabVisibilityProvider>

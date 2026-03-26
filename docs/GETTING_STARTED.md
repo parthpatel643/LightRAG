@@ -52,6 +52,88 @@ bun run dev
 # Frontend runs at http://localhost:5173
 ```
 
+### Frontend Development Setup
+
+The LightRAG WebUI is built with React 19 + TypeScript and uses **Bun** as the build tool (npm is also supported as a fallback).
+
+#### Build Scenarios
+
+| Scenario | Action | Frontend Included |
+|----------|--------|-------------------|
+| PyPI Install | `pip install lightrag-hku[api]` | Yes (pre-built) |
+| Development | `pip install -e ".[api]"` then build | No (build manually) |
+| Normal Install | Build first, then `pip install ".[api]"` | Yes |
+| Distribution | `python -m build` (after frontend build) | Yes |
+
+#### Development Workflow
+
+For frontend development, use the streamlined workflow:
+
+```bash
+# 1. Install Python backend (development mode)
+pip install -e ".[api]"
+
+# 2. Enter frontend directory
+cd lightrag_webui
+
+# 3. Install frontend dependencies
+bun install --frozen-lockfile
+
+# 4. Start dev server (hot reload)
+bun run dev
+# Frontend available at http://localhost:5173
+
+# 5. In another terminal, start the API
+# (from project root)
+lightrag-server
+# API available at http://localhost:9621
+```
+
+#### Building for Production
+
+```bash
+# Build the frontend for production
+cd lightrag_webui
+bun install --frozen-lockfile --production
+bun run build
+cd ..
+
+# Frontend files now in lightrag/api/webui/
+# Ready for package distribution or Docker deployment
+```
+
+#### Frontend Structure
+
+```
+lightrag_webui/
+├── src/                    # React source code
+│   ├── components/         # Reusable components
+│   ├── pages/              # Page components
+│   ├── hooks/              # Custom React hooks
+│   ├── lib/                # Utilities
+│   └── App.tsx             # Root component
+├── package.json            # Dependencies
+├── vite.config.ts          # Build configuration
+├── tsconfig.json           # TypeScript config
+└── dist/                   # Build output (after bun run build)
+```
+
+#### Using npm instead of Bun
+
+If you don't have Bun, npm works as a fallback:
+
+```bash
+# Install Bun first (optional)
+curl -fsSL https://bun.sh/install | bash
+
+# Or use npm
+npm install
+npm run build
+npm run dev
+
+# Note: Tests still require Bun
+```
+
 ---
 
 ## Five-Minute Setup
@@ -282,10 +364,10 @@ All tests should pass with ✅ indicators.
 After getting started:
 
 1. **Learn the System** → Read [ARCHITECTURE.md](ARCHITECTURE.md)
-2. **Master Queries** → See [RETRIEVAL_LOGIC.md](RETRIEVAL_LOGIC.md)
-3. **Explore API** → Check [API_REFERENCE.md](API_REFERENCE.md)
-4. **Deploy Production** → See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
-5. **Advanced Topics** → Review [ADVANCED_GUIDE.md](ADVANCED_GUIDE.md)
+2. **Master the CLI** → See [CLI Reference](CLI_REFERENCE.md)
+3. **Deploy** → Check [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+4. **Use Features** → Review [USER_GUIDE.md](USER_GUIDE.md)
+5. **Temporal Features** → Review [TEMPORAL.md](TEMPORAL.md)
 
 ---
 
@@ -328,5 +410,7 @@ docker-compose up --build
 - **Main Repo** → [GitHub](https://github.com/HKUDS/LightRAG)
 
 ---
+
+**Last Updated:** March 5, 2026
 
 **Ready to get started? Run:** `lightrag-server`

@@ -321,7 +321,7 @@ Examples:
     parser.add_argument(
         "--mode",
         type=str,
-        default="hybrid",
+        default="temporal",
         choices=["local", "global", "hybrid", "temporal", "naive", "mix", "bypass"],
         help="Query mode (default: hybrid)",
     )
@@ -337,8 +337,8 @@ Examples:
     parser.add_argument(
         "--working-dir",
         type=str,
-        default="data/output/sea-cabin-cleaning",
-        help="LightRAG working directory (default: ./data/output/sea-cabin-cleaning)",
+        default="data/",
+        help="LightRAG working directory (default: ./data/",
     )
 
     args = parser.parse_args()

@@ -93,6 +93,7 @@ from lightrag.operate import (
     rebuild_knowledge_from_chunks,
 )
 from lightrag.prompt import PROMPTS
+from lightrag.temporal import SequenceIndexManager
 from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
     EmbeddingFunc,
@@ -750,6 +751,9 @@ class LightRAG:
             embedding_func=None,
         )
 
+        # Initialize sequence index manager for temporal versioning (Issue #6 fix)
+        self._sequence_manager = SequenceIndexManager(self.doc_status)
+
     def _init_llm_function(self) -> None:
         """Initialize LLM function with rate limiting and caching configuration."""
         # Directly use llm_response_cache, don't create a new object
@@ -1313,11 +1317,14 @@ class LightRAG:
         track_id: str | None = None,
         metadata: dict | list[dict] | None = None,
     ) -> str:
-        """Async Insert documents with automatic versioning.
+        """Async Insert documents with automatic or explicit versioning.
 
-        Versioning is handled automatically - each document receives a unique
-        sequence_index (v1, v2, v3, ...) internally without user intervention.
-        The metadata parameter is ignored; versioning is fully managed internally.
+        Versioning can be handled in two ways:
+        1. Automatic (default): Each document receives a unique sequence_index (v1, v2, v3, ...)
+        2. Explicit: If metadata contains sequence_index values, those are preserved and used.
+
+        The explicit versioning is used when documents are uploaded via the temporal sequencer
+        (batch_upload_sequenced endpoint), which pre-assigns specific sequence indices.
 
         Args:
             input: Single document string or list of document strings
@@ -1328,7 +1335,9 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
-            metadata: (Deprecated) parameter is ignored. Versioning is handled automatically.
+            metadata: optional metadata for each document. If provided with sequence_index values,
+                     those indices will be preserved. Otherwise, sequence_index will be auto-assigned.
+                     Other metadata fields (effective_date, doc_type) are merged with defaults if not provided.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1439,45 +1448,19 @@ class LightRAG:
     async def _get_next_sequence_index(self) -> int:
         """Get the next sequence index for automatic versioning.
 
-        Retrieves the current sequence counter from KV storage, increments it,
-        and returns the new value. Uses a lock to ensure atomicity across
-        concurrent insertions.
+        Uses the SequenceIndexManager to ensure race-free sequence allocation
+        across concurrent insertions and distributed processes.
 
         Returns:
             int: Next sequence index (1-based for versioned documents)
+
+        Note:
+            This method now delegates to SequenceIndexManager which provides:
+            - Distributed locking with CAS pattern
+            - Stale lock detection and recovery
+            - Thread-safe atomic operations
         """
-        counter_key = "_lightrag_metadata:sequence_counter"
-
-        # Use namespace lock to ensure atomic read-modify-write operation
-        sequence_lock = get_namespace_lock("sequence_counter", workspace=self.workspace)
-
-        async with sequence_lock:
-            try:
-                # Try to get existing counter
-                counter_data = await self.full_docs.get_by_id(counter_key)
-                if counter_data is None:
-                    current_index = 0
-                else:
-                    current_index = counter_data.get("last_index", 0)
-            except (KeyError, AttributeError):
-                current_index = 0
-
-            next_index = current_index + 1
-
-            # Persist updated counter
-            await self.full_docs.upsert(
-                {
-                    counter_key: {
-                        "last_index": next_index,
-                        "updated_at": str(__import__("datetime").datetime.now()),
-                    }
-                }
-            )
-
-            # Force immediate persistence to disk to ensure counter survives across sessions
-            await self.full_docs.index_done_callback()
-
-        return next_index
+        return await self._sequence_manager.get_next_sequence_index()
 
     async def apipeline_enqueue_documents(
         self,
@@ -1488,20 +1471,26 @@ class LightRAG:
         metadata: dict | list[dict] | None = None,
     ) -> str:
         """
-        Pipeline for Processing Documents with Automatic Versioning
+        Pipeline for Processing Documents with Automatic or Explicit Versioning
 
         1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
-        2. Auto-assign sequence_index to each document for versioning
+        2. Auto-assign or preserve sequence_index based on provided metadata
         3. Generate document initial status
         4. Filter out already processed documents
         5. Enqueue document in status
+
+        Versioning Behavior:
+        - If metadata contains sequence_index values for all documents, those are preserved
+        - Otherwise, sequence_index is auto-assigned (atomic batch allocation to prevent gaps)
 
         Args:
             input: Single document string or list of document strings
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
-            metadata: (Deprecated) parameter is ignored. Versioning is handled automatically internally.
+            metadata: Optional metadata with sequence_index values. If all documents have sequence_index,
+                     those values are preserved. Otherwise, sequence_index is auto-assigned.
+                     Other fields (effective_date, doc_type) are merged with defaults if not provided.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1530,18 +1519,42 @@ class LightRAG:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
 
-        # Always auto-assign sequence_index for each document
-        # Versioning is internalized and managed automatically
-        metadata = []
-        for _ in range(len(input)):
-            next_idx = await self._get_next_sequence_index()
-            metadata.append(
+        # Check if metadata was provided with sequence_index values (from batch_upload_sequenced)
+        # If so, preserve those values. Otherwise, auto-assign sequence_index.
+        has_provided_sequence_indices = (
+            metadata is not None
+            and len(metadata) == len(input)
+            and all(isinstance(m, dict) and "sequence_index" in m for m in metadata)
+        )
+
+        if not has_provided_sequence_indices:
+            # Auto-assign sequence_index for each document
+            # Versioning is internalized and managed automatically
+            # Use atomic batch allocation to prevent gaps on failure (Issue #16 fix)
+            sequence_indices = (
+                await self._sequence_manager.get_next_batch_sequence_indices(len(input))
+            )
+            logger.info(f"Auto-assigning sequence indices: {sequence_indices}")
+            metadata = [
                 {
-                    "sequence_index": next_idx,
+                    "sequence_index": idx,
                     "effective_date": "unknown",
                     "doc_type": "unknown",
                 }
-            )
+                for idx in sequence_indices
+            ]
+        else:
+            # Preserve provided metadata but ensure all required fields are present
+            provided_indices = [m.get("sequence_index") for m in metadata]
+            logger.info(f"Preserving provided sequence indices: {provided_indices}")
+            metadata = [
+                {
+                    "sequence_index": m.get("sequence_index"),
+                    "effective_date": m.get("effective_date", "unknown"),
+                    "doc_type": m.get("doc_type", "unknown"),
+                }
+                for m in metadata
+            ]
 
         # 1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         if ids is not None:
@@ -1612,6 +1625,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "metadata": content_data["metadata"],  # Include metadata for UI display
             }
             for id_, content_data in contents.items()
         }
@@ -2191,7 +2205,8 @@ class LightRAG:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
-                                                "processing_start_time": processing_start_time
+                                                **(status_doc.metadata or {}),
+                                                "processing_start_time": processing_start_time,
                                             },
                                         }
                                     }
@@ -2289,6 +2304,7 @@ class LightRAG:
                                         "file_path": file_path,
                                         "track_id": status_doc.track_id,  # Preserve existing track_id
                                         "metadata": {
+                                            **(status_doc.metadata or {}),
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
                                         },
@@ -2346,6 +2362,7 @@ class LightRAG:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
+                                                **(status_doc.metadata or {}),
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
                                             },
@@ -2419,6 +2436,7 @@ class LightRAG:
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
+                                                **(status_doc.metadata or {}),
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
                                             },

@@ -6,11 +6,13 @@ import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { useGraphStore } from '@/stores/graph'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
+import QueryHistoryDialog from '@/components/retrieval/QueryHistoryDialog'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
+import { EraserIcon, SendIcon, CopyIcon, History } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -107,6 +109,8 @@ export default function RetrievalTesting() {
   // Get current tab to determine if this tab is active (for performance optimization)
   const currentTab = useSettingsStore.use.currentTab()
   const isRetrievalTabActive = currentTab === 'retrieval'
+  
+  const [showHistoryDialog, setShowHistoryDialog] = useState(false)
 
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
     try {
@@ -145,6 +149,16 @@ export default function RetrievalTesting() {
 
   // Smart switching logic: use Input for single line, Textarea for multi-line
   const hasMultipleLines = inputValue.includes('\n')
+
+  // Monitor workspace changes and reset retrieval state
+  const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
+  useEffect(() => {
+    console.log('[RetrievalTesting] Workspace changed to:', currentWorkspace, 'clearing messages...')
+    // Clear messages and history when workspace changes
+    setMessages([])
+    setInputValue('')
+    useSettingsStore.getState().setRetrievalHistory([])
+  }, [currentWorkspace])
 
   // Enhanced event handlers for smart switching
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -800,6 +814,16 @@ export default function RetrievalTesting() {
             <EraserIcon />
             {t('retrievePanel.retrieval.clear')}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setShowHistoryDialog(true)}
+            disabled={isLoading}
+            size="sm"
+            tooltip="View query history"
+          >
+            <History />
+          </Button>
           <div className="flex-1 relative">
             <label htmlFor="query-input" className="sr-only">
               {t('retrievePanel.retrieval.placeholder')}
@@ -857,6 +881,11 @@ export default function RetrievalTesting() {
         </form>
       </div>
       <QuerySettings />
+      <QueryHistoryDialog
+        open={showHistoryDialog}
+        onOpenChange={setShowHistoryDialog}
+        onSelectQuery={(query) => setInputValue(query)}
+      />
     </div>
   )
 }

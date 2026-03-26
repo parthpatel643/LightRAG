@@ -46,6 +46,12 @@ dependencies = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "pytest>=8.4.2",
+    "fastapi>=0.120.2",
+    # CLI dependencies
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "mlflow>=2.10.0",
 ]
 
 [project.optional-dependencies]
@@ -162,6 +168,7 @@ observability = [
 ]
 
 [project.scripts]
+lightrag = "lightrag.cli:cli"
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"

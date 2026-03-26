@@ -3,6 +3,7 @@ import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } f
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { navigationService } from '@/services/navigation'
 
 // Types
@@ -359,6 +360,7 @@ axiosInstance.interceptors.request.use((config) => {
 
   const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const currentWorkspace = useWorkspaceStore.getState().currentWorkspace;
 
   // Always include token if it exists, regardless of path
   if (token) {
@@ -366,6 +368,12 @@ axiosInstance.interceptors.request.use((config) => {
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+  // Include current workspace in requests, but EXCLUDE workspace management endpoints
+  // to avoid warnings during initial sync when frontend and backend workspaces may differ
+  const isWorkspaceManagementEndpoint = config.url?.startsWith('/workspace/');
+  if (currentWorkspace && !isWorkspaceManagementEndpoint) {
+    config.headers['LIGHTRAG-WORKSPACE'] = currentWorkspace
   }
   return config
 })
@@ -1050,5 +1058,304 @@ export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<
  */
 export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
   const response = await axiosInstance.get('/documents/status_counts')
+  return response.data
+}
+
+// ============================================================================
+// Workspace Management API
+// ============================================================================
+
+export type WorkspaceConfig = {
+  name: string
+  workingDir: string
+  inputDir: string
+  description?: string
+}
+
+export type WorkspaceResponse = {
+  status: string
+  message: string
+  workspace?: WorkspaceConfig
+}
+
+/**
+ * Switch to a different workspace
+ * @param config The workspace configuration
+ * @returns Promise with workspace response
+ */
+export const switchWorkspace = async (config: WorkspaceConfig): Promise<WorkspaceResponse> => {
+  // Transform camelCase to snake_case for API
+  const apiPayload = {
+    name: config.name,
+    working_dir: config.workingDir,
+    input_dir: config.inputDir,
+    description: config.description
+  }
+  const response = await axiosInstance.post('/workspace/switch', apiPayload)
+  // Validate response
+  if (!response.data || typeof response.data !== 'object') {
+    throw new Error('Invalid workspace switch response from server')
+  }
+  // Note: Workspace store is updated by the caller before this API call
+  // to ensure subsequent requests use the correct workspace header
+  return response.data
+}
+
+/**
+ * Get the current workspace configuration
+ * @returns Promise with current workspace config
+ */
+export const getCurrentWorkspace = async (): Promise<WorkspaceConfig | null> => {
+  try {
+    const response = await axiosInstance.get('/workspace/current')
+    if (!response.data || typeof response.data !== 'object') {
+      console.warn('Invalid current workspace response:', response.data)
+      return null
+    }
+    return response.data
+  } catch (error) {
+    console.error('Failed to get current workspace:', error)
+    return null
+  }
+}
+
+/**
+ * List all available workspaces
+ * @returns Promise with array of workspace configs
+ */
+export const listWorkspaces = async (): Promise<WorkspaceConfig[]> => {
+  const response = await axiosInstance.get('/workspace/list')
+  // Validate that response.data is an array
+  if (!response.data || !Array.isArray(response.data)) {
+    console.warn('Invalid workspace list response:', response.data)
+    return []
+  }
+  // Transform snake_case from API to camelCase for frontend
+  return response.data.map((ws: any) => ({
+    name: ws.name,
+    workingDir: ws.working_dir,
+    inputDir: ws.input_dir,
+    description: ws.description
+  }))
+}
+
+/**
+ * Create a new workspace
+ * @param config The workspace configuration
+ * @returns Promise with workspace response
+ */
+export const createWorkspace = async (config: WorkspaceConfig): Promise<WorkspaceResponse> => {
+  const response = await axiosInstance.post('/workspace/create', config)
+  return response.data
+}
+
+// ============================================================================
+// Document Sequencing API
+// ============================================================================
+
+export type DocumentSequenceUpdate = {
+  document_id: string
+  sequence_index: number
+  doc_type?: string
+  effective_date?: string
+}
+
+export type BatchSequenceUpdate = {
+  updates: DocumentSequenceUpdate[]
+}
+
+export type SequenceResponse = {
+  status: string
+  message: string
+  updated_count: number
+}
+
+export type SequencedDocument = {
+  document_id: string
+  file_path: string
+  sequence_index: number
+  doc_type: string
+  effective_date: string
+  status: string
+}
+
+export type DocumentSequencesResponse = {
+  status: string
+  count: number
+  documents: SequencedDocument[]
+}
+
+/**
+ * Update the sequence index of a single document
+ * @param documentId The document ID
+ * @param update The sequence update data
+ * @returns Promise with sequence response
+ */
+export const updateDocumentSequence = async (
+  documentId: string,
+  update: DocumentSequenceUpdate
+): Promise<SequenceResponse> => {
+  const response = await axiosInstance.patch(`/documents/${documentId}/sequence`, update)
+  return response.data
+}
+
+/**
+ * Update sequence indices for multiple documents
+ * @param updates The batch sequence updates
+ * @returns Promise with sequence response
+ */
+export const batchUpdateSequences = async (updates: BatchSequenceUpdate): Promise<SequenceResponse> => {
+  const response = await axiosInstance.post('/documents/batch-sequence', updates)
+  return response.data
+}
+
+/**
+ * Upload multiple files with automatic sequencing
+ * @param files The files to upload
+ * @param order The ordered list of filenames
+ * @param metadata Additional metadata
+ * @param onUploadProgress Optional progress callback
+ * @returns Promise with upload response
+ */
+export const batchUploadSequenced = async (
+  files: File[],
+  order: string[],
+  metadata?: Record<string, any>,
+  onUploadProgress?: (percentCompleted: number) => void
+): Promise<{
+  status: string
+  message: string
+  inserted_count: number
+  total_files: number
+}> => {
+  const formData = new FormData()
+  
+  // Add all files
+  files.forEach(file => {
+    formData.append('files', file)
+  })
+  
+  // Add order as JSON string
+  formData.append('order', JSON.stringify(order))
+  
+  // Add metadata as JSON string
+  if (metadata) {
+    formData.append('metadata', JSON.stringify(metadata))
+  }
+  
+  const response = await axiosInstance.post('/documents/batch-upload-sequenced', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    onUploadProgress: onUploadProgress
+      ? (progressEvent) => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1))
+          onUploadProgress(percentCompleted)
+        }
+      : undefined
+  })
+  
+  return response.data
+}
+
+/**
+ * Get all documents with their sequence information
+ * @returns Promise with sequenced documents response
+ */
+export const getDocumentSequences = async (): Promise<DocumentSequencesResponse> => {
+  const response = await axiosInstance.get('/documents/sequences')
+  return response.data
+}
+
+/**
+ * Response for deleting a sequenced document
+ */
+export type DeleteSequencedDocumentResponse = {
+  status: string
+  message: string
+  document_id: string
+  sequence_index?: number
+  effective_date?: string
+  doc_type?: string
+  deleted_file: boolean
+  deleted_cache: boolean
+  deletion_details: {
+    chunks_deleted: number
+    entities_deleted: number
+    relations_deleted: number
+  }
+}
+
+/**
+ * Response for replacing a sequenced document
+ */
+export type ReplaceSequencedDocumentResponse = {
+  status: string
+  message: string
+  original_document_id: string
+  new_file: string
+  preserved_metadata: {
+    sequence_index: number
+    effective_date: string
+    doc_type: string
+  }
+}
+
+/**
+ * Delete a sequenced document while preserving sequence gaps
+ * @param documentId - ID of the document to delete
+ * @param deleteFile - Whether to delete the physical file (default: true)
+ * @param deleteLlmCache - Whether to delete LLM cache entries (default: false)
+ * @returns Promise with deletion response
+ */
+export const deleteSequencedDocument = async (
+  documentId: string,
+  deleteFile: boolean = true,
+  deleteLlmCache: boolean = false
+): Promise<DeleteSequencedDocumentResponse> => {
+  const response = await axiosInstance.delete(
+    `/documents/${documentId}/sequenced`,
+    {
+      params: {
+        delete_file: deleteFile,
+        delete_llm_cache: deleteLlmCache
+      }
+    }
+  )
+  return response.data
+}
+
+/**
+ * Replace a sequenced document with new content while preserving metadata
+ * @param documentId - ID of the document to replace
+ * @param file - New file to upload
+ * @param onUploadProgress - Optional callback for upload progress
+ * @returns Promise with replacement response
+ */
+export const replaceSequencedDocument = async (
+  documentId: string,
+  file: File,
+  onUploadProgress?: (progress: number) => void
+): Promise<ReplaceSequencedDocumentResponse> => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await axiosInstance.post(
+    `/documents/${documentId}/replace`,
+    formData,
+    {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      onUploadProgress: onUploadProgress
+        ? (progressEvent) => {
+            const percentCompleted = Math.round(
+              (progressEvent.loaded * 100) / (progressEvent.total || 1)
+            )
+            onUploadProgress(percentCompleted)
+          }
+        : undefined
+    }
+  )
   return response.data
 }

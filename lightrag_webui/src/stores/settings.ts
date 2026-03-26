@@ -76,6 +76,9 @@ interface SettingsState {
   enableHealthCheck: boolean
   setEnableHealthCheck: (enable: boolean) => void
 
+  showApiTab: boolean
+  setShowApiTab: (show: boolean) => void
+
   currentTab: Tab
   setCurrentTab: (tab: Tab) => void
 
@@ -111,6 +114,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       queryLabel: defaultQueryLabel,
 
       enableHealthCheck: true,
+      showApiTab: false,
 
       apiKey: null,
 
@@ -186,6 +190,8 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
+      setShowApiTab: (show: boolean) => set({ showApiTab: show }),
+
       setApiKey: (apiKey: string | null) => set({ apiKey }),
 
       setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
@@ -240,7 +246,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -354,6 +360,10 @@ const useSettingsStoreBase = create<SettingsState>()(
             state.querySettings.include_references = state.querySettings.include_references !== false
             state.querySettings.include_chunk_content = state.querySettings.include_chunk_content || false
           }
+        }
+        if (version < 21) {
+          // Add showApiTab field for older versions (default to false for general users)
+          state.showApiTab = false
         }
         return state
       }

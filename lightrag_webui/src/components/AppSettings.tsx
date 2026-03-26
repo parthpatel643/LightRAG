@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Button from '@/components/ui/Button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
+import Checkbox from '@/components/ui/Checkbox'
 import { useSettingsStore } from '@/stores/settings'
 import { PaletteIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -20,6 +21,9 @@ export default function AppSettings({ className }: AppSettingsProps) {
 
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
+
+  const showApiTab = useSettingsStore.use.showApiTab()
+  const setShowApiTab = useSettingsStore.use.setShowApiTab()
 
   const handleLanguageChange = useCallback((value: string) => {
     setLanguage(value as 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi')
@@ -72,6 +76,17 @@ export default function AppSettings({ className }: AppSettingsProps) {
                 <SelectItem value="system">{t('settings.system')}</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-2 border-t">
+            <label className="text-sm font-medium cursor-pointer" htmlFor="show-api-tab">
+              {t('settings.showApiTab', 'Show API Tab')}
+            </label>
+            <Checkbox
+              id="show-api-tab"
+              checked={showApiTab}
+              onCheckedChange={(checked) => setShowApiTab(checked as boolean)}
+            />
           </div>
         </div>
       </PopoverContent>

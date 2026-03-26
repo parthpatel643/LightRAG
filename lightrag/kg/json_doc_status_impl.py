@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from typing import Any, Union, final
 
 from lightrag.base import (
@@ -7,20 +7,21 @@ from lightrag.base import (
     DocStatus,
     DocStatusStorage,
 )
+from lightrag.exceptions import StorageNotInitializedError
 from lightrag.utils import (
+    get_pinyin_sort_key,
     load_json,
     logger,
     write_json,
-    get_pinyin_sort_key,
 )
-from lightrag.exceptions import StorageNotInitializedError
+
 from .shared_storage import (
+    clear_all_update_flags,
+    get_data_init_lock,
     get_namespace_data,
     get_namespace_lock,
-    get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
-    clear_all_update_flags,
     try_initialize_namespace,
 )
 
@@ -46,8 +47,55 @@ class JsonDocStatusStorage(DocStatusStorage):
         self._storage_lock = None
         self.storage_updated = None
 
+    def _sanitize_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Remove invalid document records that are missing required fields
+
+        Args:
+            data: Raw data dictionary loaded from storage
+
+        Returns:
+            Sanitized dictionary with only valid records
+        """
+        sanitized = {}
+        required_fields = [
+            "status",
+            "content_summary",
+            "content_length",
+            "file_path",
+            "created_at",
+            "updated_at",
+        ]
+
+        for doc_id, doc_data in data.items():
+            # Skip internal system keys (locks, counters, etc.)
+            if doc_id.startswith("__") and doc_id.endswith("__"):
+                sanitized[doc_id] = doc_data
+                continue
+
+            # Skip non-dict values
+            if not isinstance(doc_data, dict):
+                logger.warning(f"Skipping invalid document {doc_id}: not a dictionary")
+                continue
+
+            # Check for required fields
+            missing_fields = [f for f in required_fields if f not in doc_data]
+            if missing_fields:
+                logger.warning(
+                    f"Skipping document {doc_id}: missing required fields {missing_fields}"
+                )
+                continue
+
+            # Valid record
+            sanitized[doc_id] = doc_data
+
+        return sanitized
+
     async def initialize(self):
         """Initialize storage data"""
+        print(
+            f"[DOCSTORAGE-DEBUG] JsonDocStatusStorage.initialize() called for namespace={self.namespace}, workspace={self.workspace}",
+            flush=True,
+        )
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
@@ -59,15 +107,29 @@ class JsonDocStatusStorage(DocStatusStorage):
             need_init = await try_initialize_namespace(
                 self.namespace, workspace=self.workspace
             )
+            print(
+                f"[DOCSTORAGE-DEBUG] namespace={self.namespace}, workspace={self.workspace}, need_init={need_init}, file={self._file_name}",
+                flush=True,
+            )
             self._data = await get_namespace_data(
                 self.namespace, workspace=self.workspace
             )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
+                print(
+                    f"[DOCSTORAGE-DEBUG] Loaded {len(loaded_data)} records from {self._file_name}",
+                    flush=True,
+                )
+                # Sanitize loaded data to remove invalid records
+                sanitized_data = self._sanitize_data(loaded_data)
+                if len(sanitized_data) < len(loaded_data):
+                    logger.warning(
+                        f"[{self.workspace}] Removed {len(loaded_data) - len(sanitized_data)} invalid records during initialization"
+                    )
                 async with self._storage_lock:
-                    self._data.update(loaded_data)
+                    self._data.update(sanitized_data)
                     logger.info(
-                        f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
+                        f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(sanitized_data)} records"
                     )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
@@ -85,7 +147,14 @@ class JsonDocStatusStorage(DocStatusStorage):
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    ordered_results.append(data.copy())
+                    # Validate data integrity before returning
+                    if isinstance(data, dict) and "status" in data:
+                        ordered_results.append(data.copy())
+                    else:
+                        logger.warning(
+                            f"Document {id} has invalid data, returning None"
+                        )
+                        ordered_results.append(None)
                 else:
                     ordered_results.append(None)
         return ordered_results
@@ -96,7 +165,17 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
-            for doc in self._data.values():
+            for k, doc in self._data.items():
+                # Skip internal metadata entries
+                if k.startswith("__") and k.endswith("__"):
+                    continue
+
+                # Skip documents without status field (data integrity issue)
+                if not isinstance(doc, dict) or "status" not in doc:
+                    logger.warning(
+                        f"Document {k} missing 'status' field in count, skipping"
+                    )
+                    continue
                 counts[doc["status"]] += 1
         return counts
 
@@ -104,9 +183,23 @@ class JsonDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
+                # Skip internal metadata entries (used by SequenceIndexManager, etc.)
+                if k.startswith("__") and k.endswith("__"):
+                    continue
+
+                if isinstance(v, dict) and v.get("_is_metadata"):
+                    continue
+
+                # Skip documents without status field (data integrity issue)
+                if not isinstance(v, dict) or "status" not in v:
+                    logger.warning(f"Document {k} missing 'status' field, skipping")
+                    continue
+
                 if v["status"] == status.value:
                     try:
                         # Make a copy of the data to avoid modifying the original
@@ -121,6 +214,11 @@ class JsonDocStatusStorage(DocStatusStorage):
                             data["metadata"] = {}
                         if "error_msg" not in data:
                             data["error_msg"] = None
+
+                        # Convert status string to DocStatus enum
+                        if "status" in data and isinstance(data["status"], str):
+                            data["status"] = DocStatus(data["status"])
+
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(
@@ -133,9 +231,18 @@ class JsonDocStatusStorage(DocStatusStorage):
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific track_id"""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
+                # Skip internal metadata entries
+                if k.startswith("__") and k.endswith("__"):
+                    continue
+
+                if isinstance(v, dict) and v.get("_is_metadata"):
+                    continue
+
                 if v.get("track_id") == track_id:
                     try:
                         # Make a copy of the data to avoid modifying the original
@@ -150,6 +257,11 @@ class JsonDocStatusStorage(DocStatusStorage):
                             data["metadata"] = {}
                         if "error_msg" not in data:
                             data["error_msg"] = None
+
+                        # Convert status string to DocStatus enum
+                        if "status" in data and isinstance(data["status"], str):
+                            data["status"] = DocStatus(data["status"])
+
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(
@@ -196,15 +308,49 @@ class JsonDocStatusStorage(DocStatusStorage):
         )
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
-        async with self._storage_lock:
-            # Ensure chunks_list field exists for new documents
-            for doc_id, doc_data in data.items():
-                if "chunks_list" not in doc_data:
-                    doc_data["chunks_list"] = []
-            self._data.update(data)
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
 
-        await self.index_done_callback()
+        # Validate data before upserting
+        validated_data = {}
+        required_fields = [
+            "status",
+            "content_summary",
+            "content_length",
+            "file_path",
+            "created_at",
+            "updated_at",
+        ]
+
+        for doc_id, doc_data in data.items():
+            # Skip internal system keys (locks, counters, etc.)
+            if doc_id.startswith("__") and doc_id.endswith("__"):
+                validated_data[doc_id] = doc_data
+                continue
+
+            # Validate required fields for regular documents
+            missing_fields = [f for f in required_fields if f not in doc_data]
+            if missing_fields:
+                logger.error(
+                    f"Cannot upsert document {doc_id}: missing required fields {missing_fields}"
+                )
+                continue
+
+            # Ensure optional fields have defaults
+            if "chunks_list" not in doc_data:
+                doc_data["chunks_list"] = []
+            if "metadata" not in doc_data:
+                doc_data["metadata"] = {}
+            if "error_msg" not in doc_data:
+                doc_data["error_msg"] = None
+
+            validated_data[doc_id] = doc_data
+
+        if validated_data:
+            async with self._storage_lock:
+                self._data.update(validated_data)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+            await self.index_done_callback()
+        else:
+            logger.warning(f"[{self.workspace}] No valid records to upsert")
 
     async def is_empty(self) -> bool:
         """Check if the storage is empty
@@ -263,6 +409,20 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
+                # Skip internal metadata entries
+                if doc_id.startswith("__") and doc_id.endswith("__"):
+                    continue
+
+                if doc_data.get("_is_metadata"):
+                    continue
+
+                # Skip documents without status field
+                if "status" not in doc_data:
+                    logger.warning(
+                        f"Document {doc_id} missing 'status' field, skipping"
+                    )
+                    continue
+
                 # Apply status filter
                 if (
                     status_filter is not None
@@ -280,6 +440,10 @@ class JsonDocStatusStorage(DocStatusStorage):
                         data["metadata"] = {}
                     if "error_msg" not in data:
                         data["error_msg"] = None
+
+                    # Convert status string to DocStatus enum
+                    if "status" in data and isinstance(data["status"], str):
+                        data["status"] = DocStatus(data["status"])
 
                     doc_status = DocProcessingStatus(**data)
 

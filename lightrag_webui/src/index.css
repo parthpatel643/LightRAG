@@ -212,3 +212,18 @@
   border-color: rgba(255, 0, 0, 0.4);
   color: #ef4444;
 }
+
+/* Indeterminate progress bar animation */
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.animate-progress-indeterminate {
+  animation: progress-indeterminate 1.5s ease-in-out infinite;
+  width: 25%;
+}
