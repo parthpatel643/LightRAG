@@ -99,8 +99,9 @@ class NeptuneIAMAuth:
             Dictionary of HTTP headers including authorization signature
         """
         # Create canonical request for signing
+        # SigV4 signing requires https:// scheme even though the actual connection uses wss://
         method = "GET"
-        url = f"wss://{self.endpoint}:{self.port}/gremlin"
+        url = f"https://{self.endpoint}:{self.port}/gremlin"
         headers = {
             "host": f"{self.endpoint}:{self.port}",
         }
@@ -218,6 +219,11 @@ class NeptuneGraphStorage(BaseGraphStorage):
                     logger.info("Neptune connection verified")
                 except Exception as e:
                     logger.error(f"Failed to verify Neptune connection: {e}")
+                    try:
+                        self._client.close()
+                    except Exception:
+                        pass
+                    self._client = None
                     raise NeptuneConnectionError(
                         f"Connection verification failed: {e}"
                     ) from e

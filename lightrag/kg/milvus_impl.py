@@ -359,7 +359,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             "MILVUS_DB_NAME",
             config.get("milvus", "db_name", fallback=None),
         )
-        print("*" * 10, db_name, '#'*10)
+
         if include_db_name and db_name:
             connection_kwargs["db_name"] = db_name
 
