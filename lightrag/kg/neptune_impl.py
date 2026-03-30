@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, final
 
-import pipmaster as pm
+from gremlin_python.driver import client, serializer
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -23,14 +23,6 @@ from ..base import BaseGraphStorage
 from ..kg.shared_storage import get_data_init_lock
 from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from ..utils import logger
-
-# Install required dependencies
-if not pm.is_installed("gremlin_python"):
-    pm.install("gremlinpython")
-if not pm.is_installed("requests_aws4auth"):
-    pm.install("requests-aws4auth")
-
-from gremlin_python.driver import client, serializer
 
 try:
     import boto3
