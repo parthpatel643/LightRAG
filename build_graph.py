@@ -247,6 +247,10 @@ Examples:
         ),
         entity_extract_max_gleaning=extract_gleaning,
         enable_llm_cache=False,
+        kv_storage="MongoKVStorage",
+        vector_storage="MilvusVectorDBStorage",
+        graph_storage="NeptuneGraphStorage",
+        doc_status_storage="MongoDocStatusStorage",
     )
 
     # Initialize storages
