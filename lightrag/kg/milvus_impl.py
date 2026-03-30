@@ -359,6 +359,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             "MILVUS_DB_NAME",
             config.get("milvus", "db_name", fallback=None),
         )
+        print("*" * 10, db_name, '#'*10)
         if include_db_name and db_name:
             connection_kwargs["db_name"] = db_name
 
@@ -376,33 +377,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         return normalized_name or None
 
     def _create_milvus_client(self) -> MilvusClient:
-        """Create a Milvus client and ensure the configured database exists."""
-        client = MilvusClient(
-            **self._get_milvus_connection_kwargs(include_db_name=False)
-        )
+        """Create a Milvus client connected to the configured database."""
         db_name = self._get_milvus_db_name()
 
-        if not db_name:
-            return client
-
-        existing_databases = set(client.list_databases())
-        if db_name not in existing_databases:
-            logger.warning(
-                f"[{self.workspace}] Milvus database '{db_name}' not found, creating it"
-            )
-            client.create_database(db_name)
-
-        use_database = getattr(client, "use_database", None) or getattr(
-            client, "using_database", None
-        )
-        if callable(use_database):
-            use_database(db_name)
+        if db_name:
             logger.debug(
-                f"[{self.workspace}] Using Milvus database '{db_name}' for namespace '{self.namespace}'"
+                f"[{self.workspace}] Connecting to Milvus database '{db_name}' for namespace '{self.namespace}'"
             )
-            return client
+            return MilvusClient(**self._get_milvus_connection_kwargs(include_db_name=True))
 
-        return MilvusClient(**self._get_milvus_connection_kwargs(include_db_name=True))
+        return MilvusClient(**self._get_milvus_connection_kwargs(include_db_name=False))
 
     def _create_schema_for_namespace(self) -> CollectionSchema:
         """Create schema based on the current instance's namespace"""
