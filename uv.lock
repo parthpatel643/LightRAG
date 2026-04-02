@@ -577,6 +577,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cacheout"
+version = "0.16.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/60/ed4c4b27b2131a0b2cc461789be2cf06866644ca462cb34a5d8fca114c15/cacheout-0.16.0.tar.gz", hash = "sha256:ee264897cbaa089ae5f406da11952697d99fa7f3583cfab69fe8a00ff8e1952d", size = 42050, upload-time = "2023-12-22T17:44:33.29Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/14/a89bb55107b8a9b586c8878f47d0b7750c3688c209f05f915e70de74880d/cacheout-0.16.0-py3-none-any.whl", hash = "sha256:1a52d9aa8b1e9720d8453b061348f15795578231f9ec4ad376fec49e717d0ed8", size = 21837, upload-time = "2023-12-22T17:44:31.556Z" },
+]
+
+[[package]]
 name = "cachetools"
 version = "7.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -2806,6 +2815,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "beautifulsoup4" },
     { name = "boto3" },
+    { name = "cacheout" },
     { name = "configparser" },
     { name = "fastapi" },
     { name = "google-api-core" },
@@ -2826,6 +2836,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pipmaster" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "pymilvus" },
     { name = "pymongo" },
     { name = "pypinyin" },
@@ -3086,6 +3097,7 @@ requires-dist = [
     { name = "bcrypt", marker = "extra == 'api'", specifier = ">=4.0.0" },
     { name = "beautifulsoup4", specifier = ">=4.14.2" },
     { name = "boto3", specifier = ">=1.40.49" },
+    { name = "cacheout", specifier = ">=0.16.0" },
     { name = "configparser" },
     { name = "configparser", marker = "extra == 'api'" },
     { name = "datasets", marker = "extra == 'evaluation'", specifier = ">=4.3.0" },
@@ -3141,6 +3153,7 @@ requires-dist = [
     { name = "pycryptodome", marker = "extra == 'api'", specifier = ">=3.0.0,<4.0.0" },
     { name = "pydantic" },
     { name = "pydantic", marker = "extra == 'api'" },
+    { name = "pyjwt", specifier = ">=2.8.0" },
     { name = "pyjwt", marker = "extra == 'api'", specifier = ">=2.8.0,<3.0.0" },
     { name = "pymilvus", specifier = ">=2.6.11" },
     { name = "pymilvus", marker = "extra == 'offline-storage'", specifier = ">=2.6.2,<3.0.0" },

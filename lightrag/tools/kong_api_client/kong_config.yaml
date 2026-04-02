@@ -1,0 +1,7 @@
+app_name: "kong-app" # align with Chart.Name
+app_version: "1.0.0" # align with Chart.AppVersion 
+kong_creds_secret: bos-kong-admin-creds
+kong_kic_creds_secret: bos-kong-admin-kic-creds
+oauth2_tenant_id: 1146cf6d-9b72-4828-bd04-9f1ccb305586
+oauth2_token_generation_scope: 1934fc5f-965d-4c12-95d1-9dafbe91e634/.default
+oauth2_token_generation_grant_type: client_credentials

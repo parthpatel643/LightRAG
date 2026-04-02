@@ -4,10 +4,15 @@ from uuid import uuid4
 import httpx
 import numpy as np
 
-from lightrag.generate_token import provide_bearer_token
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.rerank import cohere_rerank
+from lightrag.tools.kong_api_client.kong_client import KongClient
 from lightrag.utils import wrap_embedding_func_with_attrs
+
+kong_client = KongClient(
+    region_name="us-east-1",
+    user_secret_manager_name="bos-line-stations-proxy-service-api-key",
+)
 
 extra_body = {"extra_body": {"trace_data": {"session_id": str(uuid4())}}}
 
@@ -21,7 +26,9 @@ def new_httpx_client():
 def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ):
-    kwargs["extra_headers"] = provide_bearer_token()
+    kwargs["extra_headers"] = {
+        "Authorization": f"Bearer {kong_client.generate_token()}"
+    }
     kwargs["extra_body"] = extra_body
     kwargs["openai_client_configs"] = {"http_client": new_httpx_client()}
     return openai_complete_if_cache(
@@ -48,7 +55,9 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
         base_url=os.getenv("EMBEDDING_BINDING_HOST"),
         client_configs={"http_client": new_httpx_client()},
         extra_configs={
-            "extra_headers": provide_bearer_token(),
+            "extra_headers": {
+                "Authorization": f"Bearer {kong_client.generate_token()}"
+            },
             "extra_body": extra_body,
         },
     )
@@ -58,7 +67,7 @@ def rerank_model_func(*args, **kwargs):
     return cohere_rerank(
         *args,
         model=os.getenv("RERANK_MODEL"),
-        api_key=provide_bearer_token()["Authorization"].split(" ")[1],
+        api_key=kong_client.generate_token(),
         base_url=os.getenv("RERANK_BINDING_HOST"),
         extra_body=extra_body,
         **kwargs,

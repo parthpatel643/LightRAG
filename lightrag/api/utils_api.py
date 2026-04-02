@@ -5,6 +5,7 @@ Utility functions for the LightRAG API.
 import argparse
 import logging
 import sys
+import os
 import time
 from typing import List, Optional, Tuple
 
