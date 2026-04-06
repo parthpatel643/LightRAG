@@ -890,8 +890,8 @@ class NeptuneGraphStorage(BaseGraphStorage):
 
         # Build batch query
         for pair_dict in pairs:
-            src = pair_dict.get("source")
-            tgt = pair_dict.get("target")
+            src = pair_dict.get("src")
+            tgt = pair_dict.get("tgt")
 
             if not src or not tgt:
                 continue
@@ -900,8 +900,8 @@ class NeptuneGraphStorage(BaseGraphStorage):
             tgt_escaped = tgt.replace("'", "\\'")
 
             query = f"""g.V().has('entity_id', '{src_escaped}').has('workspace', '{workspace}')
-                        .outE().where(inV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
-                        .has('workspace', '{workspace}')
+                        .bothE().has('workspace', '{workspace}')
+                        .where(otherV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
                         .valueMap().by(unfold())"""
 
             result = await self._submit_query(query)
