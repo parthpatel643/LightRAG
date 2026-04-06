@@ -274,7 +274,7 @@ class KongClient:
             )
 
     def generate_token(
-        self, jwt_key=None, jwt_secret=None, refresh_token=False, custom_payload=None
+        self, jwt_key=None, jwt_secret=None, refresh_token=True, custom_payload=None
     ):
         """
         Generate a token for Kong authentication with caching based on the token type mentioned.
