@@ -42,6 +42,7 @@ Usage:
 import argparse
 import asyncio
 import cProfile
+import logging
 import os
 import sys
 from pathlib import Path
@@ -58,6 +59,21 @@ from lightrag.functions import embedding_func, llm_model_func
 from lightrag.hierarchical_chunker import create_hierarchical_chunking_func
 from lightrag.profiling import TimingBreakdown
 from lightrag.utils import logger
+
+
+def _add_file_handler(working_dir: str) -> logging.FileHandler:
+    """Add a file handler to the lightrag logger so build logs are saved to the workspace."""
+    log_path = Path(working_dir) / "build_graph.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(str(log_path), encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.info(f"Build log file: {log_path}")
+    return file_handler
 
 
 async def ingest_documents(
@@ -154,6 +170,9 @@ Examples:
     )
 
     timing = TimingBreakdown("Ingestion Phases") if args.timing else None
+
+    # Add file handler so build logs are persisted to the workspace
+    file_handler = _add_file_handler(working_dir)
 
     logger.info("=" * 60)
     logger.info("LightRAG Document Ingestion")
@@ -297,6 +316,10 @@ Examples:
 
     if timing:
         timing.report()
+
+    # Remove file handler to flush and close the log file
+    logger.removeHandler(file_handler)
+    file_handler.close()
 
 
 if __name__ == "__main__":

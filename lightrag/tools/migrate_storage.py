@@ -552,17 +552,31 @@ def milvus_upsert_vectors(
 
 
 def milvus_get_all_ids(workspace: str, namespace: str) -> set[str]:
-    """Query all primary keys from a Milvus collection."""
+    """Query all primary keys from a Milvus collection (paginated)."""
     mc = _get_milvus_client()
     col_name = _milvus_collection_name(workspace, namespace)
+    PAGE_SIZE = 16000  # Milvus max is 16384
     try:
         if not mc.has_collection(col_name):
             return set()
         mc.load_collection(col_name)
-        results = mc.query(
-            collection_name=col_name, filter="", output_fields=["id"], limit=100_000
-        )
-        return {str(r["id"]) for r in results}
+        all_ids: set[str] = set()
+        offset = 0
+        while True:
+            results = mc.query(
+                collection_name=col_name,
+                filter="",
+                output_fields=["id"],
+                limit=PAGE_SIZE,
+                offset=offset,
+            )
+            if not results:
+                break
+            all_ids.update(str(r["id"]) for r in results)
+            if len(results) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+        return all_ids
     finally:
         mc.close()
 
