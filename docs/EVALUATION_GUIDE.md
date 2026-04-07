@@ -72,6 +72,66 @@ python -m lightrag.evaluation.temporal_evaluator --workspace my_workspace --refe
 
 ---
 
+## Generating Evaluation Datasets
+
+Before running evaluations you need a `dataset.json` file for each workspace.
+The script `scripts/generate_eval_dataset.py` automates this by reading every
+processed contract document for a workspace (latest amendment first) and asking
+the configured LLM to produce 10–15 factual Q&A pairs.
+
+### Prerequisites
+
+No additional dependencies are required beyond the main LightRAG environment.
+Ensure your `.env` contains the three LLM variables used everywhere else:
+
+```bash
+LLM_BINDING_HOST=https://<your-endpoint>/
+LLM_BINDING_API_KEY=<your-key>
+LLM_MODEL=<your-deployment-name>
+```
+
+### Generate datasets for all workspaces
+
+```bash
+python scripts/generate_eval_dataset.py --all
+```
+
+Output files are written to `evaluation/{workspace}/dataset.json`.
+
+### Generate a dataset for a single workspace
+
+```bash
+python scripts/generate_eval_dataset.py --workspace ams_ground_handling_cw76193
+```
+
+### CLI reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace NAME` | — | Process a single workspace (mutually exclusive with `--all`) |
+| `--all` | — | Process every workspace discovered under `inputs/` |
+| `--count N` | `12` | Number of Q&A pairs to generate (10–15) |
+| `--reference-date YYYY-MM-DD` | today | Date embedded in every test case |
+| `--output-dir PATH` | `evaluation/` | Root directory for output files |
+| `--max-chars N` | `120000` | Max combined characters of document text sent to LLM; earlier docs are dropped first when the limit is reached |
+
+### How documents are prioritised
+
+For each workspace, the script reads `data/{workspace}/kv_store_doc_status.json`
+and sorts processed documents by `metadata.sequence_index` **descending** (highest
+= most recent = PRIMARY).  The LLM is instructed to treat the PRIMARY document as
+authoritative and fall back to earlier documents only when information is absent
+from the latest one.
+
+### Adding a new workspace
+
+1. Place contract markdown files under `inputs/{new_workspace}/`.
+2. Build the knowledge graph: `python build_graph.py --workspace {new_workspace}` (populates `data/{new_workspace}/kv_store_doc_status.json`).
+3. Generate the evaluation dataset: `python scripts/generate_eval_dataset.py --workspace {new_workspace}`.
+4. The dataset is ready at `evaluation/{new_workspace}/dataset.json`.
+
+---
+
 ## Directory Structure
 
 ```
