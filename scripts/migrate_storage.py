@@ -15,6 +15,7 @@ Modes:
     delete  – Wipe cloud workspace collections / databases only.
     fresh   – Delete cloud data then upload the full local workspace.
     delta   – Upload new and changed records; optionally remove orphans.
+    info    – Show counts and schema details for cloud data (read-only).
 
 Required environment variables (set before running):
     MONGO_URI, MONGO_DATABASE
@@ -1243,6 +1244,78 @@ async def do_verify(workspace_dir: Path, workspace: str):
 
 
 # ---------------------------------------------------------------------------
+# Info
+# ---------------------------------------------------------------------------
+
+
+async def do_info(workspace: str):
+    """Report counts and schema details for cloud data (read-only)."""
+    logger.info("=== INFO mode: cloud data for '%s' ===", workspace)
+
+    # --- MongoDB ---
+    logger.info("--- MongoDB ---")
+    mongo_total = 0
+    for ns in KV_NAMESPACES + [DOC_STATUS_NAMESPACE]:
+        cloud_ids = await mongo_get_all_ids(workspace, ns)
+        count = len(cloud_ids)
+        mongo_total += count
+        logger.info("  %s: %d documents", ns, count)
+    logger.info("  MongoDB total: %d documents", mongo_total)
+
+    # --- Milvus ---
+    logger.info("--- Milvus ---")
+    mc = _get_milvus_client()
+    milvus_total = 0
+    try:
+        for ns in VECTOR_NAMESPACES:
+            col_name = _milvus_collection_name(workspace, ns)
+            if not mc.has_collection(col_name):
+                logger.info("  %s: collection does not exist", ns)
+                continue
+            mc.load_collection(col_name)
+            stats = mc.get_collection_stats(col_name)
+            row_count = int(stats.get("row_count", 0))
+            milvus_total += row_count
+
+            # Get schema details
+            info = mc.describe_collection(col_name)
+            dim = None
+            fields_summary = []
+            for f in info.get("fields", []):
+                fname = f["name"]
+                if fname == "vector":
+                    dim = f.get("params", {}).get("dim")
+                    fields_summary.append(f"vector(dim={dim})")
+                else:
+                    fields_summary.append(fname)
+
+            logger.info(
+                "  %s: %d vectors, dim=%s, fields=[%s]",
+                ns,
+                row_count,
+                dim or "?",
+                ", ".join(fields_summary),
+            )
+    finally:
+        mc.close()
+    logger.info("  Milvus total: %d vectors", milvus_total)
+
+    # --- Neptune ---
+    logger.info("--- Neptune ---")
+    neptune = NeptuneHelper()
+    await neptune.connect()
+    try:
+        node_ids = await neptune.get_all_node_ids(workspace)
+        edge_keys = await neptune.get_all_edge_keys(workspace)
+        logger.info("  Nodes: %d", len(node_ids))
+        logger.info("  Edges: %d", len(edge_keys))
+    finally:
+        await neptune.close()
+
+    logger.info("=== INFO complete ===")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1266,8 +1339,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["delete", "fresh", "delta", "verify"],
-        help="Migration mode: delete | fresh | delta | verify.",
+        choices=["delete", "fresh", "delta", "verify", "info"],
+        help="Migration mode: delete | fresh | delta | verify | info.",
     )
     parser.add_argument(
         "--batch-size",
@@ -1306,12 +1379,22 @@ async def main():
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
 
-    if not args.working_dir:
+    if not args.working_dir and args.mode != "info":
         logger.error("--working-dir is required (or set WORKING_DIR in .env)")
         sys.exit(1)
     if not args.workspace:
         logger.error("--workspace is required (or set WORKSPACE in .env)")
         sys.exit(1)
+
+    # Info mode only needs workspace, not working-dir
+    if args.mode == "info":
+        if not args.workspace:
+            logger.error("--workspace is required (or set WORKSPACE in .env)")
+            sys.exit(1)
+        logger.info("Workspace   : %s", args.workspace)
+        logger.info("Mode        : %s", args.mode)
+        await do_info(args.workspace)
+        return
 
     working_dir = Path(args.working_dir).resolve()
     workspace_dir = working_dir / args.workspace
