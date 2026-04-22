@@ -41,6 +41,7 @@ from lightrag.exceptions import (
     PipelineCancelledException,
 )
 from lightrag.kg.shared_storage import get_storage_keyed_lock
+from lightrag.profiling import _phase
 from lightrag.prompt import PROMPTS
 from lightrag.utils import (
     CacheData,
@@ -3860,13 +3861,14 @@ async def kg_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
-        )
+        with _phase("llm"):
+            response = await use_model_func(
+                user_query,
+                system_prompt=sys_prompt,
+                history_messages=query_param.conversation_history,
+                enable_cot=True,
+                stream=query_param.stream,
+            )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {
@@ -4087,9 +4089,10 @@ async def _get_vector_context(
         search_top_k = query_param.chunk_top_k or query_param.top_k
         cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
-        results = await chunks_vdb.query(
-            query, top_k=search_top_k, query_embedding=query_embedding
-        )
+        with _phase("chunks_vdb"):
+            results = await chunks_vdb.query(
+                query, top_k=search_top_k, query_embedding=query_embedding
+            )
         if not results:
             logger.info(
                 f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
@@ -4639,13 +4642,14 @@ async def _merge_all_chunks(
 
         # Rerank merged chunks to improve relevance
         rerank_top_k = min(query_param.chunk_top_k, len(merged_chunks))
-        merged_chunks = await apply_rerank_if_enabled(
-            query=query,
-            retrieved_docs=merged_chunks,
-            global_config=text_chunks_db.global_config,
-            enable_rerank=query_param.enable_rerank,
-            top_n=rerank_top_k,
-        )
+        with _phase("rerank"):
+            merged_chunks = await apply_rerank_if_enabled(
+                query=query,
+                retrieved_docs=merged_chunks,
+                global_config=text_chunks_db.global_config,
+                enable_rerank=query_param.enable_rerank,
+                top_n=rerank_top_k,
+            )
 
         logger.info(
             f"Reranked merged chunks: {len(merged_chunks)} chunks retained after reranking"
@@ -5162,9 +5166,10 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-    results = await entities_vdb.query(
-        query, top_k=query_param.top_k, query_embedding=query_embedding
-    )
+    with _phase("entities_vdb"):
+        results = await entities_vdb.query(
+            query, top_k=query_param.top_k, query_embedding=query_embedding
+        )
 
     if not len(results):
         return [], []
@@ -5437,9 +5442,10 @@ async def _get_edge_data(
         f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
-    results = await relationships_vdb.query(
-        keywords, top_k=query_param.top_k, query_embedding=query_embedding
-    )
+    with _phase("relationships_vdb"):
+        results = await relationships_vdb.query(
+            keywords, top_k=query_param.top_k, query_embedding=query_embedding
+        )
 
     if not len(results):
         return [], []
@@ -5944,13 +5950,14 @@ async def naive_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
-            user_query,
-            system_prompt=sys_prompt,
-            history_messages=query_param.conversation_history,
-            enable_cot=True,
-            stream=query_param.stream,
-        )
+        with _phase("llm"):
+            response = await use_model_func(
+                user_query,
+                system_prompt=sys_prompt,
+                history_messages=query_param.conversation_history,
+                enable_cot=True,
+                stream=query_param.stream,
+            )
 
         if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
             queryparam_dict = {

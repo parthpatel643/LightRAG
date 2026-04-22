@@ -2811,6 +2811,7 @@ wheels = [
 name = "lightrag-hku"
 source = { editable = "." }
 dependencies = [
+    { name = "aiofiles" },
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "beautifulsoup4" },
@@ -2842,6 +2843,7 @@ dependencies = [
     { name = "pypinyin" },
     { name = "pytest" },
     { name = "python-dotenv" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "requests-aws4auth" },
     { name = "rich" },
@@ -3087,6 +3089,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", marker = "extra == 'offline-llm'", specifier = ">=12.0.0,<16.0.0" },
+    { name = "aiofiles", specifier = ">=25.1.0" },
     { name = "aiofiles", marker = "extra == 'api'" },
     { name = "aiohttp" },
     { name = "aiohttp", marker = "extra == 'api'" },
@@ -3171,6 +3174,7 @@ requires-dist = [
     { name = "python-dotenv" },
     { name = "python-dotenv", marker = "extra == 'api'" },
     { name = "python-jose", extras = ["cryptography"], marker = "extra == 'api'" },
+    { name = "python-multipart", specifier = ">=0.0.22" },
     { name = "python-multipart", marker = "extra == 'api'" },
     { name = "python-pptx", marker = "extra == 'api'", specifier = ">=0.6.21,<2.0.0" },
     { name = "pytz", marker = "extra == 'api'" },
@@ -3198,6 +3202,9 @@ requires-dist = [
     { name = "zhipuai", marker = "extra == 'offline-llm'", specifier = ">=2.0.0,<3.0.0" },
 ]
 provides-extras = ["pytest", "api", "docling", "offline-storage", "offline-llm", "offline", "test", "evaluation", "observability"]
+
+[package.metadata.requires-dev]
+dev = []
 
 [[package]]
 name = "llama-index"

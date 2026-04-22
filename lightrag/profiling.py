@@ -1,328 +1,233 @@
 """
-profiling.py - Comprehensive Profiling Utilities for LightRAG
+profiling.py - RAG Pipeline Profiler for LightRAG
 
-This module provides profiling utilities including:
-- cProfile-based function profiling
-- Memory profiling with memory_profiler
-- Timing analysis with detailed breakdowns
-- Profile statistics analysis and export
+Tracks wall-clock time for:
+  - RAG instance initialization (constructor + storage init)
+  - Per-query pipeline phases:
+      * entities_vdb   – entity vector DB retrieval (_get_node_data)
+      * relationships_vdb – relationship vector DB retrieval (_get_edge_data)
+      * chunks_vdb     – chunk vector DB retrieval (_get_vector_context)
+      * rerank         – reranking step
+      * llm            – answer generation (LLM call)
+
+Usage
+-----
+    from lightrag.profiling import RAGProfiler
+
+    profiler = RAGProfiler()
+
+    # --- Initialization ---
+    with profiler.track_init():
+        rag = LightRAG(...)
+        await rag.initialize_storages()
+
+    # --- Per-query ---
+    with profiler.track_query("What is the service fee?"):
+        response = await rag.aquery(query, param=param)
+
+    profiler.report()           # pretty-print to logger
+    profiler.as_dict()          # raw numbers as a dict
 """
 
-import cProfile
-import io
-import pstats
+from __future__ import annotations
+
 import time
 from contextlib import contextmanager
-from functools import wraps
-from typing import Callable, Optional
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Optional
 
 from lightrag.utils import logger
 
-
-class ProfileStats:
-    """Container for profiling statistics."""
-
-    def __init__(self, profile_file: str = None, prof: cProfile.Profile = None):
-        self.profile_file = profile_file
-        self.prof = prof
-        self.stats = None
-        if prof:
-            self.stats = pstats.Stats(prof)
-
-    def print_stats(
-        self, sort_by: str = "cumulative", top_n: int = 20, strip_dirs: bool = True
-    ):
-        """
-        Print profiling statistics to console.
-
-        Args:
-            sort_by: Sort key ('cumulative', 'time', 'calls')
-            top_n: Number of top functions to display
-            strip_dirs: Strip directory names from file paths
-        """
-        if not self.stats:
-            logger.warning("No profiling stats available")
-            return
-
-        logger.info("\n" + "=" * 80)
-        logger.info("PROFILING STATISTICS")
-        logger.info("=" * 80)
-
-        if strip_dirs:
-            self.stats.strip_dirs()
-
-        self.stats.sort_stats(sort_by)
-        self.stats.print_stats(top_n)
-        logger.info("=" * 80 + "\n")
-
-    def save_stats(self, output_file: str, format_type: str = "prof"):
-        """
-        Save profiling statistics to file.
-
-        Args:
-            output_file: Output file path
-            format_type: Format type ('prof' for binary, 'txt' for text)
-        """
-        if not self.prof and not self.stats:
-            logger.warning("No profiling data to save")
-            return
-
-        if format_type == "prof":
-            self.prof.dump_stats(output_file)
-            logger.info(f"Profile data saved to {output_file}")
-            logger.info(f"View with: python -m pstats {output_file}")
-        elif format_type == "txt":
-            with open(output_file, "w") as f:
-                s = io.StringIO()
-                ps = pstats.Stats(self.prof, stream=s)
-                ps.strip_dirs()
-                ps.sort_stats("cumulative")
-                ps.print_stats()
-                f.write(s.getvalue())
-            logger.info(f"Profile stats saved to {output_file}")
-
-    def get_top_functions(self, n: int = 10) -> list[tuple]:
-        """
-        Get top N functions by cumulative time.
-
-        Returns:
-            List of tuples: (filename, lineno, funcname, ncalls, tottime, cumtime)
-        """
-        if not self.stats:
-            return []
-
-        self.stats.sort_stats("cumulative")
-        stats_list = []
-        for func, stat in list(self.stats.stats.items())[:n]:
-            filename, lineno, funcname = func
-            stats_list.append((filename, lineno, funcname, stat[0], stat[2], stat[3]))
-        return stats_list
+# ---------------------------------------------------------------------------
+# ContextVar that operate.py reads to record phase timings.
+# The value is a _QueryTrace instance (set by RAGProfiler.track_query) or None.
+# ---------------------------------------------------------------------------
+_active_trace: ContextVar[Optional["_QueryTrace"]] = ContextVar(
+    "_active_trace", default=None
+)
 
 
-class TimingBreakdown:
-    """Track and report timing breakdowns for code sections."""
+@dataclass
+class _QueryTrace:
+    """Mutable accumulator for a single query's phase timings (in seconds)."""
 
-    def __init__(self, name: str = "Timing Breakdown"):
-        self.name = name
-        self.sections = {}
-        self.start_time = None
+    query: str
+    entities_vdb: float = 0.0
+    relationships_vdb: float = 0.0
+    chunks_vdb: float = 0.0
+    rerank: float = 0.0
+    llm: float = 0.0
+    total: float = 0.0
 
-    def mark(self, section_name: str):
-        """Mark start/end of a section."""
-        current_time = time.time()
 
-        if section_name not in self.sections:
-            self.sections[section_name] = {
-                "start": current_time,
-                "duration": 0,
-                "count": 0,
-            }
-        else:
-            # End section
-            duration = current_time - self.sections[section_name]["start"]
-            self.sections[section_name]["duration"] += duration
-            self.sections[section_name]["count"] += 1
+@dataclass
+class RAGProfiler:
+    """
+    Lightweight wall-clock profiler for LightRAG instantiation and query phases.
 
-    def report(self):
-        """Print timing report."""
-        logger.info("\n" + "=" * 60)
-        logger.info(f"{self.name}")
-        logger.info("=" * 60)
+    Thread / asyncio safety: uses a ContextVar so concurrent queries each get
+    their own trace without interfering with each other.
+    """
 
-        total_time = sum(s["duration"] for s in self.sections.values())
+    init_time: Optional[float] = field(default=None, init=False)
+    _queries: list[_QueryTrace] = field(default_factory=list, init=False)
 
-        for section_name, data in sorted(
-            self.sections.items(), key=lambda x: x[1]["duration"], reverse=True
-        ):
-            duration = data["duration"]
-            count = data["count"]
-            percentage = (duration / total_time * 100) if total_time > 0 else 0
-
-            logger.info(
-                f"  {section_name:30} {duration:8.3f}s ({percentage:6.2f}%) "
-                f"[{count} calls]"
-            )
-
-        logger.info("-" * 60)
-        logger.info(f"  Total: {total_time:.3f}s")
-        logger.info("=" * 60 + "\n")
+    # ------------------------------------------------------------------
+    # Public context managers
+    # ------------------------------------------------------------------
 
     @contextmanager
-    def section(self, name: str):
-        """Context manager for timing a section."""
-        start = time.time()
+    def track_init(self):
+        """
+        Context manager that measures the time to build a LightRAG instance
+        (construction + storage initialisation).
+
+        Example::
+
+            with profiler.track_init():
+                rag = LightRAG(...)
+                await rag.initialize_storages()
+        """
+        t0 = time.perf_counter()
         try:
             yield
         finally:
-            duration = time.time() - start
-            if name not in self.sections:
-                self.sections[name] = {"duration": 0, "count": 0}
-            self.sections[name]["duration"] += duration
-            self.sections[name]["count"] += 1
+            self.init_time = time.perf_counter() - t0
 
+    @contextmanager
+    def track_query(self, query: str):
+        """
+        Context manager that enables per-phase timing for one query.
+        Must wrap the full ``rag.aquery(...)`` call.
 
-def profile_function(
-    output_file: Optional[str] = None, sort_by: str = "cumulative", top_n: int = 20
-):
-    """
-    Decorator for profiling a function using cProfile.
+        Example::
 
-    Args:
-        output_file: Optional file to save profile data
-        sort_by: Sort key for stats ('cumulative', 'time', 'calls')
-        top_n: Number of top functions to display
+            with profiler.track_query(query):
+                response = await rag.aquery(query, param=param)
+        """
+        trace = _QueryTrace(query=query)
+        token = _active_trace.set(trace)
+        t0 = time.perf_counter()
+        try:
+            yield trace
+        finally:
+            trace.total = time.perf_counter() - t0
+            _active_trace.reset(token)
+            self._queries.append(trace)
 
-    Example:
-        @profile_function(output_file='profile.prof')
-        def my_function():
-            pass
-    """
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
 
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            prof = cProfile.Profile()
-            prof.enable()
+    def report(self) -> None:
+        """Print a formatted timing report to the logger."""
+        lines = ["\n" + "=" * 65, "RAG PROFILER REPORT", "=" * 65]
 
-            try:
-                result = func(*args, **kwargs)
-                return result
-            finally:
-                prof.disable()
+        if self.init_time is not None:
+            lines.append(f"  {'Initialization':<30} {self.init_time:>8.3f}s")
+            lines.append("-" * 65)
 
-                # Display stats
-                profile_stats = ProfileStats(prof=prof)
-                profile_stats.print_stats(sort_by=sort_by, top_n=top_n, strip_dirs=True)
-
-                # Save if requested
-                if output_file:
-                    profile_stats.save_stats(output_file, format_type="prof")
-                    profile_stats.save_stats(
-                        output_file.replace(".prof", ".txt"), format_type="txt"
-                    )
-
-        return wrapper
-
-    return decorator
-
-
-def profile_async_function(
-    output_file: Optional[str] = None, sort_by: str = "cumulative", top_n: int = 20
-):
-    """
-    Decorator for profiling an async function using cProfile.
-
-    Args:
-        output_file: Optional file to save profile data
-        sort_by: Sort key for stats
-        top_n: Number of top functions to display
-
-    Example:
-        @profile_async_function(output_file='profile.prof')
-        async def my_async_function():
-            pass
-    """
-
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            prof = cProfile.Profile()
-            prof.enable()
-
-            try:
-                result = await func(*args, **kwargs)
-                return result
-            finally:
-                prof.disable()
-
-                # Display stats
-                profile_stats = ProfileStats(prof=prof)
-                profile_stats.print_stats(sort_by=sort_by, top_n=top_n, strip_dirs=True)
-
-                # Save if requested
-                if output_file:
-                    profile_stats.save_stats(output_file, format_type="prof")
-                    profile_stats.save_stats(
-                        output_file.replace(".prof", ".txt"), format_type="txt"
-                    )
-
-        return wrapper
-
-    return decorator
-
-
-class ProfileContext:
-    """Context manager for profiling a code block."""
-
-    def __init__(
-        self,
-        name: str = "Code Block",
-        output_file: Optional[str] = None,
-        top_n: int = 20,
-        show_timing: bool = True,
-    ):
-        self.name = name
-        self.output_file = output_file
-        self.top_n = top_n
-        self.show_timing = show_timing
-        self.prof = cProfile.Profile()
-        self.start_time = None
-        self.elapsed_time = None
-
-    def __enter__(self):
-        logger.info(f"\n📊 Starting profiling: {self.name}")
-        self.start_time = time.time()
-        self.prof.enable()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.prof.disable()
-        self.elapsed_time = time.time() - self.start_time
-
-        if self.show_timing:
-            logger.info(f"⏱️  Elapsed time: {self.elapsed_time:.3f}s")
-
-        # Display stats
-        profile_stats = ProfileStats(prof=self.prof)
-        profile_stats.print_stats(sort_by="cumulative", top_n=self.top_n)
-
-        # Save if requested
-        if self.output_file:
-            profile_stats.save_stats(self.output_file, format_type="prof")
-            profile_stats.save_stats(
-                self.output_file.replace(".prof", ".txt"), format_type="txt"
+        for i, t in enumerate(self._queries, 1):
+            short_q = t.query if len(t.query) <= 50 else t.query[:47] + "..."
+            lines.append(f"\n  Query {i}: {short_q}")
+            lines.append(f"  {'  entities_vdb retrieval':<30} {t.entities_vdb:>8.3f}s")
+            lines.append(
+                f"  {'  relationships_vdb retrieval':<30} {t.relationships_vdb:>8.3f}s"
             )
+            lines.append(f"  {'  chunks_vdb retrieval':<30} {t.chunks_vdb:>8.3f}s")
+            lines.append(f"  {'  rerank':<30} {t.rerank:>8.3f}s")
+            lines.append(f"  {'  answer generation (LLM)':<30} {t.llm:>8.3f}s")
+            lines.append(f"  {'  ── total query':<30} {t.total:>8.3f}s")
 
-        return False  # Don't suppress exceptions
+        lines.append("=" * 65)
+        logger.info("\n".join(lines))
 
-
-def get_memory_usage() -> dict:
-    """
-    Get current memory usage.
-
-    Returns:
-        Dictionary with memory stats (requires psutil)
-    """
-    try:
-        import psutil
-
-        process = psutil.Process()
-        info = process.memory_info()
+    def as_dict(self) -> dict:
+        """Return all timings as a plain dictionary."""
         return {
-            "rss_mb": info.rss / 1024 / 1024,  # Resident Set Size
-            "vms_mb": info.vms / 1024 / 1024,  # Virtual Memory Size
-            "percent": process.memory_percent(),
+            "init_time": self.init_time,
+            "queries": [
+                {
+                    "query": t.query,
+                    "entities_vdb_s": t.entities_vdb,
+                    "relationships_vdb_s": t.relationships_vdb,
+                    "chunks_vdb_s": t.chunks_vdb,
+                    "rerank_s": t.rerank,
+                    "llm_s": t.llm,
+                    "total_s": t.total,
+                }
+                for t in self._queries
+            ],
         }
-    except ImportError:
-        logger.warning("psutil not installed. Install it for memory profiling.")
-        return {}
 
 
-def report_memory():
-    """Log current memory usage."""
-    mem = get_memory_usage()
-    if mem:
-        logger.info(
-            f"Memory: {mem['rss_mb']:.1f} MB RSS, "
-            f"{mem['vms_mb']:.1f} MB VMS, {mem['percent']:.2f}%"
-        )
+# ---------------------------------------------------------------------------
+# Internal helpers used by operate.py to record phase timings
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _phase(name: str):
+    """
+    Context manager used inside operate.py to time a named phase.
+    No-ops when no profiler trace is active.
+
+    Recognised names: entities_vdb, relationships_vdb, chunks_vdb, rerank, llm
+    """
+    trace = _active_trace.get()
+    if trace is None:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - t0
+        current = getattr(trace, name, 0.0)
+        setattr(trace, name, current + elapsed)
+
+
+# ---------------------------------------------------------------------------
+# TimingBreakdown – simple lap-timer used by the CLI (build.py / query.py)
+# ---------------------------------------------------------------------------
+
+class TimingBreakdown:
+    """
+    Simple paired-mark lap timer for coarse CLI-level phase reporting.
+
+    Call ``mark(phase_name)`` twice with the same name to record a lap:
+    the first call starts the timer, the second call stops it.
+
+    Example::
+
+        t = TimingBreakdown("Query Phases")
+        t.mark("initialization")
+        ...do work...
+        t.mark("initialization")
+        t.report()
+    """
+
+    def __init__(self, title: str = "Timing") -> None:
+        self.title = title
+        self._pending: dict[str, float] = {}
+        self._laps: list[tuple[str, float]] = []
+
+    def mark(self, name: str) -> None:
+        if name in self._pending:
+            elapsed = time.perf_counter() - self._pending.pop(name)
+            self._laps.append((name, elapsed))
+        else:
+            self._pending[name] = time.perf_counter()
+
+    def report(self) -> None:
+        from lightrag.utils import logger as _logger
+
+        lines = ["\n" + "=" * 55, self.title, "=" * 55]
+        total = 0.0
+        for name, elapsed in self._laps:
+            lines.append(f"  {name:<28} {elapsed:>8.3f}s")
+            total += elapsed
+        lines.append("-" * 55)
+        lines.append(f"  {'total':<28} {total:>8.3f}s")
+        lines.append("=" * 55)
+        _logger.info("\n".join(lines))
