@@ -1159,7 +1159,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._create_indexes_after_collection()
 
     def _ensure_collection_loaded(self):
-        """Ensure the collection is loaded into memory for search operations"""
+        """Ensure the collection is loaded into memory for search operations.
+
+        Uses a flag to skip redundant load_collection RPCs after the initial load,
+        since Milvus keeps collections loaded until explicitly released or the server restarts.
+        """
+        if self._collection_loaded:
+            return
+
         try:
             # Check if collection exists first
             if not self._client.has_collection(self.final_namespace):
@@ -1169,9 +1176,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise ValueError(f"Collection {self.final_namespace} does not exist")
 
             # Load the collection if it's not already loaded
-            # In Milvus, collections need to be loaded before they can be searched
             self._client.load_collection(self.final_namespace)
-            # logger.debug(f"[{self.workspace}] Collection {self.namespace} loaded successfully")
+            self._collection_loaded = True
 
         except Exception as e:
             logger.error(
@@ -1400,6 +1406,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._initialized = False
+        self._collection_loaded = False
 
     async def initialize(self):
         """Initialize Milvus collection"""
@@ -1768,6 +1775,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """
         try:
             # Drop the collection and recreate it
+            self._collection_loaded = False
             if self._client.has_collection(self.final_namespace):
                 self._client.drop_collection(self.final_namespace)
 

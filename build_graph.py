@@ -41,7 +41,6 @@ Usage:
 
 import argparse
 import asyncio
-import cProfile
 import logging
 import os
 import sys
@@ -129,18 +128,13 @@ async def main():
 Examples:
   # Standard ingestion
   python build_graph.py
-  
-  # With profiling
-  python build_graph.py --profile
-  
+
+  # With timing breakdown
+  python build_graph.py --timing
+
   # Custom input/working directories
   python build_graph.py --input-dir ./docs --working-dir ./rag_output
         """,
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable cProfile profiling and save to profile_output.prof",
     )
     parser.add_argument(
         "--timing",
@@ -181,8 +175,6 @@ Examples:
     logger.info(f"Working Directory: {working_dir}")
     logger.info(f"Chunk Size: {chunk_size}")
     logger.info(f"Chunk Overlap: {chunk_overlap}")
-    if args.profile:
-        logger.info("Profiling: ENABLED")
     if args.timing:
         logger.info("Timing: ENABLED")
 
@@ -323,61 +315,4 @@ Examples:
 
 
 if __name__ == "__main__":
-    import asyncio
-    import cProfile
-
-    parser = argparse.ArgumentParser(
-        description="Ingest documents into LightRAG knowledge graph",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Standard ingestion
-  python build_graph.py
-  
-  # With profiling
-  python build_graph.py --profile
-  
-  # With timing breakdown
-  python build_graph.py --timing
-  
-  # Custom directories with profiling
-  python build_graph.py --profile --input-dir ./docs --working-dir ./rag_output
-        """,
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable cProfile profiling and save to profile_output.prof",
-    )
-    parser.add_argument(
-        "--timing",
-        action="store_true",
-        help="Enable detailed timing breakdown for each phase",
-    )
-    parser.add_argument(
-        "--input-dir",
-        type=str,
-        help="Input directory for documents",
-    )
-    parser.add_argument(
-        "--working-dir",
-        type=str,
-        help="LightRAG working directory",
-    )
-
-    args = parser.parse_args()
-
-    async def main_wrapper():
-        return await main()
-
-    if args.profile:
-
-        def runner():
-            asyncio.run(main_wrapper())
-
-        profile_file = "profile_output.prof"
-        cProfile.run("runner()", profile_file)
-        print(f"\nProfile data saved to {profile_file}")
-        print(f"View with: python -m pstats {profile_file}")
-    else:
-        asyncio.run(main_wrapper())
+    asyncio.run(main())

@@ -386,6 +386,31 @@ NEO4J_PASSWORD=password
 
 ### AWS Neptune (Managed Graph Database)
 
+LightRAG provides two Neptune graph storage options:
+
+| Class | Description |
+|-------|-------------|
+| `NeptuneGraphStorage` | Neptune-only. Full-text search falls back to client-side filtering. |
+| `NeptuneOpenSearchGraphStorage` | Neptune + OpenSearch. Full-text search via async OpenSearch queries. Recommended for production. |
+
+```mermaid
+graph TD
+    subgraph "NeptuneGraphStorage (base)"
+        A[LightRAG] -->|Gremlin| B[(AWS Neptune)]
+        A -.->|client-side filter| A
+    end
+
+    subgraph "NeptuneOpenSearchGraphStorage (recommended)"
+        C[LightRAG] -->|Gremlin traversals| D[(AWS Neptune)]
+        C -->|dual-write nodes| E[(OpenSearch)]
+        C -->|search_labels / full_text_search| E
+    end
+
+    style B fill:#e1f5ff
+    style D fill:#e1f5ff
+    style E fill:#fff4e1
+```
+
 ```bash
 # Prerequisites:
 # 1. Create Neptune cluster in AWS Console or via CloudFormation
@@ -403,8 +428,7 @@ NEO4J_PASSWORD=password
 #   }]
 # }
 
-# .env
-STORAGE_TYPE=neptune
+# .env — Neptune settings (required for both storage classes)
 NEPTUNE_ENDPOINT=your-cluster.region.neptune.amazonaws.com
 NEPTUNE_PORT=8182
 NEPTUNE_REGION=us-east-1
@@ -420,11 +444,56 @@ AWS_PROFILE=your-profile
 
 # Option 3: IAM Role (automatic for EC2, Lambda, ECS - recommended)
 
-# Optional: OpenSearch integration for full-text search
-# NEPTUNE_OPENSEARCH_ENDPOINT=https://search-domain.region.es.amazonaws.com
+# .env — OpenSearch settings (required only for NeptuneOpenSearchGraphStorage)
+OPENSEARCH_HOSTS=your-opensearch-host:9200
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=your-password
+OPENSEARCH_USE_SSL=true
+OPENSEARCH_VERIFY_CERTS=false
 
 # Installation
 pip install lightrag-hku[offline-storage]
+```
+
+**Configuration — Neptune only:**
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    graph_storage="NeptuneGraphStorage",
+    # KV, vector, doc-status use your preferred backends
+)
+```
+
+**Configuration — Neptune + OpenSearch (recommended):**
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    graph_storage="NeptuneOpenSearchGraphStorage",
+    # KV, vector, doc-status use your preferred backends
+)
+```
+
+**How dual-write works in `NeptuneOpenSearchGraphStorage`:**
+
+```mermaid
+sequenceDiagram
+    participant LR as LightRAG
+    participant N as Neptune Gremlin
+    participant OS as OpenSearch
+
+    Note over LR: upsert_node("entity_1", data)
+    LR->>N: Gremlin upsert (fold/coalesce)
+    LR->>OS: Index document {entity_id, description, ...}
+
+    Note over LR: search_labels("parking fee")
+    LR->>OS: multi_match query
+    OS-->>LR: [entity_id, ...]
+
+    Note over LR: full_text_search("fee schedule")
+    LR->>OS: match query on description
+    OS-->>LR: [entity_id, ...]
+    LR->>N: get_nodes_batch(entity_ids)
+    N-->>LR: Full node properties
 ```
 
 **Important Neptune Notes:**
@@ -433,6 +502,7 @@ pip install lightrag-hku[offline-storage]
 - Neptune supports automatic backups and point-in-time recovery.
 - IAM authentication is strongly recommended for production deployments.
 - Neptune automatically scales read replicas based on load.
+- When migrating from `NeptuneGraphStorage` to `NeptuneOpenSearchGraphStorage`, existing graph data in Neptune works immediately. The OpenSearch search index starts empty for pre-existing nodes; re-ingest or run a backfill to populate it.
 
 ### MongoDB (Document Store)
 

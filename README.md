@@ -366,7 +366,7 @@ A full list of LightRAG init parameters:
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage`,`NeptuneGraphStorage`,`NeptuneOpenSearchGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
@@ -969,12 +969,13 @@ OpenSearchKVStorage  OpenSearch
 * GRAPH_STORAGE supported implementations:
 
 ```
-NetworkXStorage          NetworkX (default)
-Neo4JStorage             Neo4J
-PGGraphStorage           PostgreSQL with AGE plugin
-MemgraphStorage          Memgraph
-OpenSearchGraphStorage   OpenSearch
-NeptuneGraphStorage      AWS Neptune
+NetworkXStorage                    NetworkX (default)
+Neo4JStorage                       Neo4J
+PGGraphStorage                     PostgreSQL with AGE plugin
+MemgraphStorage                    Memgraph
+OpenSearchGraphStorage             OpenSearch
+NeptuneGraphStorage                AWS Neptune
+NeptuneOpenSearchGraphStorage      AWS Neptune + OpenSearch full-text search
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -1400,6 +1401,67 @@ python examples/graph_visual_with_opensearch.py --html
 
 </details>
 
+<details>
+<summary> <b>Using Neptune + OpenSearch (Graph with Full-Text Search)</b> </summary>
+
+`NeptuneOpenSearchGraphStorage` extends the base `NeptuneGraphStorage` with a proper async OpenSearch client for full-text search. Neptune handles all Gremlin-based graph traversals while OpenSearch provides full-text search over entity labels and descriptions. Node data is dual-written to both stores during ingestion.
+
+```mermaid
+graph LR
+    subgraph "NeptuneOpenSearchGraphStorage"
+        direction TB
+        LR[LightRAG] -->|upsert_node / upsert_edge| N[(AWS Neptune)]
+        LR -->|mirror node data| OS[(OpenSearch)]
+        LR -->|search_labels / full_text_search| OS
+        LR -->|get_node / traversals| N
+    end
+    style N fill:#e1f5ff
+    style OS fill:#fff4e1
+```
+
+* **Requirements**:
+  - AWS Neptune cluster (Gremlin endpoint)
+  - OpenSearch cluster (for full-text search index)
+  - Network access to both services (VPC)
+
+* **Environment Variables**:
+
+```bash
+# Neptune
+export NEPTUNE_ENDPOINT=your-cluster.region.neptune.amazonaws.com
+export NEPTUNE_PORT=8182
+export NEPTUNE_REGION=us-east-1
+export NEPTUNE_USE_IAM=true
+
+# OpenSearch (used for full-text search only)
+export OPENSEARCH_HOSTS=your-opensearch-host:9200
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=your-password
+export OPENSEARCH_USE_SSL=true
+export OPENSEARCH_VERIFY_CERTS=false
+```
+
+* **Configuration** (only `graph_storage` changes; KV, vector, and doc-status use your existing backends):
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    graph_storage="NeptuneOpenSearchGraphStorage",
+)
+```
+
+* **Migrating from `NeptuneGraphStorage`**: All Gremlin-based graph operations work immediately against your existing Neptune data. The OpenSearch nodes index starts empty for pre-existing nodes; new nodes ingested after switching are automatically dual-written. To backfill existing nodes, re-ingest your documents or run a one-time migration script.
+
+* **How it works**:
+  - `upsert_node()` writes to Neptune via Gremlin **and** indexes to OpenSearch
+  - `search_labels()` queries OpenSearch with `multi_match` (falls back to Neptune client-side filtering if unavailable)
+  - `full_text_search()` searches descriptions in OpenSearch, then fetches full node data from Neptune
+  - `delete_node()` / `remove_nodes()` / `drop()` clean up both stores
+
+</details>
+
 ### Data Isolation Between LightRAG Instances
 
 The `workspace` parameter ensures data isolation between different LightRAG instances. Once initialized, the `workspace` is immutable and cannot be changed. Here is how workspaces are implemented for different types of storage:
@@ -1410,6 +1472,7 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
 - **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
+- **For AWS Neptune, data isolation is achieved through a `workspace` vertex property:** `NeptuneGraphStorage`, `NeptuneOpenSearchGraphStorage`
 
 To maintain compatibility with legacy data, the default workspace for PostgreSQL non-graph storage is `default` and, for PostgreSQL AGE graph storage is null, for Neo4j graph storage is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 

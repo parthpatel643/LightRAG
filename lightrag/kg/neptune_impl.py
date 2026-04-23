@@ -9,7 +9,7 @@ import asyncio
 import configparser
 import os
 from dataclasses import dataclass, field
-from typing import Any, final
+from typing import Any
 
 from gremlin_python.driver import client, serializer
 from tenacity import (
@@ -114,7 +114,15 @@ class NeptuneIAMAuth:
         return dict(request.headers)
 
 
-@final
+def _gremlin_escape(value: str) -> str:
+    """Escape a string value for safe inclusion in a Gremlin single-quoted literal.
+
+    Handles backslashes and single quotes to prevent Gremlin injection and
+    ensure correct query parsing.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 @dataclass
 class NeptuneGraphStorage(BaseGraphStorage):
     """
@@ -318,8 +326,8 @@ class NeptuneGraphStorage(BaseGraphStorage):
         """Check if an edge exists between two nodes."""
         workspace = self._get_workspace_label()
         # Escape single quotes in node IDs
-        src_escaped = source_node_id.replace("'", "\\'")
-        tgt_escaped = target_node_id.replace("'", "\\'")
+        src_escaped = _gremlin_escape(source_node_id)
+        tgt_escaped = _gremlin_escape(target_node_id)
 
         query = f"""g.V().has('entity_id', '{src_escaped}').has('workspace', '{workspace}')
                     .outE().where(inV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
@@ -335,7 +343,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         """Get the degree (number of edges) of a node."""
         workspace = self._get_workspace_label()
-        node_id_escaped = node_id.replace("'", "\\'")
+        node_id_escaped = _gremlin_escape(node_id)
 
         # Count both incoming and outgoing edges in the workspace
         query = f"""g.V().has('entity_id', '{node_id_escaped}').has('workspace', '{workspace}')
@@ -345,8 +353,9 @@ class NeptuneGraphStorage(BaseGraphStorage):
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Get the sum of degrees of source and target nodes."""
-        src_degree = await self.node_degree(src_id)
-        tgt_degree = await self.node_degree(tgt_id)
+        src_degree, tgt_degree = await asyncio.gather(
+            self.node_degree(src_id), self.node_degree(tgt_id)
+        )
         return src_degree + tgt_degree
 
     @retry(
@@ -357,7 +366,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Retrieve a node's properties."""
         workspace = self._get_workspace_label()
-        node_id_escaped = node_id.replace("'", "\\'")
+        node_id_escaped = _gremlin_escape(node_id)
 
         query = f"""g.V().has('entity_id', '{node_id_escaped}').has('workspace', '{workspace}')
                     .valueMap().by(unfold())"""
@@ -388,8 +397,8 @@ class NeptuneGraphStorage(BaseGraphStorage):
     ) -> dict[str, str] | None:
         """Retrieve an edge's properties."""
         workspace = self._get_workspace_label()
-        src_escaped = source_node_id.replace("'", "\\'")
-        tgt_escaped = target_node_id.replace("'", "\\'")
+        src_escaped = _gremlin_escape(source_node_id)
+        tgt_escaped = _gremlin_escape(target_node_id)
 
         query = f"""g.V().has('entity_id', '{src_escaped}').has('workspace', '{workspace}')
                     .outE().where(inV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
@@ -419,7 +428,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all edges for a given node."""
         workspace = self._get_workspace_label()
-        node_id_escaped = source_node_id.replace("'", "\\'")
+        node_id_escaped = _gremlin_escape(source_node_id)
 
         # Get both outgoing and incoming edges
         query = f"""g.V().has('entity_id', '{node_id_escaped}').has('workspace', '{workspace}')
@@ -449,7 +458,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def upsert_node(self, node_id: str, node_data: dict[str, str]):
         """Insert or update a node."""
         workspace = self._get_workspace_label()
-        node_id_escaped = node_id.replace("'", "\\'")
+        node_id_escaped = _gremlin_escape(node_id)
 
         # Build property list
         props = [f"property('entity_id', '{node_id_escaped}')"]
@@ -457,8 +466,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
 
         for key, value in node_data.items():
             if key not in ["entity_id", "workspace"]:
-                # Escape single quotes in values
-                value_escaped = str(value).replace("'", "\\'")
+                value_escaped = _gremlin_escape(str(value))
                 props.append(f"property('{key}', '{value_escaped}')")
 
         props_str = ".".join(props)
@@ -485,18 +493,20 @@ class NeptuneGraphStorage(BaseGraphStorage):
     ):
         """Insert or update an edge between two nodes."""
         workspace = self._get_workspace_label()
-        src_escaped = source_node_id.replace("'", "\\'")
-        tgt_escaped = target_node_id.replace("'", "\\'")
+        src_escaped = _gremlin_escape(source_node_id)
+        tgt_escaped = _gremlin_escape(target_node_id)
 
-        # Ensure both nodes exist first
-        await self.upsert_node(source_node_id, {"entity_id": source_node_id})
-        await self.upsert_node(target_node_id, {"entity_id": target_node_id})
+        # Ensure both nodes exist (parallel)
+        await asyncio.gather(
+            self.upsert_node(source_node_id, {"entity_id": source_node_id}),
+            self.upsert_node(target_node_id, {"entity_id": target_node_id}),
+        )
 
         # Build edge properties
         props = [f"property('workspace', '{workspace}')"]
         for key, value in edge_data.items():
             if key != "workspace":
-                value_escaped = str(value).replace("'", "\\'")
+                value_escaped = _gremlin_escape(str(value))
                 props.append(f"property('{key}', '{value_escaped}')")
 
         props_str = ".".join(props) if props else ""
@@ -521,7 +531,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def delete_node(self, node_id: str):
         """Delete a node and its edges."""
         workspace = self._get_workspace_label()
-        node_id_escaped = node_id.replace("'", "\\'")
+        node_id_escaped = _gremlin_escape(node_id)
 
         # Delete node and all connected edges
         query = f"""g.V().has('entity_id', '{node_id_escaped}').has('workspace', '{workspace}')
@@ -530,23 +540,49 @@ class NeptuneGraphStorage(BaseGraphStorage):
         logger.debug(f"Deleted node: {node_id}")
 
     async def remove_nodes(self, nodes: list[str]):
-        """Batch delete nodes."""
-        for node_id in nodes:
-            await self.delete_node(node_id)
+        """Batch delete nodes and their edges in a single query."""
+        if not nodes:
+            return
+        workspace = self._get_workspace_label()
+        ids_escaped = [_gremlin_escape(nid) for nid in nodes]
+        ids_str = "', '".join(ids_escaped)
+        # Drop all matching nodes (and their edges) in one traversal
+        query = f"g.V().has('entity_id', within('{ids_str}')).has('workspace', '{workspace}').drop()"
+        await self._submit_query(query)
+        logger.debug(f"Batch deleted {len(nodes)} nodes")
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
-        """Batch delete edges."""
+        """Batch delete edges using a single query."""
+        if not edges:
+            return
         workspace = self._get_workspace_label()
 
+        # Collect all node IDs involved in these edges for a batched lookup
+        all_src_ids = set()
+        all_tgt_ids = set()
         for src, tgt in edges:
-            src_escaped = src.replace("'", "\\'")
-            tgt_escaped = tgt.replace("'", "\\'")
+            all_src_ids.add(src)
+            all_tgt_ids.add(tgt)
 
-            query = f"""g.V().has('entity_id', '{src_escaped}').has('workspace', '{workspace}')
-                        .outE().where(inV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
-                        .has('workspace', '{workspace}')
-                        .drop()"""
-            await self._submit_query(query)
+        all_node_ids = all_src_ids | all_tgt_ids
+        ids_escaped = [_gremlin_escape(nid) for nid in all_node_ids]
+        ids_str = "', '".join(ids_escaped)
+
+        # For each edge pair, drop matching edges; use concurrent tasks for batches
+        # Group into batches to avoid overly large queries
+        BATCH_SIZE = 50
+        for i in range(0, len(edges), BATCH_SIZE):
+            batch = edges[i:i + BATCH_SIZE]
+            tasks = []
+            for src, tgt in batch:
+                src_escaped = _gremlin_escape(src)
+                tgt_escaped = _gremlin_escape(tgt)
+                query = f"""g.V().has('entity_id', '{src_escaped}').has('workspace', '{workspace}')
+                            .outE().where(inV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
+                            .has('workspace', '{workspace}')
+                            .drop()"""
+                tasks.append(self._submit_query(query))
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         logger.debug(f"Deleted {len(edges)} edges")
 
@@ -718,7 +754,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
             KnowledgeGraph object with nodes and edges
         """
         workspace = self._get_workspace_label()
-        node_label_escaped = node_label.replace("'", "\\'")
+        node_label_escaped = _gremlin_escape(node_label)
 
         # BFS traversal from starting node
         query = f"""g.V().has('entity_id', '{node_label_escaped}').has('workspace', '{workspace}')
@@ -728,42 +764,44 @@ class NeptuneGraphStorage(BaseGraphStorage):
 
         result = await self._submit_query(query)
 
-        # Extract unique nodes and edges from paths
+        # Extract unique vertex IDs from paths first (avoid N+1 queries)
+        vertex_ids = set()
         nodes_dict = {}
         edges_dict = {}
 
         for path in result if result else []:
-            # Path contains alternating vertices and edges
-            for i, element in enumerate(path):
-                # Check if it's a vertex (has properties)
+            for element in path:
                 if hasattr(element, "id"):
-                    # Get vertex properties
-                    vertex_query = f"g.V({element.id}).valueMap().by(unfold())"
-                    vertex_data = await self._submit_query(vertex_query)
+                    vertex_ids.add(element.id)
 
-                    if vertex_data:
-                        props = vertex_data[0]
-                        flattened = {}
-                        for key, value in props.items():
-                            if isinstance(value, list) and len(value) > 0:
-                                flattened[key] = value[0]
-                            else:
-                                flattened[key] = value
+        # Batch-fetch all vertex properties in a single query
+        if vertex_ids:
+            vid_list = ", ".join(str(vid) for vid in vertex_ids)
+            batch_query = f"g.V({vid_list}).valueMap().by(unfold())"
+            vertex_data_list = await self._submit_query(batch_query)
 
-                        entity_id = flattened.get("entity_id")
-                        if entity_id and entity_id not in nodes_dict:
-                            nodes_dict[entity_id] = KnowledgeGraphNode(
-                                id=entity_id,
-                                entity_type=flattened.get("entity_type", "unknown"),
-                                description=flattened.get("description", ""),
-                                source_id=flattened.get("source_id", ""),
-                            )
+            for props in vertex_data_list if vertex_data_list else []:
+                flattened = {}
+                for key, value in props.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        flattened[key] = value[0]
+                    else:
+                        flattened[key] = value
+
+                entity_id = flattened.get("entity_id")
+                if entity_id and entity_id not in nodes_dict:
+                    nodes_dict[entity_id] = KnowledgeGraphNode(
+                        id=entity_id,
+                        entity_type=flattened.get("entity_type", "unknown"),
+                        description=flattened.get("description", ""),
+                        source_id=flattened.get("source_id", ""),
+                    )
 
         # Get edges between collected nodes
         node_ids = list(nodes_dict.keys())
         if node_ids:
             # Build query to get edges between these nodes
-            ids_str = "', '".join([nid.replace("'", "\\'") for nid in node_ids])
+            ids_str = "', '".join([_gremlin_escape(nid) for nid in node_ids])
             edges_query = f"""g.V().has('entity_id', within('{ids_str}')).has('workspace', '{workspace}')
                             .outE().has('workspace', '{workspace}')
                             .where(inV().has('entity_id', within('{ids_str}')))
@@ -808,7 +846,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
         workspace = self._get_workspace_label()
 
         # Escape and build ID list
-        ids_escaped = [nid.replace("'", "\\'") for nid in node_ids]
+        ids_escaped = [_gremlin_escape(nid) for nid in node_ids]
         ids_str = "', '".join(ids_escaped)
 
         query = f"""g.V().has('entity_id', within('{ids_str}')).has('workspace', '{workspace}')
@@ -840,7 +878,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
         """Batch retrieve node degrees."""
         workspace = self._get_workspace_label()
 
-        ids_escaped = [nid.replace("'", "\\'") for nid in node_ids]
+        ids_escaped = [_gremlin_escape(nid) for nid in node_ids]
         ids_str = "', '".join(ids_escaped)
 
         query = f"""g.V().has('entity_id', within('{ids_str}')).has('workspace', '{workspace}')
@@ -884,38 +922,53 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
-        """Batch retrieve multiple edges."""
+        """Batch retrieve multiple edges using a single Gremlin query."""
         workspace = self._get_workspace_label()
         edges_dict = {}
 
-        # Build batch query
-        for pair_dict in pairs:
-            src = pair_dict.get("src")
-            tgt = pair_dict.get("tgt")
+        valid_pairs = [(p["src"], p["tgt"]) for p in pairs if p.get("src") and p.get("tgt")]
+        if not valid_pairs:
+            return edges_dict
 
-            if not src or not tgt:
-                continue
+        # Collect all unique node IDs for a single batched query
+        all_node_ids = set()
+        for src, tgt in valid_pairs:
+            all_node_ids.add(src)
+            all_node_ids.add(tgt)
 
-            src_escaped = src.replace("'", "\\'")
-            tgt_escaped = tgt.replace("'", "\\'")
+        ids_escaped = [_gremlin_escape(nid) for nid in all_node_ids]
+        ids_str = "', '".join(ids_escaped)
 
-            query = f"""g.V().has('entity_id', '{src_escaped}').has('workspace', '{workspace}')
-                        .bothE().has('workspace', '{workspace}')
-                        .where(otherV().has('entity_id', '{tgt_escaped}').has('workspace', '{workspace}'))
-                        .valueMap().by(unfold())"""
+        # Single query: get all edges between the relevant nodes
+        query = f"""g.V().has('entity_id', within('{ids_str}')).has('workspace', '{workspace}')
+                    .bothE().has('workspace', '{workspace}')
+                    .where(otherV().has('entity_id', within('{ids_str}')))
+                    .project('source', 'target', 'props')
+                    .by(outV().values('entity_id'))
+                    .by(inV().values('entity_id'))
+                    .by(valueMap().by(unfold()))"""
 
-            result = await self._submit_query(query)
+        result = await self._submit_query(query)
 
-            if result:
-                edge_data = result[0]
-                flattened = {}
-                for key, value in edge_data.items():
-                    if isinstance(value, list) and len(value) > 0:
-                        flattened[key] = value[0]
-                    else:
-                        flattened[key] = value
+        # Index all fetched edges by both (src, tgt) and (tgt, src)
+        edge_index = {}
+        for edge_data in result if result else []:
+            src = edge_data.get("source")
+            tgt = edge_data.get("target")
+            props = edge_data.get("props", {})
+            flattened = {}
+            for key, value in props.items():
+                if isinstance(value, list) and len(value) > 0:
+                    flattened[key] = value[0]
+                else:
+                    flattened[key] = value
+            edge_index[(src, tgt)] = flattened
+            edge_index[(tgt, src)] = flattened
 
-                edges_dict[(src, tgt)] = flattened
+        # Map back to requested pairs
+        for src, tgt in valid_pairs:
+            if (src, tgt) in edge_index:
+                edges_dict[(src, tgt)] = edge_index[(src, tgt)]
 
         return edges_dict
 
@@ -925,7 +978,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
         """Batch retrieve edges for multiple nodes."""
         workspace = self._get_workspace_label()
 
-        ids_escaped = [nid.replace("'", "\\'") for nid in node_ids]
+        ids_escaped = [_gremlin_escape(nid) for nid in node_ids]
         ids_str = "', '".join(ids_escaped)
 
         query = f"""g.V().has('entity_id', within('{ids_str}')).has('workspace', '{workspace}')

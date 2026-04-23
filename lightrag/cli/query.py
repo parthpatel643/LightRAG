@@ -157,11 +157,6 @@ def main(
         "--format",
         help="Output format: text, json, markdown",
     ),
-    profile: bool = typer.Option(
-        False,
-        "--profile",
-        help="Enable cProfile profiling",
-    ),
     timing: bool = typer.Option(
         False,
         "--timing",

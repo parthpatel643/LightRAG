@@ -123,8 +123,9 @@ graph TB
 - **Storage Options**:
   - **NetworkX**: In-memory graph (default)
   - **Neo4j**: Production-grade graph database
-  - **ArangoDB**: Multi-model database
-  - **FalkorDB**: Redis-based graph storage
+  - **AWS Neptune**: Managed graph database with Gremlin queries
+  - **Neptune + OpenSearch**: Neptune graph traversals with OpenSearch full-text search
+  - **OpenSearch**: Unified storage with k-NN and graph capabilities
 - **Query Interface**: Vector search combined with temporal filtering
 
 ---
@@ -366,15 +367,31 @@ EMBEDDING_BATCH_NUM=32         # ✅ Larger batches for efficiency
 |--------------|-------------|-----------|-----------------|
 | **KV Storage** | JSON files | AWS DocumentDB/MongoDB | 100-500ms → 5-10ms |
 | **Doc Status** | JSON files | AWS DocumentDB | Sequential → Concurrent writes |
-| **Graph Storage** | NetworkX (RAM) | AWS Neptune | In-memory limits → Persistent |
+| **Graph Storage** | NetworkX (RAM) | AWS Neptune + OpenSearch | In-memory limits → Persistent + full-text search |
 | **Vector Storage** | NanoVectorDB | Milvus + HNSW | O(n) → O(log n) search |
 
 **Production Backend Migration:**
 ```bash
 LIGHTRAG_KV_STORAGE=MongoKVStorage
 LIGHTRAG_DOC_STATUS_STORAGE=MongoDocStatusStorage
-LIGHTRAG_GRAPH_STORAGE=NeptuneGraphStorage
+LIGHTRAG_GRAPH_STORAGE=NeptuneOpenSearchGraphStorage
 LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage
+```
+
+```mermaid
+graph LR
+    subgraph "Production Storage Architecture"
+        LR[LightRAG] --> KV[(MongoDB<br/>KV Storage)]
+        LR --> DS[(MongoDB<br/>Doc Status)]
+        LR --> VS[(Milvus<br/>Vector Storage)]
+        LR --> N[(Neptune<br/>Graph Traversals)]
+        LR --> OS[(OpenSearch<br/>Full-Text Search)]
+    end
+    style N fill:#e1f5ff
+    style OS fill:#fff4e1
+    style VS fill:#e8f5e9
+    style KV fill:#f0e1ff
+    style DS fill:#f0e1ff
 ```
 
 ### Query Performance Analysis
@@ -415,6 +432,12 @@ NEPTUNE_MAX_CONNECTIONS=100
 NEPTUNE_CONNECTION_TIMEOUT=30
 NEPTUNE_MAX_RETRIES=3
 NEPTUNE_RETRY_BACKOFF=0.5
+```
+
+**OpenSearch (for NeptuneOpenSearchGraphStorage):**
+```bash
+OPENSEARCH_TIMEOUT=30
+OPENSEARCH_MAX_RETRIES=3
 ```
 
 **Milvus:**

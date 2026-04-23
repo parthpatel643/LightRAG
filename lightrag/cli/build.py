@@ -202,11 +202,6 @@ def main(
         "--chunk-overlap",
         help="Chunk overlap in tokens",
     ),
-    profile: bool = typer.Option(
-        False,
-        "--profile",
-        help="Enable cProfile profiling",
-    ),
     timing: bool = typer.Option(
         False,
         "--timing",
@@ -244,8 +239,8 @@ def main(
         # Interactive with suggestions
         lightrag build --input ./contracts
 
-        # With profiling and timing
-        lightrag build --input ./docs --profile --timing
+        # With timing breakdown
+        lightrag build --input ./docs --timing
     """
     # Get global options from context
     global_opts = ctx.obj or {}

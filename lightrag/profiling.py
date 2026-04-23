@@ -4,11 +4,12 @@ profiling.py - RAG Pipeline Profiler for LightRAG
 Tracks wall-clock time for:
   - RAG instance initialization (constructor + storage init)
   - Per-query pipeline phases:
-      * entities_vdb   – entity vector DB retrieval (_get_node_data)
-      * relationships_vdb – relationship vector DB retrieval (_get_edge_data)
-      * chunks_vdb     – chunk vector DB retrieval (_get_vector_context)
-      * rerank         – reranking step
-      * llm            – answer generation (LLM call)
+      * entities_vdb       – entity vector DB retrieval (_get_node_data)
+      * relationships_vdb  – relationship vector DB retrieval (_get_edge_data)
+      * chunks_vdb         – chunk vector DB retrieval (_get_vector_context)
+      * rerank             – reranking step
+      * llm                – answer generation (LLM call)
+      * local_computation  – remaining time (filtering, merging, prompt assembly, etc.)
 
 Usage
 -----
@@ -120,6 +121,12 @@ class RAGProfiler:
     # Reporting
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _local_computation(t: _QueryTrace) -> float:
+        """Time not accounted for by tracked phases (filtering, merging, prompt assembly, etc.)."""
+        tracked = t.entities_vdb + t.relationships_vdb + t.chunks_vdb + t.rerank + t.llm
+        return max(t.total - tracked, 0.0)
+
     def report(self) -> None:
         """Print a formatted timing report to the logger."""
         lines = ["\n" + "=" * 65, "RAG PROFILER REPORT", "=" * 65]
@@ -129,6 +136,7 @@ class RAGProfiler:
             lines.append("-" * 65)
 
         for i, t in enumerate(self._queries, 1):
+            local = self._local_computation(t)
             short_q = t.query if len(t.query) <= 50 else t.query[:47] + "..."
             lines.append(f"\n  Query {i}: {short_q}")
             lines.append(f"  {'  entities_vdb retrieval':<30} {t.entities_vdb:>8.3f}s")
@@ -138,6 +146,7 @@ class RAGProfiler:
             lines.append(f"  {'  chunks_vdb retrieval':<30} {t.chunks_vdb:>8.3f}s")
             lines.append(f"  {'  rerank':<30} {t.rerank:>8.3f}s")
             lines.append(f"  {'  answer generation (LLM)':<30} {t.llm:>8.3f}s")
+            lines.append(f"  {'  local computation':<30} {local:>8.3f}s")
             lines.append(f"  {'  ── total query':<30} {t.total:>8.3f}s")
 
         lines.append("=" * 65)
@@ -155,6 +164,7 @@ class RAGProfiler:
                     "chunks_vdb_s": t.chunks_vdb,
                     "rerank_s": t.rerank,
                     "llm_s": t.llm,
+                    "local_computation_s": self._local_computation(t),
                     "total_s": t.total,
                 }
                 for t in self._queries

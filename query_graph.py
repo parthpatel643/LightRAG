@@ -28,7 +28,7 @@ from pathlib import Path
 
 from lightrag import LightRAG, QueryParam
 from lightrag.functions import embedding_func, llm_model_func, rerank_model_func
-from lightrag.profiling import TimingBreakdown
+from lightrag.profiling import RAGProfiler
 from lightrag.utils import logger
 
 
@@ -38,7 +38,7 @@ async def query_rag(
     mode: str = "hybrid",
     reference_date: str = None,
     stream: bool = False,
-    timing: TimingBreakdown = None,
+    profiler: RAGProfiler = None,
 ):
     """
     Query the LightRAG knowledge graph.
@@ -49,14 +49,11 @@ async def query_rag(
         mode: Query mode (local, global, hybrid, temporal, etc.)
         reference_date: Reference date for temporal mode (YYYY-MM-DD)
         stream: Whether to stream the response
-        timing: Optional TimingBreakdown object for profiling
+        profiler: Optional RAGProfiler for per-phase timing
 
     Returns:
         Query response string
     """
-    if timing:
-        timing.mark("query_prepare")
-
     # Build query parameters
     param = QueryParam(
         mode=mode,
@@ -74,22 +71,26 @@ async def query_rag(
     logger.info(f"Query: {query}")
     logger.info("=" * 60 + "\n")
 
-    if timing:
-        timing.mark("query_prepare")
-        timing.mark("query_execute")
-
-    # Execute query
-    if stream:
-        logger.info("Streaming response:\n")
-        async for chunk in rag.aquery_stream(query, param=param):
-            print(chunk, end="", flush=True)
-        print("\n")
-        response = None
+    # Execute query (profiler automatically tracks per-phase timings)
+    if profiler:
+        with profiler.track_query(query):
+            if stream:
+                logger.info("Streaming response:\n")
+                async for chunk in rag.aquery_stream(query, param=param):
+                    print(chunk, end="", flush=True)
+                print("\n")
+                response = None
+            else:
+                response = await rag.aquery(query, param=param)
     else:
-        response = await rag.aquery(query, param=param)
-
-    if timing:
-        timing.mark("query_execute")
+        if stream:
+            logger.info("Streaming response:\n")
+            async for chunk in rag.aquery_stream(query, param=param):
+                print(chunk, end="", flush=True)
+            print("\n")
+            response = None
+        else:
+            response = await rag.aquery(query, param=param)
 
     return response
 
@@ -98,7 +99,7 @@ async def interactive_mode(
     rag: LightRAG,
     mode: str = "hybrid",
     default_date: str = None,
-    timing: TimingBreakdown = None,
+    profiler: RAGProfiler = None,
 ):
     """
     Interactive query mode - allows multiple queries in a session.
@@ -107,7 +108,7 @@ async def interactive_mode(
         rag: LightRAG instance
         mode: Default query mode
         default_date: Default reference date for temporal mode
-        timing: Optional TimingBreakdown object for profiling
+        profiler: Optional RAGProfiler for per-phase timing
     """
     print("\n" + "=" * 60)
     print("INTERACTIVE QUERY MODE")
@@ -192,7 +193,7 @@ async def interactive_mode(
                 mode=current_mode,
                 reference_date=current_date if current_mode == "temporal" else None,
                 stream=False,
-                timing=timing,
+                profiler=profiler,
             )
 
             # Display response
@@ -221,11 +222,8 @@ async def main():
         args.date = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"No --date specified, using today: {args.date}")
 
-    # Initialize timing if requested
-    timing = TimingBreakdown("Query Phases") if args.timing else None
-
-    if timing:
-        timing.mark("initialization")
+    # Initialize profiler if requested
+    profiler = RAGProfiler() if args.timing else None
 
     # Check working directory
     working_dir = Path(args.working_dir)
@@ -237,29 +235,40 @@ async def main():
     # Initialize LightRAG
     logger.info(f"Initializing LightRAG (working_dir: {working_dir})...")
 
-    rag = LightRAG(
-        working_dir=str(working_dir),
-        llm_model_func=llm_model_func,
-        embedding_func=embedding_func,
-        rerank_model_func=rerank_model_func,
-        enable_llm_cache=False,
-        kv_storage="MongoKVStorage",
-        vector_storage="MilvusVectorDBStorage",
-        graph_storage="NeptuneGraphStorage",
-        doc_status_storage="MongoDocStatusStorage",
-    )
+    if profiler:
+        with profiler.track_init():
+            rag = LightRAG(
+                working_dir=str(working_dir),
+                llm_model_func=llm_model_func,
+                embedding_func=embedding_func,
+                rerank_model_func=rerank_model_func,
+                enable_llm_cache=False,
+                kv_storage="MongoKVStorage",
+                vector_storage="MilvusVectorDBStorage",
+                graph_storage="NeptuneGraphStorage",
+                doc_status_storage="MongoDocStatusStorage",
+            )
+            await rag.initialize_storages()
+    else:
+        rag = LightRAG(
+            working_dir=str(working_dir),
+            llm_model_func=llm_model_func,
+            embedding_func=embedding_func,
+            rerank_model_func=rerank_model_func,
+            enable_llm_cache=False,
+            kv_storage="MongoKVStorage",
+            vector_storage="MilvusVectorDBStorage",
+            graph_storage="NeptuneGraphStorage",
+            doc_status_storage="MongoDocStatusStorage",
+        )
+        await rag.initialize_storages()
 
-    # Initialize storages
-    await rag.initialize_storages()
-    logger.info("✅ LightRAG initialized\n")
-
-    if timing:
-        timing.mark("initialization")
+    logger.info("LightRAG initialized\n")
 
     # Execute query or enter interactive mode
     if args.interactive:
         await interactive_mode(
-            rag=rag, mode=args.mode, default_date=args.date, timing=timing
+            rag=rag, mode=args.mode, default_date=args.date, profiler=profiler
         )
     else:
         response = await query_rag(
@@ -268,7 +277,7 @@ async def main():
             mode=args.mode,
             reference_date=args.date,
             stream=args.stream,
-            timing=timing,
+            profiler=profiler,
         )
 
         if response is not None:
@@ -278,14 +287,13 @@ async def main():
             print(response)
             print("=" * 60 + "\n")
 
-    if timing:
-        timing.report()
+    if profiler:
+        profiler.report()
 
 
 if __name__ == "__main__":
     import argparse
     import asyncio
-    import cProfile
     import sys
     from datetime import datetime
     from pathlib import Path
@@ -297,21 +305,13 @@ if __name__ == "__main__":
 Examples:
   # Single query with temporal mode
   python query_graph.py --query "What is the service fee?" --mode temporal --date 2023-06-01
-  
+
   # Interactive mode
   python query_graph.py --interactive --mode temporal --date 2024-01-01
-  
-  # Hybrid mode query with profiling
-  python query_graph.py --query "Summarize the contract" --mode hybrid --profile
-  
+
   # Stream response with timing breakdown
   python query_graph.py --query "What changed?" --mode temporal --date 2024-06-01 --stream --timing
         """,
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable cProfile profiling and save to profile_output.prof",
     )
     parser.add_argument(
         "--timing",
@@ -347,18 +347,4 @@ Examples:
 
     args = parser.parse_args()
 
-    # Pass args to async main
-    async def main_with_args():
-        return await main()
-
-    if args.profile:
-
-        def runner():
-            asyncio.run(main_with_args())
-
-        profile_file = "profile_output.prof"
-        cProfile.run("runner()", profile_file)
-        print(f"\nProfile data saved to {profile_file}")
-        print(f"View with: python -m pstats {profile_file}")
-    else:
-        asyncio.run(main_with_args())
+    asyncio.run(main())

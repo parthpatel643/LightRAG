@@ -1191,8 +1191,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Sum of degrees of both endpoint nodes."""
-        src_degree = await self.node_degree(src_id)
-        tgt_degree = await self.node_degree(tgt_id)
+        src_degree, tgt_degree = await asyncio.gather(
+            self.node_degree(src_id), self.node_degree(tgt_id)
+        )
         return src_degree + tgt_degree
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:

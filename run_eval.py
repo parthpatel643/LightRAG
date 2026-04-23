@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-run_eval.py - Run temporal evaluation across all workspaces with per-workspace time profiling.
+run_eval.py - Run semantic equivalence evaluation across all workspaces with per-workspace time profiling.
 
 Usage:
     python run_eval.py [--workspace NAME] [--api-url URL]
 
-Discovers every workspace under evaluation/, runs TemporalRAGEvaluator, and
+Discovers every workspace under evaluation/, runs SemanticEquivalenceEvaluator, and
 prints a time-profile table when done.
 """
 
@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
-from lightrag.evaluation.temporal_evaluator import TemporalRAGEvaluator
+from lightrag.evaluation.semantic_equivalence_evaluator import SemanticEquivalenceEvaluator
 from lightrag.utils import logger
 
 EVAL_DIR = PROJECT_ROOT / "evaluation"
@@ -51,7 +51,7 @@ async def run_workspace(
     """
     dataset_path = EVAL_DIR / workspace / "dataset.json"
 
-    evaluator = TemporalRAGEvaluator(
+    evaluator = SemanticEquivalenceEvaluator(
         workspace=workspace,
         test_dataset_path=str(dataset_path),
         rag_api_url=api_url,
@@ -66,11 +66,11 @@ async def run_workspace(
 
 def print_timing_report(timing_rows: list[tuple[str, float, int, int]]) -> None:
     """Pretty-print the per-workspace timing table."""
-    header = f"\n{'=' * 75}"
+    header = f"\n{'=' * 90}"
     header += "\nEVALUATION TIME PROFILE"
-    header += f"\n{'=' * 75}"
-    header += f"\n  {'Workspace':<40} {'Tests':>5}  {'Failed':>6}  {'Elapsed':>10}"
-    header += f"\n  {'-' * 40}  {'-' * 5}  {'-' * 6}  {'-' * 10}"
+    header += f"\n{'=' * 90}"
+    header += f"\n  {'Workspace':<40} {'Tests':>5}  {'Failed':>6}  {'Elapsed':>10}  {'Avg/Test':>10}"
+    header += f"\n  {'-' * 40}  {'-' * 5}  {'-' * 6}  {'-' * 10}  {'-' * 10}"
 
     rows = []
     total_elapsed = 0.0
@@ -78,16 +78,18 @@ def print_timing_report(timing_rows: list[tuple[str, float, int, int]]) -> None:
     total_failed = 0
 
     for workspace, elapsed, tests, failed in timing_rows:
+        avg = elapsed / tests if tests > 0 else 0.0
         rows.append(
-            f"  {workspace:<40} {tests:>5}  {failed:>6}  {elapsed:>9.2f}s"
+            f"  {workspace:<40} {tests:>5}  {failed:>6}  {elapsed:>9.2f}s  {avg:>9.2f}s"
         )
         total_elapsed += elapsed
         total_tests += tests
         total_failed += failed
 
-    footer = f"\n  {'─' * 40}  {'─' * 5}  {'─' * 6}  {'─' * 10}"
-    footer += f"\n  {'TOTAL':<40} {total_tests:>5}  {total_failed:>6}  {total_elapsed:>9.2f}s"
-    footer += f"\n{'=' * 75}"
+    total_avg = total_elapsed / total_tests if total_tests > 0 else 0.0
+    footer = f"\n  {'─' * 40}  {'─' * 5}  {'─' * 6}  {'─' * 10}  {'─' * 10}"
+    footer += f"\n  {'TOTAL':<40} {total_tests:>5}  {total_failed:>6}  {total_elapsed:>9.2f}s  {total_avg:>9.2f}s"
+    footer += f"\n{'=' * 90}"
 
     logger.info(header + "\n" + "\n".join(rows) + footer)
 
@@ -104,8 +106,8 @@ async def main(workspaces: list[str], api_url: str) -> None:
         try:
             ws, summary, elapsed = await run_workspace(workspace, api_url)
 
-            tests = summary.get("total_tests", 0)
-            stats = summary.get("benchmark_stats", {})
+            stats = summary.get("statistics", {})
+            tests = stats.get("total_tests", 0)
             failed = stats.get("failed_tests", 0)
 
             timing_rows.append((workspace, elapsed, tests, failed))
@@ -128,7 +130,13 @@ async def main(workspaces: list[str], api_url: str) -> None:
                 "run_at": datetime.now().isoformat(),
                 "api_url": api_url,
                 "workspaces": [
-                    {"workspace": ws, "elapsed_s": round(el, 2), "tests": t, "failed": f}
+                    {
+                        "workspace": ws,
+                        "elapsed_s": round(el, 2),
+                        "tests": t,
+                        "failed": f,
+                        "avg_per_test_s": round(el / t, 2) if t > 0 else 0.0,
+                    }
                     for ws, el, t, f in timing_rows
                 ],
                 "summaries": all_summaries,
@@ -141,7 +149,7 @@ async def main(workspaces: list[str], api_url: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run temporal evaluation across workspaces with time profiling.",
+        description="Run semantic equivalence evaluation across workspaces with time profiling.",
     )
     parser.add_argument(
         "--workspace",

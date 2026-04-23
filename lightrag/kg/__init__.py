@@ -18,6 +18,7 @@ STORAGE_IMPLEMENTATIONS = {
             "MemgraphStorage",
             "NeptuneGraphStorage",
             "OpenSearchGraphStorage",
+            "NeptuneOpenSearchGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -114,6 +115,13 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "OpenSearchVectorDBStorage": [
         "OPENSEARCH_HOSTS",
     ],
+    # Neptune + OpenSearch Composite Graph Storage
+    "NeptuneOpenSearchGraphStorage": [
+        "NEPTUNE_ENDPOINT",
+        "NEPTUNE_PORT",
+        "NEPTUNE_REGION",
+        "OPENSEARCH_HOSTS",
+    ],
 }
 
 # Storage implementation module mapping
@@ -144,6 +152,7 @@ STORAGES = {
     "OpenSearchDocStatusStorage": ".kg.opensearch_impl",
     "OpenSearchGraphStorage": ".kg.opensearch_impl",
     "OpenSearchVectorDBStorage": ".kg.opensearch_impl",
+    "NeptuneOpenSearchGraphStorage": ".kg.neptune_opensearch_impl",
 }
 
 
