@@ -17,6 +17,7 @@ declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
+declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
 declare -A REQUIRED_DB_TYPES
 declare -A DOCKER_SERVICE_SET
 declare -A EXISTING_MANAGED_ROOT_SERVICE_SET
@@ -65,6 +66,7 @@ STORAGE_SERVICES=(
 DEFAULT_RUNTIME_TARGET="host"
 COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
 COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
+COMPOSE_LIGHTRAG_PROMPT_DIR="/app/data/prompts"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -102,6 +104,7 @@ reset_state() {
   ORIGINAL_ENV_VALUES=()
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
+  COMPOSE_SERVICE_IMAGE_OVERRIDES=()
   REQUIRED_DB_TYPES=()
   DOCKER_SERVICE_SET=()
   EXISTING_MANAGED_ROOT_SERVICE_SET=()
@@ -149,6 +152,28 @@ normalize_vllm_rerank_binding_state() {
   fi
 }
 
+# Backfill sentinel hosts for bedrock/gemini bindings when LLM_BINDING_HOST or
+# EMBEDDING_BINDING_HOST is missing or empty. Flows that skip collect_llm_config /
+# collect_embedding_config (--server, --storage) would otherwise let the openai URL
+# hardcoded in env.example leak into the regenerated .env.
+normalize_provider_binding_hosts() {
+  local llm_sentinel="" embedding_sentinel=""
+  case "${ENV_VALUES[LLM_BINDING]:-}" in
+    bedrock) llm_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
+    gemini) llm_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+  esac
+  case "${ENV_VALUES[EMBEDDING_BINDING]:-}" in
+    bedrock) embedding_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
+    gemini) embedding_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+  esac
+  if [[ -n "$llm_sentinel" && -z "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
+    ENV_VALUES["LLM_BINDING_HOST"]="$llm_sentinel"
+  fi
+  if [[ -n "$embedding_sentinel" && -z "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
+    ENV_VALUES["EMBEDDING_BINDING_HOST"]="$embedding_sentinel"
+  fi
+}
+
 load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
@@ -157,6 +182,7 @@ load_existing_env_if_present() {
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
     normalize_vllm_rerank_binding_state
+    normalize_provider_binding_hosts
     if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
@@ -228,11 +254,73 @@ normalize_loopback_uri_for_compose() {
   printf '%s' "$uri"
 }
 
-normalize_mongodb_uri_for_local_service() {
+ensure_mongodb_direct_connection_suffix() {
+  local suffix="${1:-}"
+  local path query fragment filtered_query=""
+  local part
+  local -a query_parts=()
+
+  if [[ "$suffix" == *"#"* ]]; then
+    fragment="#${suffix#*#}"
+    suffix="${suffix%%#*}"
+  else
+    fragment=""
+  fi
+
+  if [[ "$suffix" == *"?"* ]]; then
+    path="${suffix%%\?*}"
+    query="${suffix#*\?}"
+  else
+    path="$suffix"
+    query=""
+  fi
+
+  if [[ -z "$path" ]]; then
+    path="/"
+  fi
+
+  if [[ -n "$query" ]]; then
+    IFS='&' read -r -a query_parts <<< "$query"
+    for part in "${query_parts[@]}"; do
+      if [[ -z "$part" || "$part" == directConnection=* ]]; then
+        continue
+      fi
+      if [[ -n "$filtered_query" ]]; then
+        filtered_query="${filtered_query}&${part}"
+      else
+        filtered_query="$part"
+      fi
+    done
+  fi
+
+  if [[ -n "$filtered_query" ]]; then
+    printf '%s?%s&directConnection=true%s' "$path" "$filtered_query" "$fragment"
+  else
+    printf '%s?directConnection=true%s' "$path" "$fragment"
+  fi
+}
+
+mongodb_uri_has_direct_connection_true() {
+  local uri="$1"
+  local direct_connection_pattern='[?&]directConnection=true([&#]|$)'
+
+  [[ "$uri" =~ ^mongodb:// ]] && [[ "$uri" =~ $direct_connection_pattern ]]
+}
+
+is_wizard_managed_local_mongodb_uri() {
   local uri="$1"
 
+  [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0):27017([/?#].*)?$ ]] && \
+    mongodb_uri_has_direct_connection_true "$uri"
+}
+
+normalize_mongodb_uri_for_local_service() {
+  local uri="$1"
+  local suffix
+
   if [[ "$uri" =~ ^mongodb://([^/?#]+@)?(mongodb|localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?([/?#].*)?$ ]]; then
-    printf 'mongodb://localhost:27017%s' "${BASH_REMATCH[4]:-/}"
+    suffix="$(ensure_mongodb_direct_connection_suffix "${BASH_REMATCH[4]:-/}")"
+    printf 'mongodb://localhost:27017%s' "$suffix"
     return 0
   fi
 
@@ -257,7 +345,7 @@ normalize_redis_uri_for_local_service() {
   local uri="$1"
 
   if [[ "$uri" =~ ^rediss?://([^/?#]+@)?(redis|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
-    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]:-/}"
+    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]}"
     return 0
   fi
 
@@ -455,7 +543,7 @@ set_managed_service_compose_overrides() {
       ;;
     mongodb)
       if [[ -z "${COMPOSE_ENV_OVERRIDES[MONGO_URI]+set}" ]]; then
-        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+        set_compose_override "MONGO_URI" "mongodb://mongodb:27017/?directConnection=true"
       fi
       ;;
     redis)
@@ -597,6 +685,7 @@ prepare_compose_data_path_overrides() {
   # storage into a different location.
   set_compose_override "WORKING_DIR" "$COMPOSE_LIGHTRAG_WORKING_DIR"
   set_compose_override "INPUT_DIR" "$COMPOSE_LIGHTRAG_INPUT_DIR"
+  set_compose_override "PROMPT_DIR" "$COMPOSE_LIGHTRAG_PROMPT_DIR"
 }
 
 prepare_compose_env_overrides() {
@@ -739,6 +828,34 @@ record_existing_managed_root_services() {
   done < <(detect_managed_root_services "$compose_file")
 }
 
+collect_preserved_storage_service_images() {
+  local compose_file="${1:-}"
+  local service_name=""
+  local image_value=""
+
+  COMPOSE_SERVICE_IMAGE_OVERRIDES=()
+
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" || -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  # Only postgres and neo4j are wizard-managed Docker storage services that users
+  # commonly pin to custom registry images. If new storage backends are added as
+  # wizard-managed Docker services, extend this list accordingly.
+  for service_name in postgres neo4j; do
+    if [[ -z "${COMPOSE_REWRITE_SERVICE_SET[$service_name]+set}" ]] || \
+      [[ -z "${DOCKER_SERVICE_SET[$service_name]+set}" ]] || \
+      ! existing_managed_root_service_present "$service_name"; then
+      continue
+    fi
+
+    image_value="$(read_service_image_value "$compose_file" "$service_name" || true)"
+    if [[ -n "$image_value" ]]; then
+      COMPOSE_SERVICE_IMAGE_OVERRIDES["$service_name"]="$image_value"
+    fi
+  done
+}
+
 backup_existing_compose_if_generating() {
   local generate_compose="${1:-no}"
   local existing_compose="${2:-}"
@@ -793,6 +910,70 @@ existing_managed_root_service_present() {
   local root_service="$1"
 
   [[ -n "${EXISTING_MANAGED_ROOT_SERVICE_SET[$root_service]+set}" ]]
+}
+
+compose_service_block_contains_literal() {
+  local compose_file="$1"
+  local service_name="$2"
+  local literal="$3"
+
+  if [[ -z "$compose_file" || ! -f "$compose_file" ]]; then
+    return 1
+  fi
+
+  awk -v header="  ${service_name}:" -v literal="$literal" '
+    $0 == header { in_service = 1; next }
+    in_service && $0 ~ /^  [^[:space:]]/ { exit found ? 0 : 1 }
+    in_service && index($0, literal) { found = 1; exit 0 }
+    END { exit found ? 0 : 1 }
+  ' "$compose_file"
+}
+
+mongodb_service_requires_atlas_local_rewrite() {
+  local compose_file="${1:-}"
+
+  if [[ -z "$compose_file" ]]; then
+    return 1
+  fi
+
+  if [[ "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" != "MongoVectorDBStorage" ]]; then
+    return 1
+  fi
+
+  if [[ "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}" != "docker" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${DOCKER_SERVICE_SET[mongodb]+set}" ]] || \
+    ! existing_managed_root_service_present "mongodb"; then
+    return 1
+  fi
+
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "image: mongodb/mongodb-atlas-local:"; then
+    return 0
+  fi
+
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "mongo_config_data:/data/configdb"; then
+    return 0
+  fi
+
+  if ! compose_service_block_contains_literal "$compose_file" "mongodb" "mongo_mongot_data:/data/mongot"; then
+    return 0
+  fi
+
+  return 1
+}
+
+configure_mongodb_compose_migration_rewrite() {
+  local existing_compose="${1:-}"
+
+  if [[ "$FORCE_REWRITE_COMPOSE" == "yes" ]]; then
+    return 0
+  fi
+
+  if mongodb_service_requires_atlas_local_rewrite "$existing_compose"; then
+    mark_compose_service_for_rewrite "mongodb"
+  fi
 }
 
 env_value_changed_from_original() {
@@ -1158,21 +1339,15 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_PORT" ""
   fi
 
+  # The bundled postgres image creates its user/password/database from the
+  # POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB env vars on first start, so docker
+  # and host deployments share the same prompts and defaults (rag/rag/lightrag).
   existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
   existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
   existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
-  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
-    user="rag"
-    password="rag"
-  else
-    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
-    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
-  fi
-  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
-    database="rag"
-  else
-    database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
-  fi
+  user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+  password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
+  database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"
@@ -1247,28 +1422,29 @@ collect_mongodb_config() {
     vector_search_required="yes"
   fi
 
-  if [[ "$vector_search_required" == "yes" ]]; then
-    log_warn "MongoVectorDBStorage cannot use the local Docker MongoDB service from this setup wizard."
-    log_warn "Reason: the bundled local Docker MongoDB service is MongoDB Community Edition, but MongoVectorDBStorage requires Atlas Search / Vector Search support."
-    log_warn "Provide a MongoDB endpoint that supports Atlas Search / Vector Search, such as MongoDB Atlas or Atlas local."
-    uri="${ENV_VALUES[MONGO_URI]:-mongodb+srv://cluster.example.mongodb.net/}"
+  if [[ "$default_docker" == "yes" ]]; then
+    if confirm_default_yes "Run MongoDB locally via Docker?"; then
+      use_docker="yes"
+    fi
   else
-    if [[ "$default_docker" == "yes" ]]; then
-      if confirm_default_yes "Run MongoDB locally via Docker?"; then
-        use_docker="yes"
-      fi
-    else
-      if confirm_default_no "Run MongoDB locally via Docker?"; then
-        use_docker="yes"
-      fi
+    if confirm_default_no "Run MongoDB locally via Docker?"; then
+      use_docker="yes"
     fi
+  fi
 
-    if [[ "$use_docker" == "yes" ]]; then
-      add_docker_service "mongodb"
-      uri="$(prefer_local_service_uri "${ENV_VALUES[MONGO_URI]:-}" "mongodb://localhost:27017/" "mongodb" "localhost" "127.0.0.1" "0.0.0.0")"
-    else
-      uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
+  if [[ "$use_docker" == "yes" ]]; then
+    if [[ "$vector_search_required" == "yes" ]]; then
+      log_info "Docker MongoDB uses Atlas Local, so MongoVectorDBStorage can use Atlas Search / Vector Search locally."
     fi
+    add_docker_service "mongodb"
+    uri="$(prefer_local_service_uri "${ENV_VALUES[MONGO_URI]:-}" "mongodb://localhost:27017/?directConnection=true" "mongodb" "localhost" "127.0.0.1" "0.0.0.0")"
+  elif [[ "$vector_search_required" == "yes" ]]; then
+    uri="${ENV_VALUES[MONGO_URI]:-}"
+    if [[ -z "$uri" ]] || is_wizard_managed_local_mongodb_uri "$uri"; then
+      uri="mongodb+srv://cluster.example.mongodb.net/"
+    fi
+  else
+    uri="${ENV_VALUES[MONGO_URI]:-mongodb://localhost:27017/}"
   fi
 
   if [[ "$vector_search_required" == "yes" ]]; then
@@ -1285,7 +1461,7 @@ collect_mongodb_config() {
   ENV_VALUES["MONGO_URI"]="$uri"
   ENV_VALUES["MONGO_DATABASE"]="$database"
   if [[ "$use_docker" == "yes" ]]; then
-    set_compose_override "MONGO_URI" "mongodb://mongodb:27017/"
+    set_compose_override "MONGO_URI" "mongodb://mongodb:27017/?directConnection=true"
   else
     set_compose_override "MONGO_URI" ""
   fi
@@ -1348,7 +1524,6 @@ collect_milvus_config() {
     uri="${ENV_VALUES[MILVUS_URI]:-http://localhost:19530}"
   fi
 
-  uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
   existing_db_name="${ORIGINAL_ENV_VALUES[MILVUS_DB_NAME]-${ENV_VALUES[MILVUS_DB_NAME]:-}}"
   existing_device="${ORIGINAL_ENV_VALUES[MILVUS_DEVICE]-${ENV_VALUES[MILVUS_DEVICE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
@@ -1357,6 +1532,7 @@ collect_milvus_config() {
     if [[ "$milvus_device" == "cuda" ]] && ! host_cuda_available; then
       log_warn "CUDA device selected for Milvus but no NVIDIA driver detected on host."
     fi
+    uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
     uri="$(normalize_milvus_uri_for_local_service "$uri")"
     if [[ -z "${ENV_VALUES[MINIO_ACCESS_KEY_ID]:-}" ]]; then
       ENV_VALUES["MINIO_ACCESS_KEY_ID"]="minioadmin"
@@ -1364,6 +1540,8 @@ collect_milvus_config() {
     if [[ -z "${ENV_VALUES[MINIO_SECRET_ACCESS_KEY]:-}" ]]; then
       ENV_VALUES["MINIO_SECRET_ACCESS_KEY"]="minioadmin"
     fi
+  else
+    uri="$(prompt_until_valid "Milvus URI" "$uri" validate_uri milvus)"
   fi
   db_name="$(prompt_with_default "Milvus database name" "${existing_db_name:-lightrag}")"
 
@@ -1402,7 +1580,6 @@ collect_qdrant_config() {
     url="${ENV_VALUES[QDRANT_URL]:-http://localhost:6333}"
   fi
 
-  url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   existing_device="${ORIGINAL_ENV_VALUES[QDRANT_DEVICE]-${ENV_VALUES[QDRANT_DEVICE]:-}}"
   if [[ "$use_docker" == "yes" ]]; then
     qdrant_device="$(resolve_local_device_default "$existing_device")"
@@ -1410,7 +1587,10 @@ collect_qdrant_config() {
     if [[ "$qdrant_device" == "cuda" ]] && ! host_cuda_available; then
       log_warn "CUDA device selected for Qdrant but no NVIDIA driver detected on host."
     fi
+    url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
     url="$(normalize_qdrant_uri_for_local_service "$url")"
+  else
+    url="$(prompt_until_valid "Qdrant URL" "$url" validate_uri qdrant)"
   fi
   ENV_VALUES["QDRANT_URL"]="$url"
   if [[ -n "$qdrant_device" ]]; then
@@ -1559,21 +1739,10 @@ clear_bedrock_credentials() {
   unset 'ENV_VALUES[AWS_REGION]'
 }
 
-bedrock_binding_in_use() {
-  [[ "${ENV_VALUES[LLM_BINDING]:-}" == "aws_bedrock" ||
-    "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "aws_bedrock" ]]
-}
-
-clear_bedrock_credentials_if_unused() {
-  if ! bedrock_binding_in_use; then
-    clear_bedrock_credentials
-  fi
-}
-
 collect_bedrock_credentials() {
   local access_key secret_key session_token region
 
-  log_info "Bedrock uses the AWS credential chain instead of LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY."
+  log_info "Bedrock ignores LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY; use SigV4 credentials or AWS_BEARER_TOKEN_BEDROCK."
   if [[ -n "${ENV_VALUES[AWS_ACCESS_KEY_ID]:-}" && -n "${ENV_VALUES[AWS_SECRET_ACCESS_KEY]:-}" ]]; then
     if confirm_default_yes "Reuse existing AWS Bedrock credentials?"; then
       region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"
@@ -1643,7 +1812,7 @@ default_llm_model_for_binding() {
     gemini)
       printf 'gemini-flash-latest'
       ;;
-    aws_bedrock)
+    bedrock)
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
@@ -1668,7 +1837,7 @@ default_embedding_model_for_binding() {
     gemini)
       printf 'gemini-embedding-001'
       ;;
-    aws_bedrock)
+    bedrock)
       printf 'amazon.titan-embed-text-v2:0'
       ;;
     lollms)
@@ -1687,7 +1856,7 @@ default_embedding_dim_for_binding() {
     openai|azure_openai)
       printf '3072'
       ;;
-    ollama|aws_bedrock|lollms)
+    ollama|bedrock|lollms)
       printf '1024'
       ;;
     jina)
@@ -1703,7 +1872,7 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
@@ -1733,12 +1902,12 @@ collect_llm_config() {
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://generativelanguage.googleapis.com")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "DEFAULT_GEMINI_ENDPOINT")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
-    aws_bedrock)
-      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://bedrock.amazonaws.com")"
+    bedrock)
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "DEFAULT_BEDROCK_ENDPOINT")"
       api_key=""
       collect_bedrock_credentials
       ;;
@@ -1753,11 +1922,19 @@ collect_llm_config() {
   ENV_VALUES["LLM_MODEL"]="$model"
   ENV_VALUES["LLM_BINDING_HOST"]="$host"
   store_optional_env_value "LLM_BINDING_API_KEY" "$api_key"
-  clear_bedrock_credentials_if_unused
+
+  # Role-specific LLM models — default to the base LLM_MODEL when unset in .env.
+  local keyword_default query_default keyword_model query_model
+  keyword_default="${ENV_VALUES[KEYWORD_LLM_MODEL]:-$model}"
+  query_default="${ENV_VALUES[QUERY_LLM_MODEL]:-$model}"
+  keyword_model="$(prompt_with_default "Keyword LLM model" "$keyword_default")"
+  query_model="$(prompt_with_default "Query LLM model" "$query_default")"
+  ENV_VALUES["KEYWORD_LLM_MODEL"]="$keyword_model"
+  ENV_VALUES["QUERY_LLM_MODEL"]="$query_model"
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -1797,12 +1974,12 @@ collect_embedding_config() {
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://generativelanguage.googleapis.com}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-DEFAULT_GEMINI_ENDPOINT}")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key gemini)"
       ;;
-    aws_bedrock)
-      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://bedrock.amazonaws.com}")"
+    bedrock)
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-DEFAULT_BEDROCK_ENDPOINT}")"
       api_key=""
       collect_bedrock_credentials
       ;;
@@ -1823,7 +2000,6 @@ collect_embedding_config() {
   ENV_VALUES["EMBEDDING_DIM"]="$dim"
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
-  clear_bedrock_credentials_if_unused
   # User chose a remote provider — clear the Docker deployment marker.
   unset 'ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]'
 }
@@ -2212,12 +2388,18 @@ env_base_flow() {
   fi
 
   if [[ "$use_docker_embed" == "yes" ]]; then
-    existing_vllm_embed_model="${ENV_VALUES[VLLM_EMBED_MODEL]:-}"
-    existing_embedding_dim="${ENV_VALUES[EMBEDDING_DIM]:-}"
-    existing_vllm_embed_port="${ENV_VALUES[VLLM_EMBED_PORT]:-}"
-    existing_vllm_embed_host="${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}"
-    existing_vllm_embed_device="${ENV_VALUES[VLLM_EMBED_DEVICE]:-}"
+    existing_vllm_embed_model="${ORIGINAL_ENV_VALUES[VLLM_EMBED_MODEL]-${ENV_VALUES[VLLM_EMBED_MODEL]:-}}"
+    existing_embedding_dim="${ORIGINAL_ENV_VALUES[EMBEDDING_DIM]-${ENV_VALUES[EMBEDDING_DIM]:-}}"
+    existing_vllm_embed_port="${ORIGINAL_ENV_VALUES[VLLM_EMBED_PORT]-${ENV_VALUES[VLLM_EMBED_PORT]:-}}"
+    existing_vllm_embed_host="${ORIGINAL_ENV_VALUES[EMBEDDING_BINDING_HOST]-${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}}"
+    existing_vllm_embed_device="${ORIGINAL_ENV_VALUES[VLLM_EMBED_DEVICE]-${ENV_VALUES[VLLM_EMBED_DEVICE]:-}}"
     apply_preset_overwrite "${PRESET_VLLM_EMBEDDING[@]}"
+    local vllm_embed_device
+    vllm_embed_device="$(resolve_local_device_default "$existing_vllm_embed_device")"
+    vllm_embed_device="$(prompt_choice "Embedding device" "$vllm_embed_device" "cpu" "cuda")"
+    if [[ "$vllm_embed_device" == "cuda" ]] && ! host_cuda_available; then
+      log_warn "CUDA device selected for vLLM embedding but no NVIDIA driver detected on host."
+    fi
     if [[ -n "$existing_vllm_embed_port" ]]; then
       ENV_VALUES["VLLM_EMBED_PORT"]="$existing_vllm_embed_port"
     fi
@@ -2233,9 +2415,6 @@ env_base_flow() {
     embed_model="$(prompt_with_default "Embedding model" "${existing_vllm_embed_model:-${ENV_VALUES[VLLM_EMBED_MODEL]:-BAAI/bge-m3}}")"
     ENV_VALUES["VLLM_EMBED_MODEL"]="$embed_model"
     ENV_VALUES["EMBEDDING_MODEL"]="$embed_model"
-
-    local vllm_embed_device
-    vllm_embed_device="$(resolve_local_device_default "$existing_vllm_embed_device")"
     ENV_VALUES["VLLM_EMBED_DEVICE"]="$vllm_embed_device"
     ENV_VALUES["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"]="vllm"
 
@@ -2282,11 +2461,17 @@ env_base_flow() {
     fi
 
     if [[ "$use_docker_rerank" == "yes" ]]; then
-      existing_vllm_rerank_model="${ENV_VALUES[VLLM_RERANK_MODEL]:-}"
-      existing_vllm_rerank_port="${ENV_VALUES[VLLM_RERANK_PORT]:-}"
-      existing_vllm_rerank_host="${ENV_VALUES[RERANK_BINDING_HOST]:-}"
-      existing_vllm_rerank_device="${ENV_VALUES[VLLM_RERANK_DEVICE]:-}"
+      existing_vllm_rerank_model="${ORIGINAL_ENV_VALUES[VLLM_RERANK_MODEL]-${ENV_VALUES[VLLM_RERANK_MODEL]:-}}"
+      existing_vllm_rerank_port="${ORIGINAL_ENV_VALUES[VLLM_RERANK_PORT]-${ENV_VALUES[VLLM_RERANK_PORT]:-}}"
+      existing_vllm_rerank_host="${ORIGINAL_ENV_VALUES[RERANK_BINDING_HOST]-${ENV_VALUES[RERANK_BINDING_HOST]:-}}"
+      existing_vllm_rerank_device="${ORIGINAL_ENV_VALUES[VLLM_RERANK_DEVICE]-${ENV_VALUES[VLLM_RERANK_DEVICE]:-}}"
       apply_preset_overwrite "${PRESET_VLLM_RERANKER[@]}"
+      local vllm_rerank_device
+      vllm_rerank_device="$(resolve_local_device_default "$existing_vllm_rerank_device")"
+      vllm_rerank_device="$(prompt_choice "Rerank device" "$vllm_rerank_device" "cpu" "cuda")"
+      if [[ "$vllm_rerank_device" == "cuda" ]] && ! host_cuda_available; then
+        log_warn "CUDA device selected for vLLM rerank but no NVIDIA driver detected on host."
+      fi
       local rerank_model rerank_port
       if [[ -n "$existing_vllm_rerank_port" ]]; then
         ENV_VALUES["VLLM_RERANK_PORT"]="$existing_vllm_rerank_port"
@@ -2301,9 +2486,6 @@ env_base_flow() {
       ENV_VALUES["VLLM_RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["RERANK_MODEL"]="$rerank_model"
       ENV_VALUES["VLLM_RERANK_PORT"]="$rerank_port"
-
-      local vllm_rerank_device
-      vllm_rerank_device="$(resolve_local_device_default "$existing_vllm_rerank_device")"
       ENV_VALUES["VLLM_RERANK_DEVICE"]="$vllm_rerank_device"
       ENV_VALUES["LIGHTRAG_SETUP_RERANK_PROVIDER"]="vllm"
 
@@ -2351,6 +2533,13 @@ finalize_base_setup() {
     return 1
   fi
 
+  if ! validate_mongo_vector_storage_config \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[MONGO_URI]:-}" \
+    "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
+    return 1
+  fi
+
   show_summary
 
   if ! confirm_required_yes_no "${COLOR_YELLOW}Ready to proceed and write .env${COLOR_RESET}"; then
@@ -2362,6 +2551,7 @@ finalize_base_setup() {
   compose_file="${REPO_ROOT}/docker-compose.final.yml"
   record_existing_managed_root_services "$existing_compose"
   restore_storage_docker_services_from_env
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
 
   configure_base_compose_rewrites
 
@@ -2389,6 +2579,7 @@ finalize_base_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2507,6 +2698,7 @@ finalize_storage_setup() {
   record_existing_managed_root_services "$existing_compose"
   restore_vllm_docker_services_from_env
   configure_storage_compose_rewrites
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
   resolve_compose_output_action \
     "$existing_compose" \
     compose_action \
@@ -2518,6 +2710,7 @@ finalize_storage_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2602,10 +2795,15 @@ finalize_server_setup() {
     return 1
   fi
 
-  if ! validate_security_config \
-    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
+  if ! validate_auth_accounts_runtime_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}"; then
+    return 1
+  fi
+
+  if ! validate_mongo_vector_storage_config \
+    "${ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]:-}" \
+    "${ENV_VALUES[MONGO_URI]:-}" \
+    "${ENV_VALUES[LIGHTRAG_SETUP_MONGODB_DEPLOYMENT]:-}"; then
     return 1
   fi
 
@@ -2621,6 +2819,7 @@ finalize_server_setup() {
   record_existing_managed_root_services "$existing_compose"
   restore_storage_docker_services_from_env
   restore_vllm_docker_services_from_env
+  configure_mongodb_compose_migration_rewrite "$existing_compose"
   resolve_compose_output_action \
     "$existing_compose" \
     compose_action \
@@ -2632,6 +2831,7 @@ finalize_server_setup() {
     if ! prepare_managed_service_assets_for_compose "$existing_compose"; then
       return 1
     fi
+    collect_preserved_storage_service_images "$existing_compose"
     prepare_compose_env_overrides
   elif [[ "$compose_action" == "delete_compose_and_switch_host" ]]; then
     backup_existing_compose_for_action "$compose_action" "$existing_compose" || return 1
@@ -2700,7 +2900,7 @@ load_env_file() {
   fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
       if [[ "$value" =~ ^\".*\"$ ]]; then
@@ -2784,10 +2984,8 @@ validate_env_file() {
     errors=1
   fi
 
-  if ! validate_security_config \
-    "${ENV_VALUES[AUTH_ACCOUNTS]:-}" \
-    "${ENV_VALUES[TOKEN_SECRET]:-}" \
-    "${ENV_VALUES[LIGHTRAG_API_KEY]:-}"; then
+  if ! validate_auth_accounts_runtime_config \
+    "${ENV_VALUES[AUTH_ACCOUNTS]:-}"; then
     errors=1
   fi
 

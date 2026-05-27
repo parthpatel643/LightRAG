@@ -7,7 +7,7 @@ from typing import Any, cast
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP
-from .utils import compute_mdhash_id, logger
+from .utils import compute_mdhash_id, logger, make_relation_vdb_ids
 from .base import StorageNameSpace
 
 
@@ -83,7 +83,11 @@ async def adelete_by_entity(
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
     """
-    # Use keyed lock for entity to ensure atomic graph and vector db operations
+    # Use keyed lock for entity to ensure atomic graph and vector db operations.
+    # The doc-ingest pipeline locks edges under sorted([src, tgt]) in this same
+    # namespace, so [entity_name] already mutually excludes any concurrent edge
+    # write that touches this entity — get_storage_keyed_lock acquires one
+    # mutex per key, and identical key strings share the same mutex.
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
     async with get_storage_keyed_lock(
@@ -585,6 +589,11 @@ async def aedit_entity(
     new_entity_name = updated_data.get("entity_name", entity_name)
     is_renaming = new_entity_name != entity_name
 
+    # Lock the (old, new) entity names. The doc-ingest pipeline acquires
+    # edge locks as sorted([src, tgt]) in the same namespace, and
+    # get_storage_keyed_lock takes one mutex per key — so locking the
+    # entity name already mutually excludes any concurrent edge write that
+    # touches it, no need to enumerate incident edges here.
     lock_keys = sorted({entity_name, new_entity_name}) if is_renaming else [entity_name]
 
     workspace = entities_vdb.global_config.get("workspace", "")
@@ -1435,6 +1444,7 @@ async def _merge_entities_impl(
                 "description": description,
                 "keywords": keywords,
                 "weight": weight,
+                "file_path": edge_data.get("file_path", ""),
             }
         }
         await relationships_vdb.upsert(relation_data_for_vdb)
@@ -1458,6 +1468,7 @@ async def _merge_entities_impl(
             "source_id": source_id,
             "description": description,
             "entity_type": entity_type,
+            "file_path": merged_entity_data.get("file_path", ""),
         }
     }
     await entities_vdb.upsert(entity_data_for_vdb)
@@ -1753,8 +1764,11 @@ async def get_relation_info(
 
     # Optional: Get vector database information
     if include_vector_data:
-        rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-        vector_data = await relationships_vdb.get_by_id(rel_id)
+        vector_data = None
+        for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
+            vector_data = await relationships_vdb.get_by_id(rel_id)
+            if vector_data is not None:
+                break
         result["vector_data"] = vector_data
 
     return result

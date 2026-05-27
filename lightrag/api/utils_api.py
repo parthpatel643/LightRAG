@@ -9,8 +9,8 @@ import sys
 import time
 import logging
 from ascii_colors import ASCIIColors
-from lightrag.api import __api_version__ as api_version
-from lightrag import __version__ as core_version
+from .._version import __api_version__ as api_version
+from .._version import __version__ as core_version
 from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
@@ -54,7 +54,7 @@ def check_env_file():
 
         # Check if running in interactive terminal
         if sys.stdin.isatty():
-            response = input("Do you want to continue? (yes/no): ")
+            response = input("Do you want to continue? (yes/NO): ")
             if response.lower() != "yes":
                 ASCIIColors.red("Server startup cancelled")
                 return False
@@ -140,7 +140,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
                 # ========== Token Auto-Renewal Logic ==========
                 from lightrag.api.config import global_args
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 if global_args.token_auto_renew:
                     # Check if current path should skip token renewal
@@ -156,7 +156,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                             expire_time = token_info.get("exp")
                             if expire_time:
                                 # Calculate remaining time ratio
-                                now = datetime.utcnow()
+                                now = datetime.now(timezone.utc)
                                 remaining_seconds = (expire_time - now).total_seconds()
 
                                 # Get original token expiration duration
@@ -336,24 +336,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.working_dir}")
     ASCIIColors.white("    └─ Input Directory: ", end="")
     ASCIIColors.yellow(f"{args.input_dir}")
-
-    # LLM Configuration
-    ASCIIColors.magenta("\n🤖 LLM Configuration:")
-    ASCIIColors.white("    ├─ Binding: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding}")
-    ASCIIColors.white("    ├─ Host: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding_host}")
-    ASCIIColors.white("    ├─ Model: ", end="")
-    ASCIIColors.yellow(f"{args.llm_model}")
-    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
-    ASCIIColors.yellow(f"{args.max_async}")
-    ASCIIColors.white("    ├─ Summary Context Size: ", end="")
-    ASCIIColors.yellow(f"{args.summary_context_size}")
-    ASCIIColors.white("    ├─ LLM Cache Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache}")
-    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
-
     # Embedding Configuration
     ASCIIColors.magenta("\n📊 Embedding Configuration:")
     ASCIIColors.white("    ├─ Binding: ", end="")
@@ -362,15 +344,15 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.embedding_model}")
-    ASCIIColors.white("    └─ Dimensions: ", end="")
+    ASCIIColors.white("    ├─ Dimensions: ", end="")
     ASCIIColors.yellow(f"{args.embedding_dim}")
+    ASCIIColors.white("    └─ Asymmetric: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_asymmetric}")
 
     # RAG Configuration
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
     ASCIIColors.white("    ├─ Summary Language: ", end="")
     ASCIIColors.yellow(f"{args.summary_language}")
-    ASCIIColors.white("    ├─ Entity Types: ", end="")
-    ASCIIColors.yellow(f"{args.entity_types}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
     ASCIIColors.yellow(f"{args.max_parallel_insert}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")
