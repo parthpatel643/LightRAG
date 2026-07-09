@@ -3,13 +3,18 @@
 LightRAG Local-to-Cloud Storage Migration Tool
 
 Migrates data from local storage backends (JSON KV, NanoVectorDB, NetworkX GraphML)
-to cloud storage backends (MongoDB, Milvus, Neptune).
+to cloud storage backends (MongoDB, Milvus, Neptune, OpenSearch).
 
 Target cloud configuration:
     kv_storage      = MongoKVStorage
     vector_storage  = MilvusVectorDBStorage
-    graph_storage   = NeptuneGraphStorage
+    graph_storage   = NeptuneGraphStorage / NeptuneOpenSearchGraphStorage
     doc_status_storage = MongoDocStatusStorage
+
+OpenSearch integration:
+    When OPENSEARCH_HOSTS or NEPTUNE_OPENSEARCH_ENDPOINT is configured, the migration
+    also seeds the OpenSearch nodes index used by NeptuneOpenSearchGraphStorage for
+    full-text search (search_labels / full_text_search).
 
 Modes:
     delete  – Wipe cloud workspace collections / databases only.
@@ -21,6 +26,12 @@ Required environment variables (set before running):
     MONGO_URI, MONGO_DATABASE
     MILVUS_URI             (optionally MILVUS_DB_NAME)
     NEPTUNE_ENDPOINT, NEPTUNE_PORT, NEPTUNE_REGION
+
+Optional (for OpenSearch full-text search seeding):
+    OPENSEARCH_HOSTS or NEPTUNE_OPENSEARCH_ENDPOINT
+    OPENSEARCH_USER, OPENSEARCH_PASSWORD     (or AWS IAM if omitted)
+    OPENSEARCH_USE_SSL, OPENSEARCH_VERIFY_CERTS
+    OPENSEARCH_AWS_SERVICE                   ("aoss" for serverless, "es" for managed)
 
 Usage examples:
     # Fresh upload of workspace "my_ws" from ./rag_storage
@@ -546,6 +557,9 @@ def milvus_upsert_vectors(
             mc.upsert(collection_name=col_name, data=rows)
             total += len(batch)
 
+        if not dry_run:
+            mc.flush(col_name)
+
         action = "Would upsert" if dry_run else "Upserted"
         logger.info("[Milvus] %s %d vectors into %s", action, total, col_name)
     finally:
@@ -598,6 +612,254 @@ def milvus_delete_ids(
             logger.info("[Milvus] Deleted %d vectors from %s", len(ids), col_name)
     finally:
         mc.close()
+
+
+# ---------------------------------------------------------------------------
+# Cloud helpers – OpenSearch (for Neptune full-text search integration)
+# ---------------------------------------------------------------------------
+
+
+def _sanitize_index_name(name: str) -> str:
+    """Sanitize a string to be a valid OpenSearch index name."""
+    import re
+
+    sanitized = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+    if sanitized and sanitized[0] in "-_+":
+        sanitized = "x" + sanitized
+    return sanitized
+
+
+def _opensearch_nodes_index_name(workspace: str) -> str:
+    """
+    Build the OpenSearch nodes index name consistent with
+    NeptuneOpenSearchGraphStorage conventions.
+
+    The naming follows _build_index_name(workspace, namespace) + "-nodes"
+    where namespace is the graph namespace "chunk_entity_relation".
+    """
+    effective = os.environ.get("OPENSEARCH_WORKSPACE", "").strip() or workspace
+    ns = GRAPH_NAMESPACE  # "chunk_entity_relation"
+    if effective:
+        final_ns = f"{effective}_{ns}"
+    else:
+        final_ns = ns
+    return _sanitize_index_name(final_ns) + "-nodes"
+
+
+class OpenSearchHelper:
+    """Sync OpenSearch client wrapper for seeding the nodes index during migration."""
+
+    def __init__(self):
+        self._client = None
+        self._index_name: str = ""
+
+    def connect(self, workspace: str):
+        """Initialize the OpenSearch client from environment variables."""
+        try:
+            from opensearchpy import OpenSearch, RequestsHttpConnection
+        except ImportError:
+            logger.warning(
+                "opensearch-py not installed. OpenSearch seeding will be skipped. "
+                "pip install opensearch-py"
+            )
+            return False
+
+        hosts_str = os.environ.get("OPENSEARCH_HOSTS", "")
+        if not hosts_str:
+            # Also check the Neptune-specific OpenSearch endpoint
+            hosts_str = os.environ.get("NEPTUNE_OPENSEARCH_ENDPOINT", "")
+        if not hosts_str:
+            logger.warning(
+                "OPENSEARCH_HOSTS / NEPTUNE_OPENSEARCH_ENDPOINT not set. "
+                "OpenSearch seeding will be skipped."
+            )
+            return False
+
+        hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
+        username = os.environ.get("OPENSEARCH_USER", "")
+        password = os.environ.get("OPENSEARCH_PASSWORD", "")
+        use_ssl = os.environ.get("OPENSEARCH_USE_SSL", "true").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        verify_certs = os.environ.get("OPENSEARCH_VERIFY_CERTS", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+        # Determine auth method
+        http_auth = None
+        if username and password:
+            http_auth = (username, password)
+        else:
+            # Try AWS IAM auth (for OpenSearch Serverless / managed)
+            try:
+                import boto3
+                from opensearchpy import AWSV4SignerAuth
+
+                session = boto3.Session()
+                credentials = session.get_credentials()
+                region = os.environ.get("NEPTUNE_REGION", "us-east-1")
+                # Use "aoss" for serverless, "es" for managed
+                service = os.environ.get("OPENSEARCH_AWS_SERVICE", "aoss")
+                http_auth = AWSV4SignerAuth(credentials, region, service)
+            except (ImportError, Exception) as e:
+                logger.warning(f"AWS IAM auth for OpenSearch not available: {e}")
+
+        self._client = OpenSearch(
+            hosts=hosts,
+            http_auth=http_auth,
+            use_ssl=use_ssl,
+            verify_certs=verify_certs,
+            ssl_show_warn=False,
+            connection_class=RequestsHttpConnection,
+            timeout=30,
+        )
+
+        self._index_name = _opensearch_nodes_index_name(workspace)
+        logger.info(
+            "OpenSearch client connected (index: %s)", self._index_name
+        )
+        return True
+
+    def ensure_index(self):
+        """Create the nodes index if it doesn't exist."""
+        if not self._client:
+            return
+        try:
+            if not self._client.indices.exists(index=self._index_name):
+                body = {
+                    "mappings": {
+                        "dynamic": True,
+                        "properties": {
+                            "entity_id": {"type": "keyword"},
+                            "entity_type": {"type": "keyword"},
+                            "description": {"type": "text"},
+                            "source_id": {"type": "text"},
+                        },
+                    },
+                    "settings": {
+                        "index": {
+                            "number_of_shards": int(
+                                os.environ.get("OPENSEARCH_NUMBER_OF_SHARDS", "1")
+                            ),
+                            "number_of_replicas": int(
+                                os.environ.get("OPENSEARCH_NUMBER_OF_REPLICAS", "0")
+                            ),
+                        }
+                    },
+                }
+                self._client.indices.create(index=self._index_name, body=body)
+                logger.info("Created OpenSearch nodes index: %s", self._index_name)
+        except Exception as e:
+            if "resource_already_exists_exception" not in str(e):
+                logger.warning("Could not create OpenSearch index: %s", e)
+
+    def drop_index(self, *, dry_run: bool = False):
+        """Delete the nodes index."""
+        if not self._client:
+            return
+        try:
+            if self._client.indices.exists(index=self._index_name):
+                if dry_run:
+                    logger.info(
+                        "[DRY-RUN] Would drop OpenSearch index: %s", self._index_name
+                    )
+                else:
+                    self._client.indices.delete(index=self._index_name)
+                    logger.info("Dropped OpenSearch index: %s", self._index_name)
+        except Exception as e:
+            logger.warning("Failed to drop OpenSearch index: %s", e)
+
+    def bulk_index_nodes(
+        self,
+        nodes: dict[str, dict],
+        batch_size: int = 500,
+        *,
+        dry_run: bool = False,
+    ):
+        """Bulk-index nodes into the OpenSearch nodes index."""
+        if not self._client or not nodes:
+            return
+
+        from opensearchpy import helpers as os_helpers
+
+        total = 0
+        items = list(nodes.items())
+
+        for i in range(0, len(items), batch_size):
+            batch = items[i : i + batch_size]
+            if dry_run:
+                total += len(batch)
+                continue
+
+            actions = []
+            for node_id, node_data in batch:
+                doc = {"entity_id": node_id}
+                doc.update({k: v for k, v in node_data.items() if k != "_id"})
+                actions.append(
+                    {
+                        "_index": self._index_name,
+                        "_id": node_id,
+                        "_source": doc,
+                    }
+                )
+
+            try:
+                os_helpers.bulk(self._client, actions, raise_on_error=False)
+            except Exception as e:
+                logger.warning(
+                    "[OpenSearch] Bulk index error at batch %d: %s", i // batch_size, e
+                )
+            total += len(batch)
+
+        action = "Would index" if dry_run else "Indexed"
+        logger.info("[OpenSearch] %s %d nodes into %s", action, total, self._index_name)
+
+    def delete_nodes(
+        self, node_ids: list[str], *, dry_run: bool = False
+    ):
+        """Delete specific nodes from the OpenSearch index."""
+        if not self._client or not node_ids:
+            return
+        if dry_run:
+            logger.info(
+                "[DRY-RUN] Would delete %d nodes from OpenSearch index", len(node_ids)
+            )
+            return
+        try:
+            self._client.delete_by_query(
+                index=self._index_name,
+                body={"query": {"terms": {"entity_id": node_ids}}},
+                params={"ignore": [404]},
+            )
+            logger.info("[OpenSearch] Deleted %d nodes from index", len(node_ids))
+        except Exception as e:
+            logger.warning("[OpenSearch] Failed to delete nodes: %s", e)
+
+    def refresh(self):
+        """Refresh the index to make all indexed documents searchable."""
+        if not self._client:
+            return
+        try:
+            self._client.indices.refresh(index=self._index_name)
+        except Exception as e:
+            logger.warning("[OpenSearch] Failed to refresh index: %s", e)
+
+    def close(self):
+        """Close the OpenSearch client."""
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
+    @property
+    def available(self) -> bool:
+        return self._client is not None
 
 
 # ---------------------------------------------------------------------------
@@ -690,12 +952,12 @@ class NeptuneHelper:
         self, workspace: str, node_id: str, node_data: dict[str, str]
     ):
         ws = workspace or "base"
-        nid = node_id.replace("'", "\\'")
+        nid = node_id.replace("\\", "\\\\").replace("'", "\\'")
         props = [f"property('entity_id', '{nid}')"]
         props.append(f"property('workspace', '{ws}')")
         for k, v in node_data.items():
             if k not in ("entity_id", "workspace"):
-                v_esc = str(v).replace("'", "\\'")
+                v_esc = str(v).replace("\\", "\\\\").replace("'", "\\'")
                 props.append(f"property('{k}', '{v_esc}')")
         ps = ".".join(props)
         query = (
@@ -708,12 +970,12 @@ class NeptuneHelper:
         self, workspace: str, source: str, target: str, edge_data: dict[str, str]
     ):
         ws = workspace or "base"
-        src = source.replace("'", "\\'")
-        tgt = target.replace("'", "\\'")
+        src = source.replace("\\", "\\\\").replace("'", "\\'")
+        tgt = target.replace("\\", "\\\\").replace("'", "\\'")
         props = [f"property('workspace', '{ws}')"]
         for k, v in edge_data.items():
             if k != "workspace":
-                v_esc = str(v).replace("'", "\\'")
+                v_esc = str(v).replace("\\", "\\\\").replace("'", "\\'")
                 props.append(f"property('{k}', '{v_esc}')")
         ps = ".".join(props) if props else ""
         query = (
@@ -755,7 +1017,7 @@ class NeptuneHelper:
             logger.info("[DRY-RUN] Would delete %d Neptune nodes", len(node_ids))
             return
         for nid in node_ids:
-            nid_esc = nid.replace("'", "\\'")
+            nid_esc = nid.replace("\\", "\\\\").replace("'", "\\'")
             await self._submit(
                 f"g.V().has('entity_id', '{nid_esc}').has('workspace', '{ws}').drop()"
             )
@@ -771,8 +1033,8 @@ class NeptuneHelper:
             logger.info("[DRY-RUN] Would delete %d Neptune edges", len(edge_keys))
             return
         for src, tgt in edge_keys:
-            src_esc = src.replace("'", "\\'")
-            tgt_esc = tgt.replace("'", "\\'")
+            src_esc = src.replace("\\", "\\\\").replace("'", "\\'")
+            tgt_esc = tgt.replace("\\", "\\\\").replace("'", "\\'")
             await self._submit(
                 f"g.V().has('entity_id', '{src_esc}').has('workspace', '{ws}')"
                 f".outE().where(inV().has('entity_id', '{tgt_esc}').has('workspace', '{ws}'))"
@@ -804,6 +1066,14 @@ async def do_delete(workspace: str, *, dry_run: bool = False):
         await neptune.drop_workspace(workspace, dry_run=dry_run)
     finally:
         await neptune.close()
+
+    # OpenSearch nodes index
+    opensearch = OpenSearchHelper()
+    if opensearch.connect(workspace):
+        try:
+            opensearch.drop_index(dry_run=dry_run)
+        finally:
+            opensearch.close()
 
     logger.info("=== DELETE complete ===")
 
@@ -872,6 +1142,17 @@ async def do_fresh(
                 )
         finally:
             await neptune.close()
+
+    # Step 6: seed OpenSearch nodes index (for full-text search)
+    if nodes:
+        opensearch = OpenSearchHelper()
+        if opensearch.connect(workspace):
+            try:
+                opensearch.ensure_index()
+                opensearch.bulk_index_nodes(nodes, batch_size, dry_run=dry_run)
+                opensearch.refresh()
+            finally:
+                opensearch.close()
 
     logger.info("=== FRESH upload complete ===")
 
@@ -1011,6 +1292,8 @@ async def do_delta(
 
     # --- Graph ---
     local_nodes, local_edges = read_local_graph(workspace_dir)
+    new_node_ids: set[str] = set()
+    orphan_node_ids: set[str] = set()
     if local_nodes or local_edges:
         neptune = NeptuneHelper()
         await neptune.connect()
@@ -1080,6 +1363,32 @@ async def do_delta(
                 )
         finally:
             await neptune.close()
+
+    # --- OpenSearch nodes index (for full-text search) ---
+    if local_nodes:
+        opensearch = OpenSearchHelper()
+        if opensearch.connect(workspace):
+            try:
+                opensearch.ensure_index()
+
+                # Index new nodes
+                if new_node_ids:
+                    new_nodes_data = {
+                        nid: local_nodes[nid] for nid in new_node_ids
+                    }
+                    opensearch.bulk_index_nodes(
+                        new_nodes_data, batch_size, dry_run=dry_run
+                    )
+
+                # Delete orphan nodes from OpenSearch
+                if delete_orphans and orphan_node_ids:
+                    opensearch.delete_nodes(
+                        list(orphan_node_ids), dry_run=dry_run
+                    )
+
+                opensearch.refresh()
+            finally:
+                opensearch.close()
 
     logger.info("=== DELTA sync complete ===")
 
@@ -1239,6 +1548,52 @@ async def do_verify(workspace_dir: Path, workspace: str):
     finally:
         await neptune.close()
 
+    # --- OpenSearch ---
+    logger.info("--- OpenSearch verification ---")
+    opensearch = OpenSearchHelper()
+    if opensearch.connect(workspace):
+        try:
+            index_name = opensearch._index_name
+            if not opensearch._client.indices.exists(index=index_name):
+                logger.info("  [MISSING] OpenSearch index '%s' does not exist!", index_name)
+                issues += 1
+            else:
+                # Count documents in the index
+                count_result = opensearch._client.count(index=index_name)
+                os_count = count_result.get("count", 0)
+                local_node_count = len(local_nodes)
+                os_status = "OK" if os_count == local_node_count else "MISMATCH"
+                if os_status == "MISMATCH":
+                    issues += 1
+                logger.info(
+                    "  [%s] Nodes index '%s': local=%d, opensearch=%d",
+                    os_status,
+                    index_name,
+                    local_node_count,
+                    os_count,
+                )
+
+                # Spot check: search for a known node
+                if local_nodes:
+                    sample_node_id = next(iter(local_nodes))
+                    search_result = opensearch._client.search(
+                        index=index_name,
+                        body={
+                            "query": {"term": {"entity_id": sample_node_id}},
+                            "size": 1,
+                        },
+                    )
+                    hits = search_result.get("hits", {}).get("total", {}).get("value", 0)
+                    if hits > 0:
+                        logger.info("    Spot-check node '%s': FOUND in OpenSearch", sample_node_id[:50])
+                    else:
+                        logger.info("    Spot-check node '%s': NOT FOUND in OpenSearch", sample_node_id[:50])
+                        issues += 1
+        finally:
+            opensearch.close()
+    else:
+        logger.info("  [SKIPPED] OpenSearch not configured")
+
     logger.info("=== VERIFY complete: %d issue(s) found ===", issues)
     return issues
 
@@ -1311,6 +1666,23 @@ async def do_info(workspace: str):
         logger.info("  Edges: %d", len(edge_keys))
     finally:
         await neptune.close()
+
+    # --- OpenSearch ---
+    logger.info("--- OpenSearch ---")
+    opensearch = OpenSearchHelper()
+    if opensearch.connect(workspace):
+        try:
+            index_name = opensearch._index_name
+            if opensearch._client.indices.exists(index=index_name):
+                count_result = opensearch._client.count(index=index_name)
+                os_count = count_result.get("count", 0)
+                logger.info("  Nodes index '%s': %d documents", index_name, os_count)
+            else:
+                logger.info("  Nodes index '%s': does not exist", index_name)
+        finally:
+            opensearch.close()
+    else:
+        logger.info("  OpenSearch not configured (skipped)")
 
     logger.info("=== INFO complete ===")
 

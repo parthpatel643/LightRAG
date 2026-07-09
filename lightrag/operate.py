@@ -4961,8 +4961,8 @@ async def _build_query_context(
         search_result["final_entities"] = filtered_entities
         search_result["final_relations"] = filtered_relations
 
-        # Also filter vector chunks to match the maximum sequence from filtered entities
-        # Extract max sequence from versioned entities
+        # Also filter vector chunks to match the maximum sequence
+        # Extract max sequence from versioned entities first
         # re module already imported
 
         version_pattern = re.compile(r"\[v(\d+)\]$")
@@ -4973,25 +4973,41 @@ async def _build_query_context(
             if match:
                 max_sequence = max(max_sequence, int(match.group(1)))
 
+        # Batch fetch chunk metadata (needed for both max_sequence fallback and filtering)
+        chunk_ids = [
+            chunk.get("chunk_id") or chunk.get("id")
+            for chunk in search_result.get("vector_chunks", [])
+            if chunk.get("chunk_id") or chunk.get("id")
+        ]
+
+        chunk_data_map = {}
+        if chunk_ids:
+            chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
+            chunk_data_map = {
+                data.get("_id"): data for data in chunk_data_list if data
+            }
+
+        # If entities didn't provide a max_sequence, derive it from the
+        # vector chunks themselves. This handles the case where entity VDB
+        # search doesn't return high-version entities but the chunk VDB does
+        # contain chunks from the latest sequence.
+        if max_sequence == 0 and chunk_data_map:
+            chunk_sequences = [
+                d.get("sequence_index", 0) for d in chunk_data_map.values()
+            ]
+            if chunk_sequences:
+                max_sequence = max(chunk_sequences)
+                logger.info(
+                    f"Temporal filter: max_sequence derived from vector chunks = {max_sequence} "
+                    f"(entities had no version info)"
+                )
+
         if max_sequence > 0:
             # Filter vector chunks to keep ONLY those from max sequence
             # Strict filtering: no fallback to ensure temporal accuracy
             original_count = len(search_result.get("vector_chunks", []))
 
-            # Batch fetch all chunk data at once to reduce database queries
-            chunk_ids = [
-                chunk.get("chunk_id") or chunk.get("id")
-                for chunk in search_result.get("vector_chunks", [])
-                if chunk.get("chunk_id") or chunk.get("id")
-            ]
-
-            if chunk_ids:
-                # Batch retrieval - much faster than individual lookups
-                chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
-                chunk_data_map = {
-                    data.get("_id"): data for data in chunk_data_list if data
-                }
-
+            if chunk_data_map:
                 filtered_vector_chunks = [
                     chunk
                     for chunk in search_result.get("vector_chunks", [])
