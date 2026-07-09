@@ -23,8 +23,10 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from lightrag.parser.external._common import (
     env_bool,
@@ -88,14 +90,19 @@ class DoclingRawClient:
     the new values without holding a stale instance.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, overrides: "Mapping[str, Any] | None" = None) -> None:
+        self._overrides = overrides or {}
         self.endpoint = current_endpoint_signature()
         if not self.endpoint:
             raise ValueError("DOCLING_ENDPOINT is required")
         self.engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
-        self.force_ocr = env_bool("DOCLING_FORCE_OCR", True)
+        self.force_ocr = (
+            bool(self._overrides["force_ocr"])
+            if "force_ocr" in self._overrides
+            else env_bool("DOCLING_FORCE_OCR", True)
+        )
         self.ocr_engine = os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto"
         self.ocr_preset = os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto"
         self.ocr_lang_raw = os.getenv("DOCLING_OCR_LANG", "").strip()
@@ -160,7 +167,7 @@ class DoclingRawClient:
         select_main_json(raw_dir, Path(effective_filename))
 
         options_signature = compute_options_signature(
-            tunable_env=snapshot_tunable_env(),
+            tunable_env=snapshot_tunable_env(self._overrides),
             fixed_constants=FIXED_CONSTANTS,
         )
         return build_and_write_docling_manifest(
@@ -235,7 +242,8 @@ class DoclingRawClient:
         client: "httpx.AsyncClient",
         task_id: str,
     ) -> None:
-        url = f"{self.endpoint}{POLL_PATH.format(task_id=task_id)}"
+        encoded_task_id = quote(task_id, safe="")
+        url = f"{self.endpoint}{POLL_PATH.format(task_id=encoded_task_id)}"
         params = {"wait": self.poll_wait_seconds}
         for _ in range(self.max_poll_attempts):
             iteration_started = time.monotonic()
@@ -276,7 +284,8 @@ class DoclingRawClient:
         client: "httpx.AsyncClient",
         task_id: str,
     ) -> bytes:
-        url = f"{self.endpoint}{RESULT_PATH.format(task_id=task_id)}"
+        encoded_task_id = quote(task_id, safe="")
+        url = f"{self.endpoint}{RESULT_PATH.format(task_id=encoded_task_id)}"
         resp = await client.get(url)
         raise_for_status_with_detail(resp, f"Docling result {task_id} download")
         ctype = resp.headers.get("content-type", "")

@@ -99,7 +99,7 @@
         "error": "Certains fichiers n'ont pas pu être téléchargés"
       },
       "generalError": "Échec du téléchargement\n{{error}}",
-      "fileTypes": "Types pris en charge : TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Types pris en charge : TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "Tous",
         "completed": "Terminé",
-        "analyzing": "Analyse en cours",
-        "processing": "En traitement",
-        "pending": "En attente",
+        "parse": "Extraction",
+        "analyze": "Analyse",
+        "process": "Traitement",
         "failed": "Échec"
       },
       "status": {
@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Les données du graphe sont tronquées au nombre maximum de nœuds",
+    "fetchRetriesExhausted": "Échec du chargement des données du graphe. Utilisez l'actualisation pour réessayer.",
+    "graphBuildFailed": "Échec du rendu des données du graphe. Utilisez l'actualisation pour réessayer.",
     "statusDialog": {
       "title": "Paramètres du Serveur LightRAG",
       "description": "Afficher l'état actuel du système et les informations de connexion"
@@ -233,6 +235,9 @@
       "disease": "Maladie",
       "drug": "Médicament",
       "food": "Nourriture",
+      "table": "Tableau",
+      "drawing": "Dessin",
+      "equation": "Équation",
       "other": "Autre"
     },
     "sideBar": {
@@ -246,13 +251,14 @@
         "showEdgeLabel": "Afficher l'étiquette de l'arête",
         "hideUnselectedEdges": "Masquer les arêtes non sélectionnées",
         "edgeEvents": "Événements des arêtes",
+        "edgeEventsDisabledHint": "Désactivé pour les graphes de plus de {{count}} arêtes",
         "maxQueryDepth": "Profondeur maximale de la requête",
         "maxNodes": "Nombre maximum de nœuds",
-        "maxLayoutIterations": "Itérations maximales de mise en page",
         "resetToDefault": "Réinitialiser par défaut",
         "edgeSizeRange": "Plage de taille des arêtes",
         "depth": "D",
-        "max": "Max",
+        "node": "Nœud",
+        "edge": "Arête",
         "degree": "Degré",
         "apiKey": "Clé API",
         "enterYourAPIkey": "Entrez votre clé API",
@@ -410,6 +416,8 @@
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
       "clear": "Effacer",
       "send": "Envoyer",
+      "stop": "Arrêter",
+      "userTerminated": "Interrompu par l'utilisateur — la réponse peut être incomplète",
       "placeholder": "Tapez votre requête (Préfixe de requête : /<Query Mode>)",
       "error": "Erreur : Échec de l'obtention de la réponse",
       "queryModeError": "Seuls les modes de requête suivants sont pris en charge : {{modes}}",
@@ -420,6 +428,7 @@
       "parametersDescription": "Configurez vos paramètres de requête",
       "queryMode": "Mode de requête",
       "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Récupération vectorielle traditionnelle par blocs de texte\n• Local : Axé sur la récupération d'entités\n• Global : Axé sur la récupération de relations\n• Hybride : Local+Global\n• Mixte : Local+Global+Naïf\n• Bypass : Ignorer la récupération, envoyer l'historique de conversation et la question actuelle au LLM",
+      "queryModeWarning": "Peut réduire la qualité de récupération",
       "queryModeOptions": {
         "naive": "Naïf",
         "local": "Local",

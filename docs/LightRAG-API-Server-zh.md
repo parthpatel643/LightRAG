@@ -502,9 +502,9 @@ LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Guni
 ### 工作进程数，数字不大于 (2 x 核心数) + 1
 WORKERS=2
 ### 一批中并行处理的文件数
-MAX_PARALLEL_INSERT=2
-# LLM 的最大并发请求数
-MAX_ASYNC=4
+MAX_PARALLEL_INSERT=3
+# LLM 的最大并发请求数(MAX_ASYNC 作为兼容旧名仍可用)
+MAX_ASYNC_LLM=4
 ```
 
 在 macOS 上，Gunicorn 多工作进程模式还要求 Objective-C fork safety 覆盖变量必须在 Python 进程启动前就存在。不要依赖 `.env` 设置这个变量； `.env` 会在 Python 启动后才加载，对 Objective-C 运行时来说已经太晚：
@@ -519,7 +519,7 @@ lightrag-gunicorn --workers 2
 从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
 
 ```text
-# Set Enviroment to your Python virtual enviroment
+# Set environment to your Python virtual environment
 Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
@@ -598,7 +598,7 @@ LIGHTRAG_API_KEY=your-secure-api-key-here
 WHITELIST_PATHS=/health,/api/*
 ```
 
-> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。
+> 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
 
 API Key使用的请求头是 `X-API-Key` 。以下是使用API访问LightRAG Server的一个例子：
 
@@ -632,6 +632,8 @@ lightrag-hash-password --username admin
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
 
 如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
+
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
 
 ## Azure OpenAI 后端配置
 
@@ -792,7 +794,6 @@ SURROUNDING_TRAILING_MAX_TOKENS=2000
 
 实体抽取使用基础 LLM 或 `EXTRACT` 角色 LLM。重要的服务端选项包括：
 
-- `ENABLE_LLM_CACHE_FOR_EXTRACT`：启用实体抽取 LLM 缓存（默认：`true`）。这对测试环境和重新处理很有用。
 - `ENTITY_EXTRACTION_USE_JSON`：要求实体抽取输出 JSON 结构。v1.5 推荐开启以提高可靠性，但会增加一定延迟。
 - `ENTITY_TYPE_PROMPT_FILE`：实体类型指导和示例的 YAML profile 文件名。该值只能是文件名，文件从 `PROMPT_DIR/entity_type` 加载，不要传绝对路径。
 - `MAX_EXTRACT_INPUT_TOKENS`：单次抽取输入上下文的最大 token 预算。
@@ -808,7 +809,6 @@ PROMPT_DIR=/opt/lightrag/prompts
 MAX_EXTRACT_INPUT_TOKENS=20480
 MAX_EXTRACTION_RECORDS=100
 MAX_EXTRACTION_ENTITIES=40
-ENABLE_LLM_CACHE_FOR_EXTRACT=true
 ```
 
 如果旧 `.env` 中仍包含 `ENTITY_TYPES`，请在启动前移除。该变量已被 prompt profile 替代，服务器会对此进行快速失败校验。
@@ -881,12 +881,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-以下是使用阿里云提供的 Reranker 服务的示例配置：
+以下是使用阿里云提供的 Reranker 服务的示例配置（`gte-rerank-*` 和 `qwen3-vl-rerank`，它们使用嵌套的 `input`/`parameters` 报文格式）：
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **阿里云 `qwen3-rerank` 系列：** 与 `gte-rerank-*`、`qwen3-vl-rerank` 不同，`qwen3-rerank` 模型使用扁平的 Cohere 风格报文（`{"model", "query", "documents", "top_n", ...}`），返回顶层的 `results`，并且使用**不同的** Cohere 兼容 endpoint —— `/compatible-api/v1/reranks`，而非上面 `gte`/`vl` 所用的 `.../text-rerank/text-rerank` 路径。由于格式与标准 Cohere 完全一致，因此使用 `RERANK_BINDING=cohere`（而非 `aliyun`）即可，无需单独的 binding。请将 `{WorkspaceId}` 与地域替换为你自己的（参见 [阿里云文本排序 API 文档](https://help.aliyun.com/zh/model-studio/text-rerank-api)）：
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
@@ -897,7 +906,7 @@ MAX_ASYNC_RERANK=4
 RERANK_TIMEOUT=30
 ```
 
-`MAX_ASYNC_RERANK` 未设置时回退到 `MAX_ASYNC`。`RERANK_TIMEOUT` 有独立默认值，因为 reranker 请求通常比 LLM 生成请求短。更完整的 reranker 配置示例，包括 Cohere-compatible chunking 选项以及 Jina/阿里云 endpoint，请参阅 `env.example` 文件。
+`MAX_ASYNC_RERANK` 未设置时回退到 `MAX_ASYNC_LLM`(`MAX_ASYNC` 作为兼容旧名仍可用)。`RERANK_TIMEOUT` 有独立默认值，因为 reranker 请求通常比 LLM 生成请求短。更完整的 reranker 配置示例，包括 Cohere-compatible chunking 选项以及 Jina/阿里云 endpoint，请参阅 `env.example` 文件。
 
 ### 启用 Reranking
 
@@ -974,21 +983,20 @@ WORKERS=2
 # LIGHTRAG_API_PREFIX=/site01
 
 ### Settings for document indexing
-ENABLE_LLM_CACHE_FOR_EXTRACT=true
 ENTITY_EXTRACTION_USE_JSON=true
 # ENTITY_TYPE_PROMPT_FILE=entity_type_prompt.yml
 # MAX_EXTRACT_INPUT_TOKENS=20480
 # MAX_EXTRACTION_RECORDS=100
 # MAX_EXTRACTION_ENTITIES=40
 SUMMARY_LANGUAGE=Chinese
-MAX_PARALLEL_INSERT=2
+MAX_PARALLEL_INSERT=3
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 # CHUNK_R_SEPARATORS=["\n\n","\n","。","！","？","；","，"," ",""]
 # CHUNK_P_SIZE=2000
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 TIMEOUT=150
-MAX_ASYNC=4
+MAX_ASYNC_LLM=4
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
@@ -1114,7 +1122,7 @@ notes.[-R].md
 
 ### 流水线并发
 
-`MAX_PARALLEL_INSERT` 控制并行处理的文件数量。`MAX_ASYNC` 控制并发 LLM 调用，包括抽取、合并、查询关键词生成和最终回答生成。解析压力较大的部署可以使用可选的分阶段流水线变量，例如 `MAX_PARALLEL_PARSE_NATIVE`、`MAX_PARALLEL_PARSE_MINERU`、`MAX_PARALLEL_PARSE_DOCLING` 和 `MAX_PARALLEL_ANALYZE`。
+`MAX_PARALLEL_INSERT` 控制并行处理的文件数量。`MAX_ASYNC_LLM`(兼容旧名:`MAX_ASYNC`)控制并发 LLM 调用，包括抽取、合并、查询关键词生成和最终回答生成。解析压力较大的部署可以使用可选的分阶段流水线变量，例如 `MAX_PARALLEL_PARSE_NATIVE`、`MAX_PARALLEL_PARSE_MINERU`、`MAX_PARALLEL_PARSE_DOCLING` 和 `MAX_PARALLEL_ANALYZE`。
 
 当处理循环 busy 时，上传和文本插入仍可被接受；运行中的循环会被通知并拾取新 pending 文档。`/documents/clear`、单文档删除等破坏性任务，以及 `/documents/scan` 的分类阶段仍会拒绝并发入队，以保护存储一致性。失败文件可通过 WebUI 重新处理，也可以触发 `/documents/scan`。
 
@@ -1133,7 +1141,7 @@ notes.[-R].md
 4. 使用查询端点查询系统
 5. 如果在输入目录中放入新文件，触发文档扫描
 
-`/health` 端点会返回运行状态和关键配置，包括角色 LLM 配置、LLM/embedding/rerank 队列状态、workspace/storage workspace 映射、VLM 是否启用、rerank 是否启用，以及流水线 busy/scanning/destructive 状态。
+`/health` 端点会返回运行状态和关键配置，包括角色 LLM 配置、LLM/embedding/rerank 队列状态、workspace/storage workspace 映射、VLM 是否启用、rerank 是否启用，以及流水线 busy/scanning/destructive 状态。该端点始终返回 HTTP 200 以便用作存活探针，但配置与运行诊断信息**仅返回给已认证调用方**（携带有效 JWT 或 `X-API-Key`）。未认证调用方只会收到存活信号（`status`、`auth_mode`、`core_version`、`api_version`、`pipeline_busy`/`pipeline_active`，以及 WebUI 标题/可用性等字段——这些要么同样由未认证的 `/auth-status` 端点公开，要么只是布尔值）。需携带凭证才能取得完整内容，例如 `curl -H "X-API-Key: <key>" http://localhost:9621/health`。
 
 ## 异步文档索引与进度跟踪
 

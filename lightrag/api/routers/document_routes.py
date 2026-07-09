@@ -7,13 +7,17 @@ import re
 import shutil
 import time
 from uuid import uuid4
-from lightrag.utils import logger, get_pinyin_sort_key, performance_timing_log
+from lightrag.utils import (
+    logger,
+    get_pinyin_sort_key,
+    performance_timing_log,
+    validate_workspace,
+)
 import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
-from io import BytesIO
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -22,22 +26,29 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lightrag import LightRAG
-from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
+from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.constants import (
+    FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_PENDING_PARSE,
-    PARSER_ENGINE_LEGACY,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
+    PROCESS_OPTION_CHUNK_PARAGRAH,
+    PROCESS_OPTION_CHUNK_RECURSIVE,
+    PROCESS_OPTION_CHUNK_VECTOR,
 )
 from lightrag.parser.routing import (
     FilenameParserHintError,
     canonicalize_parser_hinted_basename,
+    chunk_strategy_key,
+    encode_parse_engine,
     filename_parser_hint,
-    resolve_file_parser_directives,
+    parse_process_options,
+    resolve_chunk_options,
+    resolve_parser_directives,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -232,12 +243,166 @@ class CancelPipelineResponse(BaseModel):
     )
 
 
+TextChunkingStrategy = Literal[
+    "fixed_token",
+    "recursive_character",
+    "semantic_vector",
+    "paragraph_semantic",
+]
+
+
+class _StrictChunkParams(BaseModel):
+    """Base for per-strategy chunking params.
+
+    ``strict=True`` rejects the Pydantic-v2 lax coercions that would
+    otherwise let malformed requests through and fail later in the
+    background chunker: bool-as-int (``true`` -> 1), numeric strings
+    (``"5"`` -> 5), float-as-int.  ``extra="forbid"`` turns unknown keys
+    into a 422 (replacing a hand-rolled allow-list).  ``chunk_token_size``
+    is shared by every strategy; ``None`` means "not supplied — fall back
+    to ``addon_params``/env default at process time".
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    chunk_token_size: Optional[int] = Field(default=None, ge=1)
+
+
+class _OverlapChunkParams(_StrictChunkParams):
+    chunk_overlap_token_size: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _overlap_lt_size(self) -> "_OverlapChunkParams":
+        # Only enforceable when BOTH are explicit; when chunk_token_size
+        # is None the effective size is resolved from addon_params/env at
+        # process time and can't be compared against here.
+        if (
+            self.chunk_token_size is not None
+            and self.chunk_overlap_token_size is not None
+            and self.chunk_overlap_token_size >= self.chunk_token_size
+        ):
+            raise ValueError("chunk_overlap_token_size must be < chunk_token_size")
+        return self
+
+
+class FixedTokenChunkParams(_OverlapChunkParams):
+    split_by_character: Optional[str] = None
+    split_by_character_only: Optional[bool] = None
+
+
+class RecursiveCharacterChunkParams(_OverlapChunkParams):
+    separators: Optional[list[str]] = None
+
+
+class ParagraphSemanticChunkParams(_OverlapChunkParams):
+    # Drop the trailing reference section before chunking. ``None`` means
+    # "not supplied — inherit the addon_params/env default at process time".
+    # Detection-tuning knobs (tail window / heading prefixes) are env-only and
+    # read live by the chunker, so they are intentionally not exposed here.
+    drop_references: Optional[bool] = None
+
+
+class SemanticVectorChunkParams(_StrictChunkParams):
+    # Enum verified against the installed langchain_experimental
+    # (text_splitter.py ``BreakpointThresholdType``), not from memory.
+    breakpoint_threshold_type: Optional[
+        Literal["percentile", "standard_deviation", "interquartile", "gradient"]
+    ] = None
+    # A strict ``float`` field still accepts an ``int`` (e.g. JSON ``95``) and
+    # widens it losslessly to ``95.0`` — strict only rejects ``str`` / ``bool``
+    # here, which is exactly what we want. Do NOT relax strict (that would let
+    # numeric strings through) or switch to ``int | float`` (that would stop
+    # normalizing ints to float). Locked by tests in test_document_routes_chunking.
+    breakpoint_threshold_amount: Optional[float] = None
+    buffer_size: Optional[int] = Field(default=None, ge=1)
+    sentence_split_regex: Optional[str] = None
+
+    @field_validator("sentence_split_regex")
+    @classmethod
+    def _valid_sentence_split_regex(cls, v: Optional[str]) -> Optional[str]:
+        # The value is fed to LangChain's SemanticChunker and compiled during
+        # split_text. A malformed pattern (e.g. "(") would only blow up in the
+        # background, so compile it here to reject synchronously (HTTP 422).
+        if v is None:
+            return v
+        try:
+            re.compile(v)
+        except re.error as exc:
+            raise ValueError(
+                f"sentence_split_regex is not a valid regular expression: {exc}"
+            ) from exc
+        return v
+
+    @model_validator(mode="after")
+    def _amount_in_range(self) -> "SemanticVectorChunkParams":
+        amt = self.breakpoint_threshold_amount
+        if amt is None:
+            return self
+        # ``> 0`` is type-independent (every threshold type wants a positive
+        # magnitude), so it is safe to enforce at parse time.
+        if amt <= 0:
+            raise ValueError("breakpoint_threshold_amount must be > 0")
+        # The ``(0, 100]`` ceiling is percentile/gradient-specific (those feed
+        # np.percentile, which requires q in [0, 100]). It depends on the
+        # threshold TYPE, so only enforce it here when the type is supplied in
+        # the SAME request. When the type is omitted, the effective type is
+        # resolved from addon_params/env later — assuming "percentile" here
+        # would wrongly 422 a partial override that inherits
+        # standard_deviation/interquartile (which allow amounts > 100). The
+        # ceiling against the merged type is applied by
+        # ``_validate_effective_semantic_amount`` in ``_resolve_text_chunking``.
+        if self.breakpoint_threshold_type in ("percentile", "gradient") and amt > 100:
+            raise ValueError(
+                "breakpoint_threshold_amount must be within (0, 100] "
+                "for percentile/gradient"
+            )
+        return self
+
+
+_CHUNKING_PARAMS_MODEL: dict[str, type[_StrictChunkParams]] = {
+    "fixed_token": FixedTokenChunkParams,
+    "recursive_character": RecursiveCharacterChunkParams,
+    "semantic_vector": SemanticVectorChunkParams,
+    "paragraph_semantic": ParagraphSemanticChunkParams,
+}
+
+
+class TextChunkingConfig(BaseModel):
+    """Chunking strategy + strategy-specific params for a text insert.
+
+    Validation is delegated to the per-strategy typed model so unknown
+    keys, wrong types, and out-of-range values all raise synchronously
+    during request parsing (HTTP 422) — never later in the background
+    indexing task, where the HTTP response has already been sent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: TextChunkingStrategy = "fixed_token"
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_params(self) -> "TextChunkingConfig":
+        typed = _CHUNKING_PARAMS_MODEL[self.strategy].model_validate(self.params)
+        # Normalize down to exactly the keys the caller supplied with a real
+        # value (validated + coerced) so the enqueue-time merge overrides only
+        # what was set. ``exclude_none`` additionally drops explicit nulls:
+        # every param field means "inherit the addon_params/env default" when
+        # None, so an explicit ``"chunk_token_size": null`` must NOT be merged
+        # over the resolved default — otherwise the route would 200 and the
+        # background chunker would do ``int(None)`` and fail the document.
+        self.params = typed.model_dump(exclude_unset=True, exclude_none=True)
+        return self
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
     Attributes:
         text: The text content to be inserted into the RAG system
         file_source: Source of the text (optional)
+        chunking: Optional chunking strategy + params; omit to keep the
+            default fixed-token behavior and addon_params defaults.
     """
 
     text: str = Field(
@@ -246,6 +411,10 @@ class InsertTextRequest(BaseModel):
     )
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
+    )
+    chunking: Optional[TextChunkingConfig] = Field(
+        default=None,
+        description="Chunking strategy and params; omit for default fixed-token chunking",
     )
 
     @field_validator("text", mode="after")
@@ -263,6 +432,15 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "chunking": {
+                    "strategy": "fixed_token",
+                    "params": {
+                        "chunk_token_size": 1200,
+                        "chunk_overlap_token_size": 100,
+                        "split_by_character": "\n\n",
+                        "split_by_character_only": True,
+                    },
+                },
             }
         }
     )
@@ -282,6 +460,10 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    chunking: Optional[TextChunkingConfig] = Field(
+        default=None,
+        description="Shared chunking strategy and params for all texts; omit for default fixed-token chunking",
     )
 
     @field_validator("texts", mode="after")
@@ -309,6 +491,10 @@ class InsertTextsRequest(BaseModel):
                 "file_sources": [
                     "First file source (optional)",
                 ],
+                "chunking": {
+                    "strategy": "recursive_character",
+                    "params": {"chunk_token_size": 1000},
+                },
             }
         }
     )
@@ -443,29 +629,6 @@ class DeleteDocRequest(BaseModel):
             raise ValueError("Document IDs must be unique")
 
         return validated_ids
-
-
-class DeleteEntityRequest(BaseModel):
-    entity_name: str = Field(..., description="The name of the entity to delete.")
-
-    @field_validator("entity_name", mode="after")
-    @classmethod
-    def validate_entity_name(cls, entity_name: str) -> str:
-        if not entity_name or not entity_name.strip():
-            raise ValueError("Entity name cannot be empty")
-        return entity_name.strip()
-
-
-class DeleteRelationRequest(BaseModel):
-    source_entity: str = Field(..., description="The name of the source entity.")
-    target_entity: str = Field(..., description="The name of the target entity.")
-
-    @field_validator("source_entity", "target_entity", mode="after")
-    @classmethod
-    def validate_entity_names(cls, entity_name: str) -> str:
-        if not entity_name or not entity_name.strip():
-            raise ValueError("Entity name cannot be empty")
-        return entity_name.strip()
 
 
 class DocStatusResponse(BaseModel):
@@ -816,53 +979,12 @@ class DocumentManager:
         self,
         input_dir: str,
         workspace: str = "",  # New parameter for workspace isolation
-        supported_extensions: tuple = (
-            ".txt",
-            ".md",
-            ".mdx",  # MDX (Markdown + JSX)
-            ".pdf",
-            ".docx",
-            ".pptx",
-            ".xlsx",
-            ".rtf",  # Rich Text Format
-            ".odt",  # OpenDocument Text
-            ".tex",  # LaTeX
-            ".epub",  # Electronic Publication
-            ".html",  # HyperText Markup Language
-            ".htm",  # HyperText Markup Language
-            ".csv",  # Comma-Separated Values
-            ".json",  # JavaScript Object Notation
-            ".xml",  # eXtensible Markup Language
-            ".yaml",  # YAML Ain't Markup Language
-            ".yml",  # YAML
-            ".log",  # Log files
-            ".conf",  # Configuration files
-            ".ini",  # Initialization files
-            ".properties",  # Java properties files
-            ".sql",  # SQL scripts
-            ".bat",  # Batch files
-            ".sh",  # Shell scripts
-            ".c",  # C source code
-            ".h",  # C header
-            ".cpp",  # C++ source code
-            ".hpp",  # C++ header
-            ".py",  # Python source code
-            ".java",  # Java source code
-            ".js",  # JavaScript source code
-            ".ts",  # TypeScript source code
-            ".swift",  # Swift source code
-            ".go",  # Go source code
-            ".rb",  # Ruby source code
-            ".php",  # PHP source code
-            ".css",  # Cascading Style Sheets
-            ".scss",  # Sassy CSS
-            ".less",  # LESS CSS
-        ),
     ):
+        # Reject path traversal before using workspace in the upload path
+        validate_workspace(workspace)
         # Store the base input directory and workspace
         self.base_input_dir = Path(input_dir)
         self.workspace = workspace
-        self.supported_extensions = supported_extensions
         self.indexed_files = set()
 
         # Create workspace-specific input directory
@@ -875,21 +997,87 @@ class DocumentManager:
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def supported_extensions(self) -> tuple:
+        """Suffixes accepted for an unhinted filename, derived live.
+
+        A suffix is advertised only when it is *routable without extra
+        directives*: the engine that ``resolve_file_parser_engine`` picks for
+        a bare ``x.<suffix>`` (filename hint absent; ``LIGHTRAG_PARSER``
+        rules + default apply) must itself support the suffix. This keeps
+        "uploadable" aligned with "will actually parse": e.g. mineru's
+        ``png`` joins only when its endpoint is configured AND a routing
+        rule (or per-file hint, see ``is_supported_file``) sends pngs to it
+        — otherwise the default ``legacy`` engine would fail the suffix gate
+        at the parse stage. A default deployment equals the local engines'
+        (legacy ∪ native) types; no hardcoded list to keep in sync.
+        """
+        from lightrag.parser.registry import available_engine_suffixes
+        from lightrag.parser.routing import (
+            parser_engine_supports_suffix,
+            resolve_file_parser_engine,
+        )
+
+        out = []
+        for s in sorted(available_engine_suffixes()):
+            engine = resolve_file_parser_engine(f"x.{s}")
+            if parser_engine_supports_suffix(engine, s):
+                out.append(f".{s}")
+        return tuple(out)
+
     def scan_directory_for_new_files(self) -> List[Path]:
-        """Scan input directory for new files"""
+        """Scan input directory for new, routable files.
+
+        Globs over every *available* engine suffix (capability surface, so a
+        hint-carrying file like ``img.[mineru].png`` is discoverable even
+        when bare ``.png`` is not advertised), then keeps only files whose
+        resolved engine actually supports them (``is_supported_file``).
+        """
+        from lightrag.parser.registry import available_engine_suffixes
+        from lightrag.parser.routing import FilenameParserHintError
+
         new_files = []
-        for ext in self.supported_extensions:
+        for s in sorted(available_engine_suffixes()):
+            ext = f".{s}"
             logger.debug(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.glob(f"*{ext}"):
-                if file_path not in self.indexed_files:
-                    new_files.append(file_path)
+                if file_path in self.indexed_files:
+                    continue
+                try:
+                    if not self.is_supported_file(file_path.name):
+                        continue
+                except FilenameParserHintError:
+                    # Malformed hint: pass the file through — the enqueue
+                    # path reports a detailed error document, instead of the
+                    # scan silently ignoring the user's file.
+                    pass
+                new_files.append(file_path)
         return new_files
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
 
     def is_supported_file(self, filename: str) -> bool:
-        return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
+        """True when THIS filename routes to an engine that can parse it.
+
+        Resolves the engine for the concrete name — so a per-file hint
+        (``img.[mineru].png``) is honoured — and checks the resolved engine
+        supports the suffix. A bare suffix that would fall through to the
+        default ``legacy`` engine is rejected here instead of failing later
+        at the parse worker's suffix gate.
+
+        Raises :class:`FilenameParserHintError` for a malformed hint —
+        callers surface it (upload → HTTP 400 with the detailed message;
+        scan passes the file through so enqueue emits an error document).
+        """
+        from lightrag.parser.routing import (
+            parser_engine_supports_suffix,
+            parser_suffix,
+            resolve_file_parser_engine,
+        )
+
+        engine = resolve_file_parser_engine(filename)
+        return parser_engine_supports_suffix(engine, parser_suffix(filename))
 
 
 def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
@@ -1392,253 +1580,8 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
         pass
 
 
-# Document processing helper functions (synchronous)
-# These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
-
-
-def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
-    """Extract PDF content using pypdf (synchronous).
-
-    Args:
-        file_bytes: PDF file content as bytes
-        password: Optional password for encrypted PDFs
-
-    Returns:
-        str: Extracted text content
-
-    Raises:
-        Exception: If PDF is encrypted and password is incorrect or missing
-    """
-    from pypdf import PdfReader  # type: ignore
-
-    pdf_file = BytesIO(file_bytes)
-    reader = PdfReader(pdf_file)
-
-    # Check if PDF is encrypted
-    if reader.is_encrypted:
-        # Try empty password first (covers permission-only encrypted PDFs)
-        decrypt_result = reader.decrypt(password or "")
-        if decrypt_result == 0:
-            if password:
-                raise Exception("Incorrect PDF password")
-            else:
-                raise Exception("PDF is encrypted but no password provided")
-
-    # Extract text from all pages
-    content = ""
-    for page in reader.pages:
-        content += page.extract_text() + "\n"
-
-    return content
-
-
-def _extract_docx(file_bytes: bytes) -> str:
-    """Extract DOCX content including tables in document order (synchronous).
-
-    Args:
-        file_bytes: DOCX file content as bytes
-
-    Returns:
-        str: Extracted text content with tables in their original positions.
-             Tables are separated from paragraphs with blank lines for clarity.
-    """
-    from docx import Document  # type: ignore
-    from docx.table import Table  # type: ignore
-    from docx.text.paragraph import Paragraph  # type: ignore
-
-    docx_file = BytesIO(file_bytes)
-    doc = Document(docx_file)
-
-    def escape_cell(cell_value: str | None) -> str:
-        """Escape characters that would break tab-delimited layout.
-
-        Escape order is critical: backslashes first, then tabs/newlines.
-        This prevents double-escaping issues.
-
-        Args:
-            cell_value: The cell value to escape (can be None or str)
-
-        Returns:
-            str: Escaped cell value safe for tab-delimited format
-        """
-        if cell_value is None:
-            return ""
-        text = str(cell_value)
-        # CRITICAL: Escape backslash first to avoid double-escaping
-        return (
-            text.replace("\\", "\\\\")  # Must be first: \ -> \\
-            .replace("\t", "&emsp;&emsp;")  # Tab -> \t (visible)
-            .replace("\r\n", "<br>")  # Windows newline -> \n
-            .replace("\r", "<br>")  # Mac newline -> \n
-            .replace("\n", "<br>")  # Unix newline -> \n
-        )
-
-    content_parts = []
-    in_table = False  # Track if we're currently processing a table
-
-    # Iterate through all body elements in document order
-    for element in doc.element.body:
-        # Check if element is a paragraph
-        if element.tag.endswith("p"):
-            # If coming out of a table, add blank line after table
-            if in_table:
-                content_parts.append("")  # Blank line after table
-                in_table = False
-
-            paragraph = Paragraph(element, doc)
-            text = paragraph.text
-            # Always append to preserve document spacing (including blank paragraphs)
-            content_parts.append(text)
-
-        # Check if element is a table
-        elif element.tag.endswith("tbl"):
-            # Add blank line before table (if content exists)
-            if content_parts and not in_table:
-                content_parts.append("")  # Blank line before table
-
-            in_table = True
-            table = Table(element, doc)
-            for row in table.rows:
-                row_text = []
-                for cell in row.cells:
-                    cell_text = cell.text
-                    # Escape special characters to preserve tab-delimited structure
-                    row_text.append(escape_cell(cell_text))
-                # Only add row if at least one cell has content
-                if any(cell for cell in row_text):
-                    content_parts.append("\t".join(row_text))
-
-    return "\n".join(content_parts)
-
-
-def _extract_pptx(file_bytes: bytes) -> str:
-    """Extract PPTX content (synchronous).
-
-    Args:
-        file_bytes: PPTX file content as bytes
-
-    Returns:
-        str: Extracted text content
-    """
-    from pptx import Presentation  # type: ignore
-
-    pptx_file = BytesIO(file_bytes)
-    prs = Presentation(pptx_file)
-    content = ""
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                content += shape.text + "\n"
-    return content
-
-
-def _extract_xlsx(file_bytes: bytes) -> str:
-    """Extract XLSX content in tab-delimited format with clear sheet separation.
-
-    This function processes Excel workbooks and converts them to a structured text format
-    suitable for LLM prompts and RAG systems. Each sheet is clearly delimited with
-    separator lines, and special characters are escaped to preserve the tab-delimited structure.
-
-    Features:
-    - Each sheet is wrapped with '====================' separators for visual distinction
-    - Special characters (tabs, newlines, backslashes) are escaped to prevent structure corruption
-    - Column alignment is preserved across all rows to maintain tabular structure
-    - Empty rows are preserved as blank lines to maintain row structure
-    - Uses sheet.max_column to determine column width efficiently
-
-    Args:
-        file_bytes: XLSX file content as bytes
-
-    Returns:
-        str: Extracted text content with all sheets in tab-delimited format.
-             Format: Sheet separators, sheet name, then tab-delimited rows.
-
-    Example output:
-        ==================== Sheet: Data ====================
-        Name\tAge\tCity
-        Alice\t30\tNew York
-        Bob\t25\tLondon
-
-        ==================== Sheet: Summary ====================
-        Total\t2
-        ====================
-    """
-    from openpyxl import load_workbook  # type: ignore
-
-    xlsx_file = BytesIO(file_bytes)
-    wb = load_workbook(xlsx_file)
-
-    def escape_cell(cell_value: str | int | float | None) -> str:
-        """Escape characters that would break tab-delimited layout.
-
-        Escape order is critical: backslashes first, then tabs/newlines.
-        This prevents double-escaping issues.
-
-        Args:
-            cell_value: The cell value to escape (can be None, str, int, or float)
-
-        Returns:
-            str: Escaped cell value safe for tab-delimited format
-        """
-        if cell_value is None:
-            return ""
-        text = str(cell_value)
-        # CRITICAL: Escape backslash first to avoid double-escaping
-        return (
-            text.replace("\\", "\\\\")  # Must be first: \ -> \\
-            .replace("\t", "\\t")  # Tab -> \t (visible)
-            .replace("\r\n", "\\n")  # Windows newline -> \n
-            .replace("\r", "\\n")  # Mac newline -> \n
-            .replace("\n", "\\n")  # Unix newline -> \n
-        )
-
-    def escape_sheet_title(title: str) -> str:
-        """Escape sheet title to prevent formatting issues in separators.
-
-        Args:
-            title: Original sheet title
-
-        Returns:
-            str: Sanitized sheet title with tabs/newlines replaced
-        """
-        return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
-
-    content_parts: list[str] = []
-    sheet_separator = "=" * 20
-
-    for idx, sheet in enumerate(wb):
-        if idx > 0:
-            content_parts.append("")  # Blank line between sheets for readability
-
-        # Escape sheet title to handle edge cases with special characters
-        safe_title = escape_sheet_title(sheet.title)
-        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
-
-        # Use sheet.max_column to get the maximum column width directly
-        max_columns = sheet.max_column if sheet.max_column else 0
-
-        # Extract rows with consistent width to preserve column alignment
-        for row in sheet.iter_rows(values_only=True):
-            row_parts = []
-
-            # Build row up to max_columns width
-            for idx in range(max_columns):
-                if idx < len(row):
-                    row_parts.append(escape_cell(row[idx]))
-                else:
-                    row_parts.append("")  # Pad short rows
-
-            # Check if row is completely empty
-            if all(part == "" for part in row_parts):
-                # Preserve empty rows as blank lines (maintains row structure)
-                content_parts.append("")
-            else:
-                # Join all columns to maintain consistent column count
-                content_parts.append("\t".join(row_parts))
-
-    # Final separator for symmetry (makes parsing easier)
-    content_parts.append(sheet_separator)
-    return "\n".join(content_parts)
+# Legacy text extractors moved to lightrag.parser.legacy.extractors; the
+# legacy engine now extracts at the worker stage (LegacyParser), not here.
 
 
 async def pipeline_enqueue_file(
@@ -1666,8 +1609,6 @@ async def pipeline_enqueue_file(
         track_id = generate_track_id("unknown")
 
     try:
-        content = ""
-        ext = file_path.suffix.lower()
         file_size = 0
 
         # Get file size for error reporting
@@ -1678,14 +1619,13 @@ async def pipeline_enqueue_file(
             file_size = 0
 
         try:
-            extraction_engine, process_options = resolve_file_parser_directives(
-                file_path
-            )
+            directives = resolve_parser_directives(file_path)
         except FilenameParserHintError as e:
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]Filename hint error",
+                    "error_description": FILE_EXTRACTION_SUMMARY_PREFIX
+                    + "Filename hint error",
                     "original_error": str(e),
                     "file_size": file_size,
                 }
@@ -1696,380 +1636,91 @@ async def pipeline_enqueue_file(
             )
             return False, track_id
 
+        extraction_engine = directives.engine
+        process_options = directives.process_options
         api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
-        if extraction_engine != PARSER_ENGINE_LEGACY:
+
+        # Overlay any per-file chunk parameters (from the filename hint or a
+        # LIGHTRAG_PARSER rule) onto the active strategy's chunk_options so the
+        # parse worker chunks this document with them. Absent params keep the
+        # legacy path (chunk_options built at enqueue time from addon_params).
+        hint_chunk_options = None
+        active_strategy = parse_process_options(api_process_options).chunking
+        hint_chunk_params = directives.chunk_params.get(active_strategy)
+        if hint_chunk_params:
             try:
-                enqueue_kwargs = {
-                    "file_paths": str(file_path),
-                    "track_id": track_id,
-                    "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-                    "parse_engine": extraction_engine,
-                    "process_options": api_process_options,
-                    "from_scan": from_scan,
-                }
-                enqueue_result = await rag.apipeline_enqueue_documents(
-                    "", **enqueue_kwargs
+                strategy_key = chunk_strategy_key(api_process_options)
+                hint_chunk_options = resolve_chunk_options(
+                    rag.addon_params, process_options=api_process_options
                 )
-                if enqueue_result is None:
-                    try:
-                        await move_file_to_parsed_dir(file_path)
-                    except Exception as move_error:
-                        logger.error(
-                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
-                        )
-                    return False, track_id
-                logger.info(
-                    f"[File Extraction]Deferred {file_path.name} to {extraction_engine} parser"
+                hint_chunk_options[strategy_key].update(hint_chunk_params)
+                _validate_effective_chunk_overlap(
+                    hint_chunk_options, strategy_key, strategy_key
                 )
-                return True, track_id
-            except Exception as e:
+            except ValueError as e:
                 error_files = [
                     {
                         "file_path": str(file_path.name),
-                        "error_description": "[File Extraction]Parser enqueue error",
-                        "original_error": f"Failed to enqueue file for parser: {str(e)}",
+                        "error_description": FILE_EXTRACTION_SUMMARY_PREFIX
+                        + "Chunk parameter error",
+                        "original_error": str(e),
                         "file_size": file_size,
                     }
                 ]
                 await rag.apipeline_enqueue_error_documents(error_files, track_id)
                 logger.error(
-                    f"[File Extraction]Error enqueuing {file_path.name} for {extraction_engine}: {str(e)}"
+                    f"[File Extraction]Invalid chunk parameters in "
+                    f"{file_path.name}: {e}"
                 )
                 return False, track_id
-
-        file = None
+        # All engines defer parsing to the worker stage: the file is already
+        # saved on disk, so we enqueue PENDING_PARSE with the chosen engine.
+        # Legacy now extracts at the worker (LegacyParser) instead of eagerly
+        # here, so every engine shares one ingestion path.
+        # Encode any per-file engine params into the parse_engine field
+        # (e.g. "mineru(page_range=1-3,language=en)") so they ride the existing
+        # persisted column to the parse worker. Bare engine when there are none.
+        parse_engine_field = encode_parse_engine(
+            extraction_engine, directives.engine_params
+        )
         try:
-            async with aiofiles.open(file_path, "rb") as f:
-                file = await f.read()
-        except PermissionError as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]Permission denied - cannot read file",
-                    "original_error": str(e),
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(
-                f"[File Extraction]Permission denied reading file: {file_path.name}"
-            )
-            return False, track_id
-        except FileNotFoundError as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]File not found",
-                    "original_error": str(e),
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"[File Extraction]File not found: {file_path.name}")
-            return False, track_id
-        except Exception as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]File reading error",
-                    "original_error": str(e),
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(
-                f"[File Extraction]Error reading file {file_path.name}: {str(e)}"
-            )
-            return False, track_id
-
-        # Process based on file type
-        try:
-            match ext:
-                case (
-                    ".txt"
-                    | ".md"
-                    | ".mdx"
-                    | ".html"
-                    | ".htm"
-                    | ".tex"
-                    | ".json"
-                    | ".xml"
-                    | ".yaml"
-                    | ".yml"
-                    | ".rtf"
-                    | ".odt"
-                    | ".epub"
-                    | ".csv"
-                    | ".log"
-                    | ".conf"
-                    | ".ini"
-                    | ".properties"
-                    | ".sql"
-                    | ".bat"
-                    | ".sh"
-                    | ".c"
-                    | ".h"
-                    | ".cpp"
-                    | ".hpp"
-                    | ".py"
-                    | ".java"
-                    | ".js"
-                    | ".ts"
-                    | ".swift"
-                    | ".go"
-                    | ".rb"
-                    | ".php"
-                    | ".css"
-                    | ".scss"
-                    | ".less"
-                ):
-                    try:
-                        # Try to decode as UTF-8 (offloaded to thread to avoid blocking the event loop)
-                        content = await asyncio.to_thread(file.decode, "utf-8")
-
-                        # Validate content
-                        if not content or len(content.strip()) == 0:
-                            error_files = [
-                                {
-                                    "file_path": str(file_path.name),
-                                    "error_description": "[File Extraction]Empty file content",
-                                    "original_error": "File contains no content or only whitespace",
-                                    "file_size": file_size,
-                                }
-                            ]
-                            await rag.apipeline_enqueue_error_documents(
-                                error_files, track_id
-                            )
-                            logger.error(
-                                f"[File Extraction]Empty content in file: {file_path.name}"
-                            )
-                            return False, track_id
-
-                        # Check if content looks like binary data string representation
-                        if content.startswith("b'") or content.startswith('b"'):
-                            error_files = [
-                                {
-                                    "file_path": str(file_path.name),
-                                    "error_description": "[File Extraction]Binary data in text file",
-                                    "original_error": "File appears to contain binary data representation instead of text",
-                                    "file_size": file_size,
-                                }
-                            ]
-                            await rag.apipeline_enqueue_error_documents(
-                                error_files, track_id
-                            )
-                            logger.error(
-                                f"[File Extraction]File {file_path.name} appears to contain binary data representation instead of text"
-                            )
-                            return False, track_id
-
-                    except UnicodeDecodeError as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]UTF-8 encoding error, please convert it to UTF-8 before processing",
-                                "original_error": f"File is not valid UTF-8 encoded text: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
-                        )
-                        return False, track_id
-
-                case ".pdf":
-                    try:
-                        content = await asyncio.to_thread(
-                            _extract_pdf_pypdf,
-                            file,
-                            global_args.pdf_decrypt_password,
-                        )
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]PDF processing error",
-                                "original_error": f"Failed to extract text from PDF: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing PDF {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case ".docx":
-                    try:
-                        content = await asyncio.to_thread(_extract_docx, file)
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]DOCX processing error",
-                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case ".pptx":
-                    try:
-                        content = await asyncio.to_thread(_extract_pptx, file)
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]PPTX processing error",
-                                "original_error": f"Failed to extract text from PPTX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing PPTX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case ".xlsx":
-                    try:
-                        content = await asyncio.to_thread(_extract_xlsx, file)
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]XLSX processing error",
-                                "original_error": f"Failed to extract text from XLSX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing XLSX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case _:
-                    error_files = [
-                        {
-                            "file_path": str(file_path.name),
-                            "error_description": f"[File Extraction]Unsupported file type: {ext}",
-                            "original_error": f"File extension {ext} is not supported",
-                            "file_size": file_size,
-                        }
-                    ]
-                    await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                    logger.error(
-                        f"[File Extraction]Unsupported file type: {file_path.name} (extension {ext})"
-                    )
-                    return False, track_id
-
-        except Exception as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]File format processing error",
-                    "original_error": f"Unexpected error during file extracting: {str(e)}",
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(
-                f"[File Extraction]Unexpected error during {file_path.name} extracting: {str(e)}"
-            )
-            return False, track_id
-
-        # Insert into the RAG queue
-        if content:
-            # Check if content contains only whitespace characters
-            if not content.strip():
-                error_files = [
-                    {
-                        "file_path": str(file_path.name),
-                        "error_description": "[File Extraction]File contains only whitespace",
-                        "original_error": "File content contains only whitespace characters",
-                        "file_size": file_size,
-                    }
-                ]
-                await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                logger.warning(
-                    f"[File Extraction]File contains only whitespace characters: {file_path.name}"
-                )
-                return False, track_id
-
-            try:
-                enqueue_kwargs = {
-                    "file_paths": file_path.name,
-                    "track_id": track_id,
-                    "parse_engine": PARSER_ENGINE_LEGACY,
-                    "process_options": api_process_options,
-                    "from_scan": from_scan,
-                }
-                enqueue_result = await rag.apipeline_enqueue_documents(
-                    content, **enqueue_kwargs
-                )
-                if enqueue_result is None:
-                    try:
-                        await move_file_to_parsed_dir(file_path)
-                    except Exception as move_error:
-                        logger.error(
-                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
-                        )
-                    return False, track_id
-
-                logger.info(
-                    f"Successfully extracted and enqueued file: {file_path.name}"
-                )
-
-                # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
+            enqueue_kwargs = {
+                "file_paths": str(file_path),
+                "track_id": track_id,
+                "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                "parse_engine": parse_engine_field,
+                "process_options": api_process_options,
+                "from_scan": from_scan,
+            }
+            if hint_chunk_options is not None:
+                enqueue_kwargs["chunk_options"] = hint_chunk_options
+            enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
+            if enqueue_result is None:
                 try:
                     await move_file_to_parsed_dir(file_path)
                 except Exception as move_error:
                     logger.error(
-                        f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+                        f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
                     )
-                    # Don't affect the main function's success status
-
-                return True, track_id
-
-            except Exception as e:
-                error_files = [
-                    {
-                        "file_path": str(file_path.name),
-                        "error_description": "Document enqueue error",
-                        "original_error": f"Failed to enqueue document: {str(e)}",
-                        "file_size": file_size,
-                    }
-                ]
-                await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                logger.error(f"Error enqueueing document {file_path.name}: {str(e)}")
                 return False, track_id
-        else:
+            logger.info(
+                f"[File Extraction]Deferred {file_path.name} to {extraction_engine} parser"
+            )
+            return True, track_id
+        except Exception as e:
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "No content extracted",
-                    "original_error": "No content could be extracted from file",
+                    "error_description": FILE_EXTRACTION_SUMMARY_PREFIX
+                    + "Parser enqueue error",
+                    "original_error": f"Failed to enqueue file for parser: {str(e)}",
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"No content extracted from file: {file_path.name}")
+            logger.error(
+                f"[File Extraction]Error enqueuing {file_path.name} for {extraction_engine}: {str(e)}"
+            )
             return False, track_id
 
     except Exception as e:
@@ -2164,11 +1815,137 @@ async def pipeline_index_files(
         logger.error(traceback.format_exc())
 
 
+_STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
+    "fixed_token": PROCESS_OPTION_CHUNK_FIXED,
+    "recursive_character": PROCESS_OPTION_CHUNK_RECURSIVE,
+    "semantic_vector": PROCESS_OPTION_CHUNK_VECTOR,
+    "paragraph_semantic": PROCESS_OPTION_CHUNK_PARAGRAH,
+}
+
+
+def _resolve_text_chunking(
+    chunking: Optional[TextChunkingConfig], rag: LightRAG
+) -> tuple[str, dict]:
+    """Freeze a ``chunking`` request into ``(process_options, chunk_options)``.
+
+    When ``chunking`` is ``None`` this reproduces today's behavior exactly:
+    fixed-token strategy with the snapshot built from
+    ``rag.addon_params['chunker']``.
+
+    Otherwise the validated, strategy-specific params are merged into the
+    selected strategy's sub-dict. ``chunk_token_size`` rides along inside
+    ``params`` like any other key — every strategy (F included, after the
+    ``process_single_document`` cleanup) reads its size from its own
+    sub-dict, with the top-level snapshot value as the shared fallback.
+
+    Raises:
+        ValueError: when the request lowers ``chunk_token_size`` below the
+            *effective* ``chunk_overlap_token_size``.  The overlap is often
+            inherited from ``addon_params``/env (the overlay fills
+            ``fixed_token``/``recursive_character``/``paragraph_semantic``
+            overlap with ``CHUNK_*_OVERLAP_SIZE`` / ``CHUNK_OVERLAP_SIZE``),
+            so this can only be checked here against the resolved snapshot,
+            not in the request model.  Callers on the request path invoke
+            this synchronously so the failure surfaces as HTTP 422 before any
+            background work is scheduled.
+    """
+    if chunking is None:
+        # No request-driven config: reproduce today's behavior verbatim,
+        # including not introducing new validation on the default path.
+        process_options = PROCESS_OPTION_CHUNK_FIXED
+        return process_options, resolve_chunk_options(
+            rag.addon_params, process_options=process_options
+        )
+
+    process_options = _STRATEGY_TO_PROCESS_OPTION[chunking.strategy]
+    chunk_options = resolve_chunk_options(
+        rag.addon_params, process_options=process_options
+    )
+    strategy_key = chunk_strategy_key(process_options)
+    chunk_options[strategy_key].update(chunking.params)
+    _validate_effective_chunk_overlap(chunk_options, strategy_key, chunking.strategy)
+    _validate_effective_semantic_amount(chunk_options, strategy_key)
+    return process_options, chunk_options
+
+
+def _validate_effective_chunk_overlap(
+    chunk_options: dict, strategy_key: str, strategy_name: str
+) -> None:
+    """Reject a resolved snapshot whose overlap is >= its chunk size.
+
+    Operates on the fully-resolved ``chunk_options`` so it catches the case
+    the request model cannot: ``chunk_token_size`` supplied in the request
+    while ``chunk_overlap_token_size`` is inherited from addon_params/env
+    (e.g. ``chunk_token_size=50`` with the default overlap ``100``).  The
+    effective size is the strategy sub-dict value, falling back to the
+    top-level snapshot size; the effective overlap is the sub-dict value
+    (``semantic_vector`` carries none, so it is skipped).
+    """
+    sub = chunk_options.get(strategy_key) or {}
+    # Fixed-token delimiter-only mode (split_by_character set AND
+    # split_by_character_only=True) never applies overlap:
+    # chunking_by_token_size only validates each delimiter segment against
+    # chunk_token_size and raises on an oversize segment — the overlap field
+    # is unused. Enforcing overlap < size there would wrongly 422 a valid
+    # request such as paragraph splitting with a small chunk_token_size.
+    # (split_by_character_only is itself a no-op when split_by_character is
+    # falsy, so both must be effective for overlap to be skipped.)
+    if (
+        strategy_key == "fixed_token"
+        and sub.get("split_by_character")
+        and sub.get("split_by_character_only")
+    ):
+        return
+    overlap = sub.get("chunk_overlap_token_size")
+    if overlap is None:
+        return
+    size = sub.get("chunk_token_size")
+    if size is None:
+        size = chunk_options.get("chunk_token_size")
+    if size is not None and overlap >= size:
+        raise ValueError(
+            f"chunking for strategy '{strategy_name}': effective "
+            f"chunk_overlap_token_size ({overlap}) must be < chunk_token_size "
+            f"({size}). The overlap is inherited from addon_params/env when "
+            f"not set in the request; raise chunk_token_size or lower "
+            f"chunk_overlap_token_size."
+        )
+
+
+def _validate_effective_semantic_amount(chunk_options: dict, strategy_key: str) -> None:
+    """Reject a resolved semantic_vector snapshot whose breakpoint amount
+    exceeds the percentile/gradient ceiling.
+
+    Uses the *effective* ``breakpoint_threshold_type`` from the merged
+    snapshot — the request model cannot, because the type may be inherited
+    from ``addon_params``/``CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`` while the
+    request overrides only ``breakpoint_threshold_amount``. ``percentile`` /
+    ``gradient`` feed ``np.percentile`` (q must be in ``[0, 100]``);
+    ``standard_deviation`` / ``interquartile`` are multipliers with no upper
+    bound, so a request amount > 100 is valid for them.
+    """
+    if strategy_key != "semantic_vector":
+        return
+    sub = chunk_options.get(strategy_key) or {}
+    amt = sub.get("breakpoint_threshold_amount")
+    if amt is None:
+        return
+    kind = sub.get("breakpoint_threshold_type") or "percentile"
+    if kind in ("percentile", "gradient") and amt > 100:
+        raise ValueError(
+            f"chunking for strategy 'semantic_vector': "
+            f"breakpoint_threshold_amount ({amt}) must be within (0, 100] for "
+            f"breakpoint_threshold_type '{kind}'. The type is inherited from "
+            f"addon_params/env when not set in the request."
+        )
+
+
 async def pipeline_index_texts(
     rag: LightRAG,
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    chunking: Optional[TextChunkingConfig] = None,
 ):
     """Index a list of texts with track_id
 
@@ -2177,6 +1954,8 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        chunking: Optional chunking strategy + params (already validated by
+            the request model); when None, default fixed-token chunking is used
     """
     if not texts:
         return
@@ -2190,11 +1969,13 @@ async def pipeline_index_texts(
     if len(set(normalized_file_sources)) != len(normalized_file_sources):
         raise ValueError("File sources must be unique by filename")
 
+    process_options, chunk_options = _resolve_text_chunking(chunking, rag)
     await rag.apipeline_enqueue_documents(
         input=texts,
         file_paths=normalized_file_sources,
         track_id=track_id,
-        process_options=PROCESS_OPTION_CHUNK_FIXED,
+        process_options=process_options,
+        chunk_options=chunk_options,
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -2320,7 +2101,7 @@ async def run_scanning_process(
                 ):
                     # File is already PROCESSED, skip it with warning and archive it.
                     processed_files.append(filename)
-                    warning = f"Skipping already processed file: " f"{filename}"
+                    warning = f"Skipping already processed file: {filename}"
                     await record_scan_warning(rag, warning)
                     try:
                         await move_file_to_parsed_dir(file_path)
@@ -2874,7 +2655,14 @@ def create_document_routes(
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
-            if not doc_manager.is_supported_file(safe_filename):
+            try:
+                filename_supported = doc_manager.is_supported_file(safe_filename)
+            except FilenameParserHintError as hint_error:
+                # Reject malformed hints synchronously with the detailed
+                # message (previously surfaced asynchronously as an error
+                # document after the upload was accepted).
+                raise HTTPException(status_code=400, detail=str(hint_error))
+            if not filename_supported:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
@@ -3080,6 +2868,16 @@ def create_document_routes(
                     ),
                 )
 
+            # Resolve + validate chunking synchronously so an invalid
+            # effective config (e.g. chunk_token_size below the inherited
+            # overlap) fails with HTTP 422 here, before any background work is
+            # scheduled. pipeline_index_texts re-resolves from the same
+            # addon_params inside the task.
+            try:
+                _resolve_text_chunking(request.chunking, rag)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
@@ -3090,6 +2888,7 @@ def create_document_routes(
                         [request.text],
                         file_sources=[normalized_file_source],
                         track_id=track_id,
+                        chunking=request.chunking,
                     )
                 finally:
                     await _release_enqueue_slot(rag)
@@ -3193,6 +2992,16 @@ def create_document_routes(
                         ),
                     )
 
+            # Resolve + validate the shared chunking synchronously so an
+            # invalid effective config (e.g. chunk_token_size below the
+            # inherited overlap) fails with HTTP 422 here, before any
+            # background work is scheduled. pipeline_index_texts re-resolves
+            # from the same addon_params inside the task.
+            try:
+                _resolve_text_chunking(request.chunking, rag)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
@@ -3203,6 +3012,7 @@ def create_document_routes(
                         request.texts,
                         file_sources=normalized_file_sources,
                         track_id=track_id,
+                        chunking=request.chunking,
                     )
                 finally:
                     await _release_enqueue_slot(rag)
@@ -3342,6 +3152,18 @@ def create_document_routes(
                 storage_name = storages[i].__class__.__name__
                 if isinstance(result, Exception):
                     error_msg = f"Error dropping {storage_name}: {str(result)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+                    storage_error_count += 1
+                elif isinstance(result, dict) and result.get("status") != "success":
+                    # drop() reports a non-raising failure as {"status": "error"}
+                    # (e.g. a backend that could not safely clear a kept legacy
+                    # store). Honor it so the clear is not counted as successful
+                    # while stale data remains and could be re-migrated/resurface.
+                    error_msg = (
+                        f"Error dropping {storage_name}: "
+                        f"{result.get('message', 'unknown error')}"
+                    )
                     errors.append(error_msg)
                     logger.error(error_msg)
                     storage_error_count += 1
@@ -3776,81 +3598,6 @@ def create_document_routes(
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
-
-    @router.delete(
-        "/delete_entity",
-        response_model=DeletionResult,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def delete_entity(request: DeleteEntityRequest):
-        """
-        Delete an entity and all its relationships from the knowledge graph.
-
-        Args:
-            request (DeleteEntityRequest): The request body containing the entity name.
-
-        Returns:
-            DeletionResult: An object containing the outcome of the deletion process.
-
-        Raises:
-            HTTPException: If the entity is not found (404) or an error occurs (500).
-        """
-        try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.adelete_by_entity(entity_name=request.entity_name)
-            if result.status == "not_found":
-                raise HTTPException(status_code=404, detail=result.message)
-            if result.status == "fail":
-                raise HTTPException(status_code=500, detail=result.message)
-            # Set doc_id to empty string since this is an entity operation, not document
-            result.doc_id = ""
-            return result
-        except HTTPException:
-            raise
-        except Exception as e:
-            error_msg = f"Error deleting entity '{request.entity_name}': {str(e)}"
-            logger.error(error_msg)
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
-
-    @router.delete(
-        "/delete_relation",
-        response_model=DeletionResult,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def delete_relation(request: DeleteRelationRequest):
-        """
-        Delete a relationship between two entities from the knowledge graph.
-
-        Args:
-            request (DeleteRelationRequest): The request body containing the source and target entity names.
-
-        Returns:
-            DeletionResult: An object containing the outcome of the deletion process.
-
-        Raises:
-            HTTPException: If the relation is not found (404) or an error occurs (500).
-        """
-        try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.adelete_by_relation(
-                source_entity=request.source_entity,
-                target_entity=request.target_entity,
-            )
-            if result.status == "not_found":
-                raise HTTPException(status_code=404, detail=result.message)
-            if result.status == "fail":
-                raise HTTPException(status_code=500, detail=result.message)
-            # Set doc_id to empty string since this is a relation operation, not document
-            result.doc_id = ""
-            return result
-        except HTTPException:
-            raise
-        except Exception as e:
-            error_msg = f"Error deleting relation from '{request.source_entity}' to '{request.target_entity}': {str(e)}"
-            logger.error(error_msg)
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
 
     @router.get(
         "/track_status/{track_id}",

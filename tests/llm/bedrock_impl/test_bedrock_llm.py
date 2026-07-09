@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import APIRouter
@@ -15,9 +15,22 @@ from lightrag.llm.bedrock import (
     bedrock_embed,
 )
 
+_API_ENV_VARS_TO_ISOLATE = (
+    "AUTH_ACCOUNTS",
+    "LIGHTRAG_API_KEY",
+    "TOKEN_SECRET",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_api_auth_env(monkeypatch):
+    """Keep API app tests independent from developer-local .env auth settings."""
+    for var in _API_ENV_VARS_TO_ISOLATE:
+        monkeypatch.setenv(var, "")
+
 
 def _reload_api_modules_if_mocked() -> None:
-    """Drop Mock-replaced lightrag.api entries so importlib reloads the real modules.
+    """Drop cached lightrag.api entries so importlib reloads with isolated env.
 
     Other test files (e.g. test_token_auto_renewal.py) replace
     ``sys.modules["lightrag.api.config"]`` with a Mock at import time. When
@@ -27,11 +40,11 @@ def _reload_api_modules_if_mocked() -> None:
     """
     for modname in (
         "lightrag.api.lightrag_server",
+        "lightrag.api.utils_api",
         "lightrag.api.auth",
         "lightrag.api.config",
     ):
-        if isinstance(sys.modules.get(modname), Mock):
-            sys.modules.pop(modname, None)
+        sys.modules.pop(modname, None)
 
 
 class _FakeBedrockClient:
@@ -297,6 +310,58 @@ async def test_bedrock_embed_empty_endpoint_url_uses_sdk_default(monkeypatch):
         )
 
     assert client_kwargs_calls[-1] == {"region_name": None}
+
+
+class _FakeCohereEmbeddingBody:
+    async def json(self):
+        return {"embeddings": [[0.1] * 1024]}
+
+
+class _FakeCohereEmbeddingResponse:
+    def get(self, key):
+        assert key == "body"
+        return _FakeCohereEmbeddingBody()
+
+
+class _FakeCohereEmbeddingClient(_FakeBedrockClient):
+    async def invoke_model(self, **kwargs):
+        self._captured_calls.append(kwargs)
+        return _FakeCohereEmbeddingResponse()
+
+
+class _FakeCohereEmbeddingSession(_FakeSession):
+    def client(self, *_args, **kwargs):
+        self._client_kwargs_calls.append(dict(kwargs))
+        return _FakeCohereEmbeddingClient(self._captured_calls)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_embed_cohere_passes_modelid_to_invoke_model(monkeypatch):
+    """Cohere embeddings must call invoke_model with ``modelId`` (not ``model``).
+
+    boto3's bedrock-runtime ``invoke_model`` only accepts ``modelId``; passing
+    ``model`` raises botocore ``ParamValidationError`` before any request, so
+    the whole Cohere embedding path used to fail. This mirrors the sibling
+    amazon branch, which already uses ``modelId``.
+    """
+    captured_calls: list[dict] = []
+    client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeCohereEmbeddingSession(captured_calls, client_kwargs_calls),
+    ):
+        await bedrock_embed(
+            texts=["hello"],
+            model="cohere.embed-english-v3",
+        )
+
+    assert captured_calls, "invoke_model was not called"
+    invoke_kwargs = captured_calls[-1]
+    assert invoke_kwargs["modelId"] == "cohere.embed-english-v3"
+    assert "model" not in invoke_kwargs
 
 
 @pytest.mark.offline
