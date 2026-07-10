@@ -14,8 +14,8 @@ from fastapi import HTTPException, Request, Response, Security, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 
-from lightrag import __version__ as core_version
-from lightrag.api import __api_version__ as api_version
+from .._version import __api_version__ as api_version
+from .._version import __version__ as core_version
 from lightrag.api.runtime_validation import validate_runtime_target_from_env_file
 from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
@@ -57,7 +57,7 @@ def check_env_file():
 
         # Check if running in interactive terminal
         if sys.stdin.isatty():
-            response = input("Do you want to continue? (yes/no): ")
+            response = input("Do you want to continue? (yes/NO): ")
             if response.lower() != "yes":
                 ASCIIColors.red("Server startup cancelled")
                 return False
@@ -142,7 +142,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 token_info = auth_handler.validate_token(token)
 
                 # ========== Token Auto-Renewal Logic ==========
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 from lightrag.api.config import global_args
 
@@ -160,7 +160,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                             expire_time = token_info.get("exp")
                             if expire_time:
                                 # Calculate remaining time ratio
-                                now = datetime.utcnow()
+                                now = datetime.now(timezone.utc)
                                 remaining_seconds = (expire_time - now).total_seconds()
 
                                 # Get original token expiration duration
@@ -215,18 +215,29 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                             logger.warning(f"Token auto-renew failed: {e}")
                 # ========== End of Token Auto-Renewal Logic ==========
 
-                # Accept guest token if no auth is configured
+                # A token only authenticates when it matches the configured auth mode:
+                #   - password auth (AUTH_ACCOUNTS set): accept non-guest user tokens
+                #   - fully open (no AUTH_ACCOUNTS, no API key): accept guest tokens
+                # In the API-key-only profile (API key set, no AUTH_ACCOUNTS) a guest
+                # token must NOT authenticate: anyone can obtain one (via /auth-status,
+                # /login, or by signing it with the public default secret), so honoring
+                # it here would let a forged guest token bypass the X-API-Key check
+                # below (GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9). Instead, fall
+                # through so the API key stays mandatory in that mode.
                 if not auth_configured and token_info.get("role") == "guest":
+                    if not api_key_configured:
+                        return
+                    # API-key-only mode: ignore the guest token; the X-API-Key check
+                    # below is the sole authority. Fall through (no return, no raise).
+                elif auth_configured and token_info.get("role") != "guest":
+                    # Accept non-guest token if password auth is configured
                     return
-                # Accept non-guest token if auth is configured
-                if auth_configured and token_info.get("role") != "guest":
-                    return
-
-                # Token validation failed, immediately return 401 error
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token. Please login again.",
-                )
+                else:
+                    # Token present but not valid for the configured auth mode.
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token. Please login again.",
+                    )
             except HTTPException as e:
                 # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
@@ -275,6 +286,96 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         )
 
     return combined_dependency
+
+
+def get_auth_status_dependency(api_key: Optional[str] = None):
+    """Create a dependency that reports whether the request carries accepted
+    credentials, WITHOUT enforcing authentication (it never raises).
+
+    Used by endpoints such as ``/health`` that must stay reachable for
+    unauthenticated liveness probes (always HTTP 200) while only revealing
+    sensitive configuration to authenticated callers. The acceptance rules
+    mirror ``get_combined_auth_dependency`` exactly:
+
+      - fully open (no AUTH_ACCOUNTS, no API key): nothing is protected
+        anywhere, so the request is treated as authenticated.
+      - password auth (AUTH_ACCOUNTS set): a valid non-guest token, or a
+        valid API key when one is configured, authenticates.
+      - API-key-only (API key set, no AUTH_ACCOUNTS): only a valid API key
+        authenticates; a guest token is forgeable and must NOT count
+        (GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9).
+    """
+    api_key_configured = bool(api_key)
+    oauth2_scheme = OAuth2PasswordBearer(
+        tokenUrl="login", auto_error=False, description="OAuth2 Password Authentication"
+    )
+    api_key_header = None
+    if api_key_configured:
+        api_key_header = APIKeyHeader(
+            name="X-API-Key", auto_error=False, description="API Key Authentication"
+        )
+
+    async def auth_status_dependency(
+        token: str = Security(oauth2_scheme),
+        api_key_header_value: Optional[str] = None
+        if api_key_header is None
+        else Security(api_key_header),
+    ) -> bool:
+        # Fully-open mode: nothing is protected anywhere, so reveal config too.
+        if not auth_configured and not api_key_configured:
+            return True
+
+        # A valid API key authenticates in any mode where one is configured.
+        if (
+            api_key_configured
+            and api_key_header_value
+            and api_key_header_value == api_key
+        ):
+            return True
+
+        if token:
+            try:
+                token_info = auth_handler.validate_token(token)
+            except Exception:
+                token_info = None
+            if token_info:
+                role = token_info.get("role")
+                # Password auth: accept a non-guest token. A guest token never
+                # authenticates here (in API-key-only mode it is forgeable).
+                if auth_configured and role != "guest":
+                    return True
+
+        return False
+
+    return auth_status_dependency
+
+
+def whitelist_exposes_api_routes(whitelist_paths: str) -> bool:
+    """Return True if WHITELIST_PATHS exempts any Ollama-compatible /api route.
+
+    Mirrors the prefix/exact matching in get_combined_auth_dependency so that a
+    catch-all entry such as ``/*`` (which strips to an empty prefix and matches
+    every request path, including ``/api/chat``) is recognized as exposing the
+    /api routes — not just literal ``/api...`` entries.
+    """
+    for entry in whitelist_paths.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry.endswith("/*"):
+            # Prefix match: this entry exempts an /api route when some /api path
+            # starts with the prefix ("/api".startswith(prefix) also covers the
+            # empty catch-all prefix from "/*") or the prefix is itself under
+            # /api/. The "/api/" boundary matters: "/apiary/*" only exempts
+            # /apiary..., not /api/chat, so it must NOT be flagged.
+            prefix = entry[:-2]
+            if "/api".startswith(prefix) or prefix.startswith("/api/"):
+                return True
+        else:
+            # Exact match: only the literal path is exempted.
+            if entry == "/api" or entry.startswith("/api/"):
+                return True
+    return False
 
 
 def display_splash_screen(args: argparse.Namespace) -> None:
@@ -340,24 +441,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.working_dir}")
     ASCIIColors.white("    └─ Input Directory: ", end="")
     ASCIIColors.yellow(f"{args.input_dir}")
-
-    # LLM Configuration
-    ASCIIColors.magenta("\n🤖 LLM Configuration:")
-    ASCIIColors.white("    ├─ Binding: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding}")
-    ASCIIColors.white("    ├─ Host: ", end="")
-    ASCIIColors.yellow(f"{args.llm_binding_host}")
-    ASCIIColors.white("    ├─ Model: ", end="")
-    ASCIIColors.yellow(f"{args.llm_model}")
-    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
-    ASCIIColors.yellow(f"{args.max_async}")
-    ASCIIColors.white("    ├─ Summary Context Size: ", end="")
-    ASCIIColors.yellow(f"{args.summary_context_size}")
-    ASCIIColors.white("    ├─ LLM Cache Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache}")
-    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
-
     # Embedding Configuration
     ASCIIColors.magenta("\n📊 Embedding Configuration:")
     ASCIIColors.white("    ├─ Binding: ", end="")
@@ -366,15 +449,15 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.embedding_model}")
-    ASCIIColors.white("    └─ Dimensions: ", end="")
+    ASCIIColors.white("    ├─ Dimensions: ", end="")
     ASCIIColors.yellow(f"{args.embedding_dim}")
+    ASCIIColors.white("    └─ Asymmetric: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_asymmetric}")
 
     # RAG Configuration
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
     ASCIIColors.white("    ├─ Summary Language: ", end="")
     ASCIIColors.yellow(f"{args.summary_language}")
-    ASCIIColors.white("    ├─ Entity Types: ", end="")
-    ASCIIColors.yellow(f"{args.entity_types}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
     ASCIIColors.yellow(f"{args.max_parallel_insert}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")
@@ -439,14 +522,57 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # Security Notice
     if args.key:
-        ASCIIColors.yellow("\n⚠️  Security Notice:")
+        ASCIIColors.white("✅  Security Notice:")
         ASCIIColors.white("""    API Key authentication is enabled.
     Make sure to include the X-API-Key header in all your requests.
     """)
     if args.auth_accounts:
-        ASCIIColors.yellow("\n⚠️  Security Notice:")
+        ASCIIColors.white("✅  Security Notice:")
         ASCIIColors.white("""    JWT authentication is enabled.
     Make sure to login before making the request, and include the 'Authorization' in the header.
+    """)
+
+    # Warn when the server runs without any authentication. In this mode every
+    # endpoint is publicly reachable (see get_combined_auth_dependency: with
+    # neither AUTH_ACCOUNTS nor LIGHTRAG_API_KEY set, all requests are allowed).
+    if not args.key and not args.auth_accounts:
+        loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+        if args.host in loopback_hosts:
+            ASCIIColors.yellow("\n⚠️  Security Warning:")
+            ASCIIColors.white(f"""    No authentication is configured (no API Key, no login accounts).
+    The server is bound to a loopback address ('{args.host}'), so it is only
+    reachable from this machine. Set LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together
+    with TOKEN_SECRET, before binding to a non-loopback address (e.g. HOST=0.0.0.0).
+    """)
+        else:
+            ASCIIColors.red("\n🔴 SECURITY ALERT:")
+            ASCIIColors.white(f"""    The server is listening on '{args.host}' WITHOUT any authentication.
+    Every endpoint (document upload, query, knowledge graph, deletion) is
+    publicly accessible to anyone who can reach this address.
+
+    Secure the server before exposing it to a network by setting at least one of:
+      - LIGHTRAG_API_KEY=<a-strong-secret>   (X-API-Key header authentication)
+      - AUTH_ACCOUNTS=user:password together with TOKEN_SECRET=<a-strong-secret>
+                                             (JWT login authentication; AUTH_ACCOUNTS
+                                              without TOKEN_SECRET fails to start)
+    Or restrict access by binding to loopback only: HOST=127.0.0.1
+    """)
+
+    # When authentication IS configured but the server is exposed on a
+    # non-loopback address, warn that the default whitelist still exempts the
+    # Ollama-compatible /api/* routes (kept open for Ollama-client compatibility).
+    # Those routes invoke the LLM and read the knowledge base, so they stay
+    # public unless the operator narrows WHITELIST_PATHS (e.g. to /health).
+    if args.key or args.auth_accounts:
+        loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+        ollama_open = whitelist_exposes_api_routes(args.whitelist_paths)
+        if args.host not in loopback_hosts and ollama_open:
+            ASCIIColors.yellow("\n⚠️  Security Warning:")
+            ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
+    /api/* routes (/api/chat, /api/generate, ...) from authentication, so they
+    remain publicly accessible on '{args.host}' even though auth is enabled.
+    These routes invoke the LLM and read your knowledge base. If you do not need
+    open Ollama access, set WHITELIST_PATHS=/health to require authentication.
     """)
 
     # Ensure splash output flush to system log

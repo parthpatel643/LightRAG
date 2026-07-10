@@ -144,7 +144,10 @@ make env-storage
 
 **Important rule**
 
-- If you choose `MongoVectorDBStorage` for vector storage, the wizard does not offer the bundled local Docker MongoDB service. You must provide a MongoDB deployment that supports Atlas Search / Vector Search.
+- `MongoVectorDBStorage` requires Atlas Search / Vector Search support.
+- If you choose the wizard-managed Docker MongoDB service, the wizard now provisions MongoDB Atlas Local, so `MongoVectorDBStorage` can run against the local Docker deployment. The generated host-side `MONGO_URI` uses `?directConnection=true`.
+- If you do not use the wizard-managed Docker MongoDB service, provide an external Atlas-capable MongoDB endpoint for `MONGO_URI`, such as a `mongodb+srv://` Atlas cluster URI or an Atlas Local `mongodb://...?...directConnection=true` URI.
+- For external `mongodb://...?...directConnection=true` URIs, the wizard can only validate the URI format. It cannot determine statically whether the target deployment actually provides Atlas Search / Vector Search support.
 
 **What gets written**
 
@@ -197,7 +200,7 @@ make env-security-check
 - If the stack uses Docker, recreate the LightRAG service with your compose file
 - If the stack runs on the host, restart `lightrag-server`
 
-For broader deployment guidance, see [DockerDeployment.md](/Users/ydh/mycode/ai/paper-RAG/docs/DockerDeployment.md).
+For broader deployment guidance, see [DockerDeployment.md](./DockerDeployment.md).
 
 ## Validate, Audit, And Backup
 
@@ -246,6 +249,8 @@ The wizard creates or updates `docker-compose.final.yml` only when you choose wi
 
 When one of the setup flows is about to replace or remove an existing generated compose file, it automatically creates a timestamped backup first.
 
+For MongoDB-backed storage, the wizard-managed Docker path uses MongoDB Atlas Local rather than MongoDB Community Edition so local Atlas Search / Vector Search workflows are available.
+
 Use this file when starting the generated Docker stack:
 
 ```bash
@@ -261,7 +266,7 @@ The base `docker-compose.yml` remains the general project compose file. The gene
 - If you need to fully rebuild wizard-managed compose services from the current bundled templates, use `make env-base-rewrite` or `make env-storage-rewrite`.
 - If you switch between host-oriented and Docker-oriented workflows, rerun the relevant setup step instead of trying to manually merge old settings.
 - If the generated stack includes local Milvus, make sure `MINIO_ACCESS_KEY_ID` and `MINIO_SECRET_ACCESS_KEY` are available before running `docker compose -f docker-compose.final.yml up -d`.
-- For Docker deployment details beyond the interactive wizard, see [DockerDeployment.md](/Users/ydh/mycode/ai/paper-RAG/docs/DockerDeployment.md).
+- For Docker deployment details beyond the interactive wizard, see [DockerDeployment.md](./DockerDeployment.md).
 
 ## Typical Command Sequences
 

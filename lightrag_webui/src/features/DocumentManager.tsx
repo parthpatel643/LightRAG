@@ -14,19 +14,28 @@ import {
   TableRow
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
-import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
 import Skeleton from '@/components/ui/Skeleton'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import DeleteSequencedDocumentDialog from '@/components/documents/DeleteSequencedDocumentDialog'
 import DocumentPreviewDialog from '@/components/documents/DocumentPreviewDialog'
+import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 import DocumentSequencer from '@/components/DocumentSequencer'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger
+} from '@/components/ui/Dialog'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 import {
   scanNewDocuments,
-  getDocumentsPaginated,
+  getDocumentsPaginatedWithTimeout,
   DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
@@ -36,11 +45,25 @@ import {
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, Search, X as XCircle, Trash2 } from 'lucide-react'
+import { copyToClipboard } from '@/utils/clipboard'
+
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, Search, X as XCircle, Trash2, CopyIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import Input from '@/components/ui/Input'
+import {
+  getStatusBucket,
+  getStatusRequestFilters,
+  matchesStatusFilter,
+  type StatusBucket,
+  type StatusFilter
+} from '@/features/documentStatusFilters'
 
-type StatusFilter = DocStatus | 'all';
+type StatusDisplayConfig = {
+  labelKey: string
+  className: string
+}
+
+const STATUS_BUCKETS: StatusBucket[] = ['completed', 'parse', 'analyze', 'process', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
 const getCountValue = (counts: Record<string, number>, ...keys: string[]): number => {
@@ -53,10 +76,27 @@ const getCountValue = (counts: Record<string, number>, ...keys: string[]): numbe
   return 0
 }
 
+const getAggregateCount = (counts: Record<string, number>, ...keys: string[]): number =>
+  keys.reduce((total, key) => total + getCountValue(counts, key), 0)
+
 const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
-  getCountValue(counts, 'PROCESSING', 'processing') > 0 ||
+  getAggregateCount(counts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') > 0 ||
   getCountValue(counts, 'PENDING', 'pending') > 0 ||
   getCountValue(counts, 'PREPROCESSED', 'preprocessed') > 0
+
+const buildLegacyDocs = (documents: DocStatusResponse[]): DocsStatusesResponse => {
+  const statuses = STATUS_BUCKETS.reduce<Record<StatusBucket, DocStatusResponse[]>>((acc, status) => {
+    acc[status] = []
+    return acc
+  }, {} as Record<StatusBucket, DocStatusResponse[]>)
+
+  documents.forEach((doc) => {
+    const bucket = getStatusBucket(doc.status)
+    if (bucket) statuses[bucket].push(doc)
+  })
+
+  return { statuses }
+}
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -82,82 +122,195 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
 const formatMetadata = (metadata: Record<string, any>): string => {
   const formattedMetadata = { ...metadata };
 
-  if (formattedMetadata.processing_start_time && typeof formattedMetadata.processing_start_time === 'number') {
-    const date = new Date(formattedMetadata.processing_start_time * 1000);
+  if (formattedMetadata.parse_start_time && typeof formattedMetadata.parse_start_time === 'number') {
+    const date = new Date(formattedMetadata.parse_start_time * 1000);
     if (!isNaN(date.getTime())) {
-      formattedMetadata.processing_start_time = date.toLocaleString();
+      formattedMetadata.parse_start_time = date.toLocaleString();
     }
   }
 
-  if (formattedMetadata.processing_end_time && typeof formattedMetadata.processing_end_time === 'number') {
-    const date = new Date(formattedMetadata.processing_end_time * 1000);
+  if (formattedMetadata.parse_end_time && typeof formattedMetadata.parse_end_time === 'number') {
+    const date = new Date(formattedMetadata.parse_end_time * 1000);
     if (!isNaN(date.getTime())) {
-      formattedMetadata.processing_end_time = date.toLocaleString();
+      formattedMetadata.parse_end_time = date.toLocaleString();
     }
   }
 
-  // Format JSON and remove outer braces and indentation
-  const jsonStr = JSON.stringify(formattedMetadata, null, 2);
-  const lines = jsonStr.split('\n');
-  // Remove first line ({) and last line (}), and remove leading indentation (2 spaces)
-  return lines.slice(1, -1)
-    .map(line => line.replace(/^ {2}/, ''))
+  if (formattedMetadata.analyzing_start_time && typeof formattedMetadata.analyzing_start_time === 'number') {
+    const date = new Date(formattedMetadata.analyzing_start_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.analyzing_start_time = date.toLocaleString();
+    }
+  }
+
+  if (formattedMetadata.analyzing_end_time && typeof formattedMetadata.analyzing_end_time === 'number') {
+    const date = new Date(formattedMetadata.analyzing_end_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.analyzing_end_time = date.toLocaleString();
+    }
+  }
+
+  if (formattedMetadata.process_start_time && typeof formattedMetadata.process_start_time === 'number') {
+    const date = new Date(formattedMetadata.process_start_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.process_start_time = date.toLocaleString();
+    }
+  }
+
+  if (formattedMetadata.process_end_time && typeof formattedMetadata.process_end_time === 'number') {
+    const date = new Date(formattedMetadata.process_end_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.process_end_time = date.toLocaleString();
+    }
+  }
+
+  const formatValue = (value: any, indent = 0): string => {
+    if (value === null) return 'null';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '[]';
+      return `[${value
+        .map(item => {
+          if (item === null) return 'null';
+          if (typeof item === 'object') return JSON.stringify(item);
+          return String(item);
+        })
+        .join(', ')}]`;
+    }
+
+    if (typeof value === 'object') {
+      const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+      if (entries.length === 0) return '{}';
+      return entries
+        .map(([key, child]) => {
+          const renderedChild = formatValue(child, indent + 1);
+          const prefix = '  '.repeat(indent);
+          if (typeof child === 'object' && child !== null && !Array.isArray(child)) {
+            return `${prefix}${key}:\n${renderedChild}`;
+          }
+          return `${prefix}${key}: ${renderedChild}`;
+        })
+        .join('\n');
+    }
+
+    return String(value);
+  };
+
+  return Object.entries(formattedMetadata)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      const rendered = formatValue(value, 1);
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        return `${key}:\n${rendered}`;
+      }
+      return `${key}: ${rendered}`;
+    })
     .join('\n');
 };
 
+const hasDocumentDetails = (doc: DocStatusResponse): boolean => {
+  return Boolean(
+    doc.track_id ||
+    doc.error_msg ||
+    (doc.metadata && Object.keys(doc.metadata).length > 0)
+  )
+}
+
+const formatDocumentDetails = (doc: DocStatusResponse): string => {
+  const details: string[] = []
+
+  if (doc.track_id) {
+    details.push(`Track ID: ${doc.track_id}`)
+  }
+
+  if (doc.metadata && Object.keys(doc.metadata).length > 0) {
+    details.push(formatMetadata(doc.metadata))
+  }
+
+  if (doc.error_msg) {
+    details.push(`Error Message:\n${doc.error_msg}`)
+  }
+
+  return details.join('\n\n')
+}
+
+const DocumentStatusDetailsDialog = ({ doc }: { doc: DocStatusResponse }) => {
+  const { t } = useTranslation()
+  const details = formatDocumentDetails(doc)
+
+  const openLabel = t('documentPanel.documentManager.details.openTooltip')
+  const copyLabel = t('documentPanel.documentManager.details.copyTooltip')
+
+  const handleCopy = async () => {
+    const result = await copyToClipboard(details)
+
+    if (result.success) {
+      toast.success(t('documentPanel.documentManager.details.copySuccess'))
+    } else {
+      toast.error(t('documentPanel.documentManager.details.copyFailed'))
+    }
+  }
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="ml-2 size-7"
+          tooltip={openLabel}
+          side="top"
+          aria-label={openLabel}
+        >
+          {doc.error_msg ? (
+            <AlertTriangle className="h-4 w-4 text-yellow-500" />
+          ) : (
+            <Info className="h-4 w-4 text-blue-500" />
+          )}
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        className="max-w-2xl"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement | null)?.focus()
+        }}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle>{t('documentPanel.documentManager.details.title')}</DialogTitle>
+          <DialogDescription className="break-all">
+            {doc.id}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="relative rounded-md border bg-muted/30">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute top-2 right-2 z-10 size-7 bg-background/80 hover:bg-accent"
+            onClick={handleCopy}
+            tooltip={copyLabel}
+            side="left"
+            aria-label={copyLabel}
+          >
+            <CopyIcon className="h-4 w-4" />
+          </Button>
+          <div className="max-h-[60vh] overflow-y-auto p-3 pr-12">
+            <pre className="whitespace-pre-wrap break-words text-sm">{details}</pre>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 const pulseStyle = `
-/* Tooltip styles */
-.tooltip-container {
-  position: relative;
-  overflow: visible !important;
-}
-
-.tooltip {
-  position: fixed; /* Use fixed positioning to escape overflow constraints */
-  z-index: 9999; /* Ensure tooltip appears above all other elements */
-  max-width: 600px;
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  border-radius: 0.375rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.75rem; /* 12px */
-  background-color: rgba(0, 0, 0, 0.95);
-  color: white;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  pointer-events: none; /* Prevent tooltip from interfering with mouse events */
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.15s, visibility 0.15s;
-}
-
-.tooltip.visible {
-  opacity: 1;
-  visibility: visible;
-}
-
-.dark .tooltip {
-  background-color: rgba(255, 255, 255, 0.95);
-  color: black;
-}
-
-.tooltip pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-}
-
-/* Position tooltip helper class */
-.tooltip-helper {
-  position: absolute;
-  visibility: hidden;
-  pointer-events: none;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 0;
-}
-
 @keyframes pulse {
   0% {
     background-color: rgb(255 0 0 / 0.1);
@@ -201,12 +354,33 @@ const pulseStyle = `
 // Type definitions for sort field and direction
 type SortField = 'created_at' | 'updated_at' | 'id' | 'file_path';
 type SortDirection = 'asc' | 'desc';
+type QuerySnapshot = {
+  statusFilter: StatusFilter
+  page: number
+  pageSize: number
+  sortField: SortField
+  sortDirection: SortDirection
+}
+type RefreshRequest =
+  | {
+    type: 'intelligent';
+    query: QuerySnapshot;
+    customTimeout?: number;
+    requestVersion: number;
+  }
+  | {
+    type: 'manual';
+    query: QuerySnapshot;
+    requestVersion: number;
+  };
 
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
 
-  // Set up mount/unmount status tracking
+  // Set up mount/unmount status tracking. Pending throttle/probe timers are NOT
+  // explicitly cleared on unmount — every timer callback checks isMountedRef
+  // before doing any work, so a stray fire is a no-op.
   useEffect(() => {
     isMountedRef.current = true;
 
@@ -226,7 +400,7 @@ export default function DocumentManager() {
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
-  const pipelineBusy = useBackendState.use.pipelineBusy()
+  const pipelineActive = useBackendState.use.pipelineActive()
 
   // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -248,6 +422,13 @@ export default function DocumentManager() {
     has_prev: false
   })
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
+  // Mirror statusCounts in a ref so async callbacks (e.g. activity probe ticks)
+  // can read the latest value without being tied to the closure captured at
+  // schedule time. Synced via useEffect to satisfy react-hooks/refs.
+  const statusCountsRef = useRef(statusCounts)
+  useEffect(() => {
+    statusCountsRef.current = statusCounts
+  }, [statusCounts])
   const [isRefreshing, setIsRefreshing] = useState(false)
   
   // Search state
@@ -271,10 +452,10 @@ export default function DocumentManager() {
   // State to store page number for each status filter
   const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
     all: 1,
-    processed: 1,
-    preprocessed: 1,
-    processing: 1,
-    pending: 1,
+    completed: 1,
+    parse: 1,
+    analyze: 1,
+    process: 1,
     failed: 1,
   });
 
@@ -282,12 +463,24 @@ export default function DocumentManager() {
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
   const isSelectionMode = selectedDocIds.length > 0
 
-  // Add refs to track previous pipelineBusy state and current interval
-  const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
+  // Add refs to track previous pipelineActive state and current interval
+  const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
+  const latestRefreshRequestVersionRef = useRef(0);
+  // Throttle gate: all auto-driven /documents/paginated entrances funnel through
+  // refreshDocumentsThrottled() to enforce a minimum 2s wall-clock interval.
+  const lastPaginatedAtRef = useRef(0);
+  const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Activity probe: exponential-backoff burst of /health calls that stops once
+  // pipelineActive flips true. Holds the pending setTimeout ids so re-entry can
+  // reset the schedule to t=0.
+  const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
+  const probeActiveRef = useRef(false);
 
-  // Add retry mechanism state
-  const [retryState, setRetryState] = useState({
+  // Add retry mechanism state (read by circuit breaker via setRetryState only).
+  const [, setRetryState] = useState({
     count: 0,
     lastError: null as Error | null,
     isBackingOff: false
@@ -357,10 +550,10 @@ export default function DocumentManager() {
     // Reset all status filters' page memory since sorting affects all
     setPageByStatus({
       all: 1,
-      processed: 1,
-      preprocessed: 1,
-      processing: 1,
-      pending: 1,
+      completed: 1,
+      parse: 1,
+      analyze: 1,
+      process: 1,
       failed: 1,
     });
   };
@@ -412,6 +605,47 @@ export default function DocumentManager() {
   // Define a new type that includes status information
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
 
+  const getStatusDisplay = useCallback((status: DocStatus): StatusDisplayConfig => {
+    switch (status) {
+      case 'processed':
+        return {
+          labelKey: 'documentPanel.documentManager.status.completed',
+          className: 'text-green-600'
+        }
+      case 'preprocessed':
+        return {
+          labelKey: 'documentPanel.documentManager.status.preprocessed',
+          className: 'text-purple-600'
+        }
+      case 'parsing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.parsing',
+          className: 'text-cyan-600'
+        }
+      case 'analyzing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.analyzing',
+          className: 'text-indigo-600'
+        }
+      case 'processing':
+        return {
+          labelKey: 'documentPanel.documentManager.status.processing',
+          className: 'text-blue-600'
+        }
+      case 'pending':
+        return {
+          labelKey: 'documentPanel.documentManager.status.pending',
+          className: 'text-yellow-600'
+        }
+      case 'failed':
+      default:
+        return {
+          labelKey: 'documentPanel.documentManager.status.failed',
+          className: 'text-red-600'
+        }
+    }
+  }, [])
+
   const filteredAndSortedDocs = useMemo(() => {
     // Use currentPageDocs directly if available (from paginated API)
     // This preserves the backend's sort order and prevents status grouping
@@ -431,26 +665,20 @@ export default function DocumentManager() {
     // Create a flat array of documents with status information
     const allDocuments: DocStatusWithStatus[] = [];
 
-    if (statusFilter === 'all') {
-      // When filter is 'all', include documents from all statuses
-      Object.entries(docs.statuses).forEach(([status, documents]) => {
-        documents.forEach(doc => {
+    Object.entries(docs.statuses).forEach(([status, documents]) => {
+      const fallbackStatus = status as DocStatus
+
+      for (const doc of documents ?? []) {
+        const documentStatus = doc.status ?? fallbackStatus
+
+        if (matchesStatusFilter(documentStatus, statusFilter)) {
           allDocuments.push({
             ...doc,
-            status: status as DocStatus
-          });
-        });
-      });
-    } else {
-      // When filter is specific status, only include documents from that status
-      const documents = docs.statuses[statusFilter] || [];
-      documents.forEach(doc => {
-        allDocuments.push({
-          ...doc,
-          status: statusFilter
-        });
-      });
-    }
+            status: documentStatus
+          })
+        }
+      }
+    })
 
     // Apply search filter
     const filtered = filterDocuments(allDocuments);
@@ -516,30 +744,24 @@ export default function DocumentManager() {
     const counts: Record<string, number> = { all: 0 };
 
     Object.entries(docs.statuses).forEach(([status, documents]) => {
-      counts[status as DocStatus] = documents.length;
+      counts[status] = documents.length;
       counts.all += documents.length;
     });
 
     return counts;
   }, [docs]);
 
-  const processedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.processed || 0;
-  const preprocessedCount =
-    getCountValue(statusCounts, 'PREPROCESSED', 'preprocessed') ||
-    documentCounts.preprocessed ||
-    0;
-  const processingCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.processing || 0;
-  const pendingCount = getCountValue(statusCounts, 'PENDING', 'pending') || documentCounts.pending || 0;
+  const completedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.completed || 0;
+  const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing') || documentCounts.parse || 0;
+  const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing') || documentCounts.analyze || 0;
+  const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.process || 0;
   const failedCount = getCountValue(statusCounts, 'FAILED', 'failed') || documentCounts.failed || 0;
 
   // Store previous status counts
-  const prevStatusCounts = useRef({
-    processed: 0,
-    preprocessed: 0,
-    processing: 0,
-    pending: 0,
-    failed: 0
-  })
+  // Fingerprint of per-bucket counts. Kept key-agnostic on purpose: `docs.statuses`
+  // may be keyed by raw DocStatus (backend) or by filter bucket (buildLegacyDocs),
+  // so we compare a stable digest of all buckets rather than fixed keys.
+  const prevStatusFingerprint = useRef('')
 
   // Add pulse style to document
   useEffect(() => {
@@ -554,67 +776,26 @@ export default function DocumentManager() {
   // Reference to the card content element
   const cardContentRef = useRef<HTMLDivElement>(null)
 
-  // Add tooltip position adjustment for fixed positioning
-  useEffect(() => {
-    if (!docs) return;
+  const buildQuerySnapshot = useCallback((
+    overrides: Partial<QuerySnapshot> = {}
+  ): QuerySnapshot => ({
+    statusFilter: overrides.statusFilter ?? statusFilter,
+    page: overrides.page ?? pagination.page,
+    pageSize: overrides.pageSize ?? pagination.page_size,
+    sortField: overrides.sortField ?? sortField,
+    sortDirection: overrides.sortDirection ?? sortDirection
+  }), [pagination.page, pagination.page_size, sortField, sortDirection, statusFilter])
 
-    // Function to position tooltips
-    const positionTooltips = () => {
-      // Get all tooltip containers
-      const containers = document.querySelectorAll<HTMLElement>('.tooltip-container');
-
-      containers.forEach(container => {
-        const tooltip = container.querySelector<HTMLElement>('.tooltip');
-        if (!tooltip) return;
-
-        // Skip tooltips that aren't visible
-        if (!tooltip.classList.contains('visible')) return;
-
-        // Get container position
-        const rect = container.getBoundingClientRect();
-
-        // Position tooltip above the container
-        tooltip.style.left = `${rect.left}px`;
-        tooltip.style.top = `${rect.top - 5}px`;
-        tooltip.style.transform = 'translateY(-100%)';
-      });
-    };
-
-    // Set up event listeners
-    const handleMouseOver = (e: MouseEvent) => {
-      // Check if target or its parent is a tooltip container
-      const target = e.target as HTMLElement;
-      const container = target.closest('.tooltip-container');
-      if (!container) return;
-
-      // Find tooltip and make it visible
-      const tooltip = container.querySelector<HTMLElement>('.tooltip');
-      if (tooltip) {
-        tooltip.classList.add('visible');
-        // Position immediately without delay
-        positionTooltips();
-      }
-    };
-
-    const handleMouseOut = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const container = target.closest('.tooltip-container');
-      if (!container) return;
-
-      const tooltip = container.querySelector<HTMLElement>('.tooltip');
-      if (tooltip) {
-        tooltip.classList.remove('visible');
-      }
-    };
-
-    document.addEventListener('mouseover', handleMouseOver);
-    document.addEventListener('mouseout', handleMouseOut);
-
-    return () => {
-      document.removeEventListener('mouseover', handleMouseOver);
-      document.removeEventListener('mouseout', handleMouseOut);
-    };
-  }, [docs]);
+  const buildDocumentsRequest = useCallback((
+    query: QuerySnapshot,
+    page: number = query.page
+  ): DocumentsRequest => ({
+    ...getStatusRequestFilters(query.statusFilter),
+    page,
+    page_size: query.pageSize,
+    sort_field: query.sortField,
+    sort_direction: query.sortDirection
+  }), [])
 
   // Utility function to update component state
   const updateComponentState = useCallback((response: any) => {
@@ -622,30 +803,7 @@ export default function DocumentManager() {
     setCurrentPageDocs(response.documents);
     setStatusCounts(response.status_counts);
 
-    // Update legacy docs state for backward compatibility
-    const legacyDocs: DocsStatusesResponse = {
-      statuses: {
-        processed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processed'),
-        preprocessed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'preprocessed'),
-        processing: response.documents.filter((doc: DocStatusResponse) => doc.status === 'processing'),
-        pending: response.documents.filter((doc: DocStatusResponse) => doc.status === 'pending'),
-        failed: response.documents.filter((doc: DocStatusResponse) => doc.status === 'failed')
-      }
-    };
-
-    setDocs(response.pagination.total_count > 0 ? legacyDocs : null);
-  }, []);
-
-  // Utility function to create timeout wrapper for API calls
-  const withTimeout = useCallback((
-    promise: Promise<any>,
-    timeoutMs: number = 30000, // Default 30s timeout for normal operations
-    errorMsg: string = 'Request timeout'
-  ): Promise<any> => {
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
-    });
-    return Promise.race([promise, timeoutPromise]);
+    setDocs(response.pagination.total_count > 0 ? buildLegacyDocs(response.documents) : null);
   }, []);
 
 
@@ -728,82 +886,98 @@ export default function DocumentManager() {
     });
   }, []);
 
-  // Intelligent refresh function: handles all boundary cases
-  const handleIntelligentRefresh = useCallback(async (
-    targetPage?: number, // Optional target page, defaults to current page
-    resetToFirst?: boolean, // Whether to force reset to first page
-    customTimeout?: number // Optional custom timeout in milliseconds (uses withTimeout default if not provided)
-  ) => {
+  // Handle page size change - update state and save to store
+  const handlePageSizeChange = useCallback((newPageSize: number) => {
+    if (newPageSize === pagination.page_size) return;
+
+    // Save the new page size to the store
+    setDocumentsPageSize(newPageSize);
+
+    // Reset all status filters to page 1 when page size changes
+    setPageByStatus({
+      all: 1,
+      completed: 1,
+      parse: 1,
+      analyze: 1,
+      process: 1,
+      failed: 1,
+    });
+
+    setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
+  }, [pagination.page_size, setDocumentsPageSize]);
+
+  const runRefreshRequest = useCallback(async (refreshRequest: RefreshRequest) => {
     try {
       if (!isMountedRef.current) return;
 
       setIsRefreshing(true);
 
-      // Determine target page
-      const pageToFetch = resetToFirst ? 1 : (targetPage || pagination.page);
+      const { query, requestVersion } = refreshRequest
+      const isStaleRequest = () => requestVersion !== latestRefreshRequestVersionRef.current
 
-      const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
-        page: pageToFetch,
-        page_size: pagination.page_size,
-        sort_field: sortField,
-        sort_direction: sortDirection
-      };
+      if (refreshRequest.type === 'manual') {
+        const request = buildDocumentsRequest(query, 1)
+        const response = await getDocumentsPaginatedWithTimeout(request)
 
-      // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
-      const response = await withTimeout(
-        getDocumentsPaginated(request),
-        customTimeout, // Pass undefined to use default 30s, or explicit timeout for special cases
-        'Document fetch timeout'
-      );
+        if (!isMountedRef.current || isStaleRequest()) return;
 
-      if (!isMountedRef.current) return;
+        if (response.pagination.total_count < query.pageSize && query.pageSize !== 10) {
+          handlePageSizeChange(10);
+        } else {
+          setPagination(response.pagination);
+          setCurrentPageDocs(response.documents);
+          setStatusCounts(response.status_counts);
 
-      // Boundary case handling: if target page has no data but total count > 0
-      if (response.documents.length === 0 && response.pagination.total_count > 0) {
-        // Calculate last page
-        const lastPage = Math.max(1, response.pagination.total_pages);
-
-        if (pageToFetch !== lastPage) {
-          // Re-request last page
-          const lastPageRequest: DocumentsRequest = {
-            ...request,
-            page: lastPage
+          const legacyDocs: DocsStatusesResponse = {
+            statuses: {
+              processed: response.documents.filter(doc => doc.status === 'processed'),
+              preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
+              processing: response.documents.filter(doc => doc.status === 'processing'),
+              pending: response.documents.filter(doc => doc.status === 'pending'),
+              failed: response.documents.filter(doc => doc.status === 'failed')
+            }
           };
 
-          const lastPageResponse = await withTimeout(
-            getDocumentsPaginated(lastPageRequest),
-            customTimeout, // Use same timeout for consistency
-            'Document fetch timeout'
-          );
-
-          if (!isMountedRef.current) return;
-
-          // Update page state to last page
-          setPageByStatus(prev => ({ ...prev, [statusFilter]: lastPage }));
-          updateComponentState(lastPageResponse);
-          return;
+          if (response.pagination.total_count > 0) {
+            setDocs(legacyDocs);
+          } else {
+            setDocs(null);
+          }
         }
-      }
+      } else {
+        const { customTimeout } = refreshRequest;
+        const pageToFetch = query.page;
+        const request = buildDocumentsRequest(query, pageToFetch)
+        const response = await getDocumentsPaginatedWithTimeout(request, customTimeout)
 
-      // Normal case: update state
-      if (pageToFetch !== pagination.page) {
-        setPageByStatus(prev => ({ ...prev, [statusFilter]: pageToFetch }));
+        if (!isMountedRef.current || isStaleRequest()) return;
+
+        // Boundary case handling: if target page has no data but total count > 0
+        if (response.documents.length === 0 && response.pagination.total_count > 0) {
+          const lastPage = Math.max(1, response.pagination.total_pages);
+
+          if (pageToFetch !== lastPage) {
+            const lastPageRequest = buildDocumentsRequest(query, lastPage)
+            const lastPageResponse = await getDocumentsPaginatedWithTimeout(
+              lastPageRequest,
+              customTimeout
+            )
+
+            if (!isMountedRef.current || isStaleRequest()) return;
+
+            setPageByStatus(prev => ({ ...prev, [query.statusFilter]: lastPage }));
+            updateComponentState(lastPageResponse);
+            return;
+          }
+        }
+
+        setPageByStatus(prev => (
+          prev[query.statusFilter] === pageToFetch
+            ? prev
+            : { ...prev, [query.statusFilter]: pageToFetch }
+        ));
+        updateComponentState(response);
       }
-      
-      // DEBUG: Log metadata from API response
-      console.log('[DocumentManager] API Response received:', {
-        total_documents: response.documents.length,
-        documents_with_sequence_index: response.documents.filter(d => d.metadata?.sequence_index !== undefined).length,
-        sample_docs: response.documents.slice(0, 3).map(d => ({
-          id: d.id,
-          status: d.status,
-          metadata: d.metadata,
-          has_sequence_index: d.metadata?.sequence_index !== undefined
-        }))
-      });
-      
-      updateComponentState(response);
 
     } catch (err) {
       if (isMountedRef.current) {
@@ -822,20 +996,180 @@ export default function DocumentManager() {
         setIsRefreshing(false);
       }
     }
-  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState, withTimeout, classifyError, recordFailure]);
+  }, [
+    t,
+    updateComponentState,
+    classifyError,
+    recordFailure,
+    handlePageSizeChange,
+    buildDocumentsRequest
+  ]);
+
+  const enqueueRefresh = useCallback(async (refreshRequest: RefreshRequest) => {
+    if (activeRefreshPromiseRef.current) {
+      pendingRefreshRequestRef.current = refreshRequest;
+      await activeRefreshPromiseRef.current;
+      return;
+    }
+
+    const refreshLoopPromise = (async () => {
+      let nextRequest: RefreshRequest | null = refreshRequest;
+
+      while (nextRequest) {
+        pendingRefreshRequestRef.current = null;
+        await runRefreshRequest(nextRequest);
+        nextRequest = pendingRefreshRequestRef.current;
+      }
+    })();
+
+    activeRefreshPromiseRef.current = refreshLoopPromise;
+
+    try {
+      await refreshLoopPromise;
+    } finally {
+      if (activeRefreshPromiseRef.current === refreshLoopPromise) {
+        activeRefreshPromiseRef.current = null;
+      }
+      pendingRefreshRequestRef.current = null;
+    }
+  }, [runRefreshRequest]);
+
+  // Intelligent refresh function: handles all boundary cases
+  const handleIntelligentRefresh = useCallback(async (
+    targetPage?: number,
+    resetToFirst?: boolean,
+    customTimeout?: number
+  ) => {
+    const page = resetToFirst ? 1 : (targetPage || pagination.page)
+    const query = buildQuerySnapshot({ page })
+    const requestVersion = latestRefreshRequestVersionRef.current
+
+    await enqueueRefresh({
+      type: 'intelligent',
+      query,
+      customTimeout,
+      requestVersion
+    });
+  }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
+
+  // Throttle gate: any caller wanting to refresh the document list goes through
+  // here. If the wall-clock gap since the last paginated request is >= 2s, fire
+  // immediately; otherwise schedule a single trailing call at the 2s boundary
+  // and drop any further calls into that pending slot (natural coalescing).
+  const refreshDocumentsThrottled = useCallback(() => {
+    const fire = () => {
+      lastPaginatedAtRef.current = Date.now()
+      handleIntelligentRefresh().catch((err) => {
+        console.error('Throttled document refresh failed:', err)
+      })
+    }
+    const gap = Date.now() - lastPaginatedAtRef.current
+    if (gap >= 2000) {
+      fire()
+      return
+    }
+    if (pendingPaginatedTimerRef.current !== null) return
+    // Snapshot the query identity. If page/filter/sort changes while we wait,
+    // the page-change useEffect bumps latestRefreshRequestVersionRef AND fires
+    // its own paginated request on the new query. Our trailing closure still
+    // holds the OLD handleIntelligentRefresh (capturing the old page), so we
+    // must drop it — otherwise the stale request would overwrite the new list
+    // (its requestVersion would be the newly-bumped value, so the in-flight
+    // stale-check inside runRefreshRequest can't catch it).
+    const versionAtSchedule = latestRefreshRequestVersionRef.current
+    pendingPaginatedTimerRef.current = setTimeout(() => {
+      pendingPaginatedTimerRef.current = null
+      if (!isMountedRef.current) return
+      if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
+      fire()
+    }, 2000 - gap)
+  }, [handleIntelligentRefresh]);
+
+  // Activity probe: short exponential-backoff burst of /health checks fired
+  // after scan/upload triggers. Stops as soon as pipelineActive flips true so
+  // we can hand off to the existing 5s active polling cadence. Re-entry
+  // (e.g. another scan while a probe is mid-flight) cancels the current
+  // schedule and restarts at t=0 so the latest action gets a fresh observation
+  // window.
+  const startActivityProbe = useCallback((reason: string) => {
+    if (probeTimersRef.current) {
+      probeTimersRef.current.forEach((id) => clearTimeout(id))
+      probeTimersRef.current = null
+    }
+    probeActiveRef.current = true
+    const timers: ReturnType<typeof setTimeout>[] = []
+    const probeSchedule = [0, 1000, 2000, 4000, 8000, 16000] as const
+    const refreshAt = new Set<number>([0, 2000, 4000, 8000, 16000])
+    const cleanup = () => {
+      timers.forEach((id) => clearTimeout(id))
+      if (probeTimersRef.current === timers) {
+        probeTimersRef.current = null
+        probeActiveRef.current = false
+      }
+    }
+    probeSchedule.forEach((delay, index) => {
+      const id = setTimeout(async () => {
+        if (!isMountedRef.current) {
+          cleanup()
+          return
+        }
+        try {
+          await useBackendState.getState().check()
+        } catch (err) {
+          console.error(`Activity probe (${reason}) check failed:`, err)
+        }
+        if (!isMountedRef.current) {
+          cleanup()
+          return
+        }
+        if (refreshAt.has(delay)) {
+          refreshDocumentsThrottled()
+        }
+        // Exit conditions (in priority order):
+        //  - pipelineActive=true AND the document list has caught up: the 5s
+        //    active polling cadence will take over from here.
+        //  - pipelineActive=false after the first tick: the scan/upload didn't
+        //    actually start any work (e.g. scan found nothing new, upload was
+        //    rejected) — no point continuing to burst /health.
+        //  - last tick: time budget exhausted, hand off to the polling loop.
+        // Note: NOT stopping on bare `pipelineActive=true` is intentional.
+        // /health flips to active on scanning/pending_enqueues before the new
+        // doc rows are visible in /documents/paginated, so a premature exit
+        // would strand the UI in 30s idle polling while classification is
+        // still running.
+        const active = useBackendState.getState().pipelineActive
+        const docsActive = hasActiveDocumentsStatus(statusCountsRef.current)
+        const isLast = index === probeSchedule.length - 1
+        const stop = (active && docsActive) || (!active && index > 0) || isLast
+        if (stop) {
+          cleanup()
+        }
+      }, delay)
+      timers.push(id)
+    })
+    probeTimersRef.current = timers
+  }, [refreshDocumentsThrottled]);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
     page: number,
     pageSize: number,
-    _statusFilter: StatusFilter // eslint-disable-line @typescript-eslint/no-unused-vars
+    currentStatusFilter: StatusFilter
   ) => {
     // Update pagination state
     setPagination(prev => ({ ...prev, page, page_size: pageSize }));
 
     // Use intelligent refresh
-    await handleIntelligentRefresh(page);
-  }, [handleIntelligentRefresh]);
+    await enqueueRefresh({
+      type: 'intelligent',
+      query: buildQuerySnapshot({
+        page,
+        pageSize,
+        statusFilter: currentStatusFilter
+      }),
+      requestVersion: latestRefreshRequestVersionRef.current
+    });
+  }, [buildQuerySnapshot, enqueueRefresh]);
 
   // Legacy fetchDocuments function for backward compatibility
   const fetchDocuments = useCallback(async () => {
@@ -886,10 +1220,10 @@ export default function DocumentManager() {
       });
       setPageByStatus({
         all: 1,
-        processed: 1,
-        preprocessed: 1,
-        processing: 1,
-        pending: 1,
+        completed: 1,
+        parse: 1,
+        analyze: 1,
+        process: 1,
         failed: 1,
       });
       
@@ -918,237 +1252,119 @@ export default function DocumentManager() {
   const startPollingInterval = useCallback((intervalMs: number) => {
     clearPollingInterval();
 
-    pollingIntervalRef.current = setInterval(async () => {
-      try {
-        // Check circuit breaker before making request
-        if (isCircuitBreakerOpen()) {
-          return; // Skip this polling cycle
-        }
-
-        // Only perform fetch if component is still mounted
-        if (isMountedRef.current) {
-          await fetchDocuments();
-          recordSuccess(); // Record successful operation
-        }
-      } catch (err) {
-        // Only handle error if component is still mounted
-        if (isMountedRef.current) {
-          const errorClassification = classifyError(err);
-
-          // Always reset isRefreshing state on error
-          setIsRefreshing(false);
-
-          if (errorClassification.shouldShowToast) {
-            toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }));
-          }
-
-          if (errorClassification.shouldRetry) {
-            recordFailure(err as Error);
-
-            // Implement exponential backoff for retries
-            const backoffDelay = Math.min(Math.pow(2, retryState.count) * 1000, 30000); // Max 30s
-
-            if (retryState.count < 3) { // Max 3 retries
-              setTimeout(() => {
-                if (isMountedRef.current) {
-                  setRetryState(prev => ({ ...prev, isBackingOff: false }));
-                }
-              }, backoffDelay);
-            }
-          } else {
-            // For non-retryable errors, stop polling
-            clearPollingInterval();
-          }
-        }
-      }
+    pollingIntervalRef.current = setInterval(() => {
+      if (!isMountedRef.current) return;
+      if (isCircuitBreakerOpen()) return;
+      // refreshDocumentsThrottled is fire-and-forget; errors are surfaced via
+      // toast/recordFailure inside runRefreshRequest.
+      refreshDocumentsThrottled();
+      recordSuccess();
     }, intervalMs);
-  }, [fetchDocuments, t, clearPollingInterval, isCircuitBreakerOpen, recordSuccess, recordFailure, classifyError, retryState.count]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen, recordSuccess]);
 
   const scanDocuments = useCallback(async () => {
     try {
-      // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
 
-      const { status, message, track_id: _track_id } = await scanNewDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
+      const { status, message } = await scanNewDocuments();
 
-      // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
 
-      // Note: _track_id is available for future use (e.g., progress tracking)
       toast.message(message || status);
 
-      // Reset health check timer with 1 second delay to avoid race condition
-      useBackendState.getState().resetHealthCheckTimerDelayed(1000);
-
-      // Perform immediate refresh with 90s timeout after scan (tolerates PostgreSQL switchover)
-      await handleIntelligentRefresh(undefined, false, 90000);
-
-      // Start fast refresh with 2-second interval after initial refresh
-      startPollingInterval(2000);
-
-      // Set recovery timer to restore normal polling interval after 15 seconds
-      setTimeout(() => {
-        if (isMountedRef.current && currentTab === 'documents' && health) {
-          // Restore intelligent polling interval based on document status
-          const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-          const normalInterval = hasActiveDocuments ? 5000 : 30000;
-          startPollingInterval(normalInterval);
-        }
-      }, 15000); // Restore after 15 seconds
+      if (status === 'scanning_started') {
+        // Activity probe drives /health bursts + throttled document refreshes.
+        // It exits as soon as pipelineActive flips true, after which the
+        // standard 5s polling cadence (driven by hasActiveDocumentsStatus)
+        // takes over.
+        startActivityProbe('scan');
+      } else {
+        // scanning_skipped_pipeline_busy: a single check+refresh is enough,
+        // no need to start the probe (pipeline is already active).
+        useBackendState.getState().check().catch(() => undefined);
+        refreshDocumentsThrottled();
+      }
     } catch (err) {
-      // Only show error if component is still mounted
       if (isMountedRef.current) {
         toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
       }
     }
-  }, [t, startPollingInterval, currentTab, health, statusCounts, handleIntelligentRefresh])
-
-  // Handle page size change - update state and save to store
-  const handlePageSizeChange = useCallback((newPageSize: number) => {
-    if (newPageSize === pagination.page_size) return;
-
-    // Save the new page size to the store
-    setDocumentsPageSize(newPageSize);
-
-    // Reset all status filters to page 1 when page size changes
-    setPageByStatus({
-      all: 1,
-      processed: 1,
-      preprocessed: 1,
-      processing: 1,
-      pending: 1,
-      failed: 1,
-    });
-
-    setPagination(prev => ({ ...prev, page: 1, page_size: newPageSize }));
-  }, [pagination.page_size, setDocumentsPageSize]);
+  }, [t, startActivityProbe, refreshDocumentsThrottled])
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
-    try {
-      setIsRefreshing(true);
+    await enqueueRefresh({
+      type: 'manual',
+      query: buildQuerySnapshot(),
+      requestVersion: latestRefreshRequestVersionRef.current
+    });
+  }, [buildQuerySnapshot, enqueueRefresh]);
 
-      // Fetch documents from the first page
-      const request: DocumentsRequest = {
-        status_filter: statusFilter === 'all' ? null : statusFilter,
-        page: 1,
-        page_size: pagination.page_size,
-        sort_field: sortField,
-        sort_direction: sortDirection
-      };
-
-      const response = await getDocumentsPaginated(request);
-
-      if (!isMountedRef.current) return;
-
-      // Check if total count is less than current page size and page size is not already 10
-      if (response.pagination.total_count < pagination.page_size && pagination.page_size !== 10) {
-        // Reset page size to 10 which will trigger a new fetch
-        handlePageSizeChange(10);
-      } else {
-        // Update pagination state
-        setPagination(response.pagination);
-        setCurrentPageDocs(response.documents);
-        setStatusCounts(response.status_counts);
-
-        // Update legacy docs state for backward compatibility
-        const legacyDocs: DocsStatusesResponse = {
-          statuses: {
-            processed: response.documents.filter(doc => doc.status === 'processed'),
-            preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
-            processing: response.documents.filter(doc => doc.status === 'processing'),
-            pending: response.documents.filter(doc => doc.status === 'pending'),
-            failed: response.documents.filter(doc => doc.status === 'failed')
-          }
-        };
-
-        if (response.pagination.total_count > 0) {
-          setDocs(legacyDocs);
-        } else {
-          setDocs(null);
-        }
-      }
-
-    } catch (err) {
-      if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsRefreshing(false);
-      }
-    }
-  }, [statusFilter, pagination.page_size, sortField, sortDirection, handlePageSizeChange, t]);
-
-  // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
   useEffect(() => {
-    // Skip the first render when prevPipelineBusyRef is undefined
-    if (prevPipelineBusyRef.current !== undefined && prevPipelineBusyRef.current !== pipelineBusy) {
-      // pipelineBusy state has changed, trigger immediate refresh
-      if (currentTab === 'documents' && health && isMountedRef.current) {
-        // Use intelligent refresh to preserve current page
-        handleIntelligentRefresh();
+    latestRefreshRequestVersionRef.current += 1
+  }, [pagination.page, pagination.page_size, statusFilter, sortField, sortDirection])
 
-        // Reset polling timer after intelligent refresh
-        const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-        const pollingInterval = hasActiveDocuments ? 5000 : 30000;
-        startPollingInterval(pollingInterval);
+  // Monitor pipelineActive changes and trigger an immediate refresh. The
+  // polling interval is reconciled by the main polling useEffect below
+  // (which also depends on pipelineActive), so there's no need to re-call
+  // startPollingInterval here.
+  useEffect(() => {
+    if (prevPipelineActiveRef.current !== undefined && prevPipelineActiveRef.current !== pipelineActive) {
+      if (currentTab === 'documents' && health && isMountedRef.current) {
+        refreshDocumentsThrottled();
       }
     }
-    // Update the previous state
-    prevPipelineBusyRef.current = pipelineBusy;
+    prevPipelineActiveRef.current = pipelineActive;
   }, [
-    pipelineBusy,
+    pipelineActive,
     currentTab,
     health,
-    handleIntelligentRefresh,
-    statusCounts,
-    startPollingInterval
+    refreshDocumentsThrottled
   ]);
 
-  // Set up intelligent polling with dynamic interval based on document status
+  // Set up intelligent polling with dynamic interval based on document status.
+  // Treat pipelineActive=true as enough reason to stay in 5s fast polling even
+  // when statusCounts hasn't surfaced pending rows yet — /health flips active
+  // during scan classification / upload enqueue, well before the new doc rows
+  // appear in /documents/paginated. Without this, the UI would stall in 30s
+  // idle polling for several seconds after the user clicked scan/upload.
   useEffect(() => {
     if (currentTab !== 'documents' || !health) {
       clearPollingInterval();
       return
     }
 
-    // Determine polling interval based on document status
     const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-    const pollingInterval = hasActiveDocuments ? 5000 : 30000; // 5s if active, 30s if idle
+    const pollingInterval = (hasActiveDocuments || pipelineActive) ? 5000 : 30000;
 
     startPollingInterval(pollingInterval);
 
     return () => {
       clearPollingInterval();
     }
-  }, [health, t, currentTab, statusCounts, startPollingInterval, clearPollingInterval])
+  }, [health, t, currentTab, statusCounts, pipelineActive, startPollingInterval, clearPollingInterval])
 
   // Monitor docs changes to check status counts and trigger health check if needed
   useEffect(() => {
     if (!docs) return;
 
-    // Get new status counts
-    const newStatusCounts = {
-      processed: docs?.statuses?.processed?.length || 0,
-      preprocessed: docs?.statuses?.preprocessed?.length || 0,
-      processing: docs?.statuses?.processing?.length || 0,
-      pending: docs?.statuses?.pending?.length || 0,
-      failed: docs?.statuses?.failed?.length || 0
-    }
+    // Build a key-agnostic digest of every status bucket's count. Sorting keeps
+    // it stable regardless of object iteration order or whether buckets are keyed
+    // by raw DocStatus or by filter bucket.
+    const fingerprint = Object.entries(docs.statuses)
+      .map(([key, list]) => `${key}:${list?.length || 0}`)
+      .sort()
+      .join('|')
 
-    // Check if any status count has changed
-    const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
-      status => newStatusCounts[status] !== prevStatusCounts.current[status]
-    )
-
-    // Trigger health check if changes detected and component is still mounted
-    if (hasStatusCountChange && isMountedRef.current) {
+    // Trigger health check if any bucket count changed and component is still
+    // mounted. Skip when the activity probe is running — the probe already drives
+    // /health on its own schedule, and double-firing would burn cache and skew rate.
+    if (fingerprint !== prevStatusFingerprint.current && isMountedRef.current && !probeActiveRef.current) {
       useBackendState.getState().check()
     }
 
-    // Update previous status counts
-    prevStatusCounts.current = newStatusCounts
+    // Always update the snapshot so the first post-probe transition still fires.
+    prevStatusFingerprint.current = fingerprint
   }, [docs]);
 
   // Handle page change - only update state
@@ -1195,6 +1411,9 @@ export default function DocumentManager() {
     setStatusCounts({
       all: 0,
       processed: 0,
+      preprocessed: 0,
+      parsing: 0,
+      analyzing: 0,
       processing: 0,
       pending: 0,
       failed: 0
@@ -1217,25 +1436,45 @@ export default function DocumentManager() {
   }, [clearPollingInterval, setStatusCounts, fetchDocuments, currentTab, health, startPollingInterval])
 
 
-  // Handle showFileName change - switch sort field if currently sorting by first column
-  useEffect(() => {
-    // Only switch if currently sorting by the first column (id or file_path)
+  // Handle showFileName change - switch sort field if currently sorting by first column.
+  // Render-time comparison avoids cascading renders flagged by react-hooks/set-state-in-effect.
+  const [previousShowFileName, setPreviousShowFileName] = useState(showFileName)
+  if (showFileName !== previousShowFileName) {
+    setPreviousShowFileName(showFileName)
     if (sortField === 'id' || sortField === 'file_path') {
       const newSortField = showFileName ? 'file_path' : 'id';
       if (sortField !== newSortField) {
         setSortField(newSortField);
       }
     }
-  }, [showFileName, sortField]);
+  }
 
-  // Reset selection state when page, status filter, or sort changes
-  useEffect(() => {
+  // Reset selection state when page, status filter, or sort changes (render-time comparison).
+  const [previousSelectionDeps, setPreviousSelectionDeps] = useState({
+    page: pagination.page,
+    statusFilter,
+    sortField,
+    sortDirection
+  })
+  if (
+    previousSelectionDeps.page !== pagination.page ||
+    previousSelectionDeps.statusFilter !== statusFilter ||
+    previousSelectionDeps.sortField !== sortField ||
+    previousSelectionDeps.sortDirection !== sortDirection
+  ) {
+    setPreviousSelectionDeps({
+      page: pagination.page,
+      statusFilter,
+      sortField,
+      sortDirection
+    })
     setSelectedDocIds([])
-  }, [pagination.page, statusFilter, sortField, sortDirection]);
+  }
 
-  // Central effect to handle all data fetching
+  // Central effect to handle all data fetching - genuine side effect (network call)
   useEffect(() => {
     if (currentTab === 'documents') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
     }
   }, [
@@ -1272,7 +1511,7 @@ export default function DocumentManager() {
               tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
               size="sm"
               className={cn(
-                pipelineBusy && 'pipeline-busy'
+                pipelineActive && 'pipeline-busy'
               )}
             >
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
@@ -1342,6 +1581,10 @@ export default function DocumentManager() {
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
             <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
+            <UploadDocumentsDialog
+              onUploadBatchAccepted={() => startActivityProbe('upload')}
+              onDocumentsUploaded={async () => { refreshDocumentsThrottled() }}
+            />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}
@@ -1365,89 +1608,59 @@ export default function DocumentManager() {
                       statusFilter === 'all' && 'bg-gray-200 dark:bg-gray-800 font-semibold border-2 border-gray-500 dark:border-gray-400 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.all')}
-                    <span className={cn(
-                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
-                      statusFilter === 'all' ? 'bg-gray-300 dark:bg-gray-700' : 'bg-gray-100 dark:bg-gray-800'
-                    )}>
-                      {statusCounts.all || documentCounts.all}
-                    </span>
+                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all || documentCounts.all})
                   </Button>
                   <Button
                     size="sm"
-                    variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('processed')}
+                    variant={statusFilter === 'completed' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('completed')}
                     disabled={isRefreshing}
                     className={cn(
                       'transition-all duration-200',
-                      processedCount > 0 ? 'text-green-700 dark:text-green-400' : 'text-gray-400',
-                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/40 font-semibold border-2 border-green-500 dark:border-green-500 shadow-md scale-105'
+                      completedCount > 0 ? 'text-green-600' : 'text-gray-500',
+                      statusFilter === 'completed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.completed')}
-                    <span className={cn(
-                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
-                      statusFilter === 'processed' ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-100' : 'bg-green-50 dark:bg-green-900/20'
-                    )}>
-                      {processedCount}
-                    </span>
+                    {t('documentPanel.documentManager.filters.completed')} ({completedCount})
                   </Button>
                   <Button
                     size="sm"
-                    variant={statusFilter === 'preprocessed' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('preprocessed')}
+                    variant={statusFilter === 'parse' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('parse')}
                     disabled={isRefreshing}
                     className={cn(
                       'transition-all duration-200',
-                      preprocessedCount > 0 ? 'text-purple-700 dark:text-purple-400' : 'text-gray-400',
-                      statusFilter === 'preprocessed' && 'bg-purple-100 dark:bg-purple-900/40 font-semibold border-2 border-purple-500 dark:border-purple-500 shadow-md scale-105'
+                      parseCount > 0 ? 'text-cyan-600' : 'text-gray-500',
+                      statusFilter === 'parse' && 'bg-cyan-100 dark:bg-cyan-900/30 font-medium border border-cyan-400 dark:border-cyan-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.preprocessed')}
-                    <span className={cn(
-                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
-                      statusFilter === 'preprocessed' ? 'bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-100' : 'bg-purple-50 dark:bg-purple-900/20'
-                    )}>
-                      {preprocessedCount}
-                    </span>
+                    {t('documentPanel.documentManager.filters.parse')} ({parseCount})
                   </Button>
                   <Button
                     size="sm"
-                    variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('processing')}
+                    variant={statusFilter === 'analyze' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('analyze')}
                     disabled={isRefreshing}
                     className={cn(
                       'transition-all duration-200',
-                      processingCount > 0 ? 'text-blue-700 dark:text-blue-400' : 'text-gray-400',
-                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/40 font-semibold border-2 border-blue-500 dark:border-blue-500 shadow-md scale-105'
+                      analyzeCount > 0 ? 'text-indigo-600' : 'text-gray-500',
+                      statusFilter === 'analyze' && 'bg-indigo-100 dark:bg-indigo-900/30 font-medium border border-indigo-400 dark:border-indigo-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.processing')}
-                    <span className={cn(
-                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
-                      statusFilter === 'processing' ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-100' : 'bg-blue-50 dark:bg-blue-900/20'
-                    )}>
-                      {processingCount}
-                    </span>
+                    {t('documentPanel.documentManager.filters.analyze')} ({analyzeCount})
                   </Button>
                   <Button
                     size="sm"
-                    variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
-                    onClick={() => handleStatusFilterChange('pending')}
+                    variant={statusFilter === 'process' ? 'secondary' : 'outline'}
+                    onClick={() => handleStatusFilterChange('process')}
                     disabled={isRefreshing}
                     className={cn(
                       'transition-all duration-200',
-                      pendingCount > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-400',
-                      statusFilter === 'pending' && 'bg-amber-100 dark:bg-amber-900/40 font-semibold border-2 border-amber-500 dark:border-amber-500 shadow-md scale-105'
+                      processCount > 0 ? 'text-blue-600' : 'text-gray-500',
+                      statusFilter === 'process' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.pending')}
-                    <span className={cn(
-                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
-                      statusFilter === 'pending' ? 'bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-100' : 'bg-amber-50 dark:bg-amber-900/20'
-                    )}>
-                      {pendingCount}
-                    </span>
+                    {t('documentPanel.documentManager.filters.process')} ({processCount})
                   </Button>
                   <Button
                     size="sm"
@@ -1460,13 +1673,7 @@ export default function DocumentManager() {
                       statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/40 font-semibold border-2 border-red-500 dark:border-red-500 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.failed')}
-                    <span className={cn(
-                      "ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold",
-                      statusFilter === 'failed' ? 'bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-100' : 'bg-red-50 dark:bg-red-900/20'
-                    )}>
-                      {failedCount}
-                    </span>
+                    {t('documentPanel.documentManager.filters.failed')} ({failedCount})
                   </Button>
                 </div>
                 <Button
@@ -1504,7 +1711,7 @@ export default function DocumentManager() {
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
-          <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
+          <CardContent className="min-h-0 flex-1 relative p-0" ref={cardContentRef}>
             {!docs && (
               <div className="absolute inset-0 p-4 flex items-center justify-center">
                 <div className="text-center max-w-md space-y-4">
@@ -1604,6 +1811,9 @@ export default function DocumentManager() {
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                        <TableHead className="w-20 text-center">
+                          {t('documentPanel.documentManager.columns.actions', 'Actions')}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
@@ -1636,6 +1846,9 @@ export default function DocumentManager() {
                           <TableCell>
                             <Skeleton className="h-4 w-32" />
                           </TableCell>
+                          <TableCell className="text-center">
+                            <Skeleton className="h-4 w-4 mx-auto" />
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -1646,206 +1859,172 @@ export default function DocumentManager() {
             {docs && filteredAndSortedDocs && filteredAndSortedDocs.length > 0 && (
               <div className="absolute inset-0 flex flex-col p-0">
                 <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
-                  <Table className="w-full">
-                    <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
-                      <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
-                        <TableHead className="w-12 text-center">
-                          <CheckSquareIcon className="h-4 w-4 mx-auto text-gray-500" />
-                        </TableHead>
-                        <TableHead
-                          onClick={() => handleSort('id')}
-                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
-                        >
-                          <div className="flex items-center">
-                            {showFileName
-                              ? t('documentPanel.documentManager.columns.fileName')
-                              : t('documentPanel.documentManager.columns.id')
-                            }
-                            {((sortField === 'id' && !showFileName) || (sortField === 'file_path' && showFileName)) && (
-                              <span className="ml-1">
-                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
-                              </span>
-                            )}
-                          </div>
-                        </TableHead>
-                        <TableHead className="w-20 text-center">
-                          {t('documentPanel.documentManager.columns.sequence', 'Seq')}
-                        </TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                        <TableHead
-                          onClick={() => handleSort('created_at')}
-                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
-                        >
-                          <div className="flex items-center">
-                            {t('documentPanel.documentManager.columns.created')}
-                            {sortField === 'created_at' && (
-                              <span className="ml-1">
-                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
-                              </span>
-                            )}
-                          </div>
-                        </TableHead>
-                        <TableHead
-                          onClick={() => handleSort('updated_at')}
-                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
-                        >
-                          <div className="flex items-center">
-                            {t('documentPanel.documentManager.columns.updated')}
-                            {sortField === 'updated_at' && (
-                              <span className="ml-1">
-                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
-                              </span>
-                            )}
-                          </div>
-                        </TableHead>
-                        <TableHead className="w-20 text-center">
-                          {t('documentPanel.documentManager.columns.actions', 'Actions')}
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody className="text-sm overflow-auto">
-                      {filteredAndSortedDocs && (() => {
-                        // DEBUG: Log what we're actually rendering  
-                        if (filteredAndSortedDocs.length > 0) {
-                          console.log('[DocumentManager] Rendering table with documents:', {
-                            total_docs: filteredAndSortedDocs.length,
-                            docs_with_sequence: filteredAndSortedDocs.filter(d => d.metadata?.sequence_index !== undefined).length,
-                            sample: filteredAndSortedDocs.slice(0, 3).map(d => ({
-                              id: d.id,
-                              metadata: d.metadata,
-                              sequence_index: d.metadata?.sequence_index
-                            }))
-                          });
-                        }
-                        return null
-                      })()} 
-                      {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
-                        <TableRow
-                          key={doc.id}
-                          onClick={() => handleDocumentClick(doc)}
-                          className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
-                        >
-                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
-                            <Checkbox
-                              checked={selectedDocIds.includes(doc.id)}
-                              onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
-                              className="mx-auto"
-                            />
-                          </TableCell>
-                          <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
-                            {showFileName ? (
-                              <>
-                                <div className="group relative overflow-visible tooltip-container">
-                                  <div className="truncate">
-                                    {getDisplayFileName(doc, 30)}
-                                  </div>
-                                  <div className="invisible group-hover:visible tooltip">
-                                    {doc.file_path}
-                                  </div>
-                                </div>
-                                <div className="text-xs text-gray-500">{doc.id}</div>
-                              </>
-                            ) : (
-                              <div className="group relative overflow-visible tooltip-container">
-                                <div className="truncate">
-                                  {doc.id}
-                                </div>
-                                <div className="invisible group-hover:visible tooltip">
-                                  {doc.file_path}
-                                </div>
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-center">
-                            {doc.metadata?.sequence_index !== undefined ? (
-                              <span className="inline-flex items-center justify-center w-8 h-8 text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 rounded-full">
-                                {doc.metadata.sequence_index}
-                              </span>
-                            ) : (
-                              <span className="text-gray-400">-</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
-                            <div className="group relative overflow-visible tooltip-container">
-                              <div className="truncate">
-                                {doc.content_summary}
-                              </div>
-                              <div className="invisible group-hover:visible tooltip">
-                                {doc.content_summary}
-                              </div>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="group relative flex items-center overflow-visible tooltip-container">
-                              {doc.status === 'processed' && (
-                                <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
-                              )}
-                              {doc.status === 'preprocessed' && (
-                                <span className="text-purple-600">{t('documentPanel.documentManager.status.preprocessed')}</span>
-                              )}
-                              {doc.status === 'processing' && (
-                                <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
-                              )}
-                              {doc.status === 'pending' && (
-                                <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
-                              )}
-                              {doc.status === 'failed' && (
-                                <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
-                              )}
-
-                              {/* Icon rendering logic */}
-                              {doc.error_msg ? (
-                                <AlertTriangle className="ml-2 h-4 w-4 text-yellow-500" />
-                              ) : (doc.metadata && Object.keys(doc.metadata).length > 0) && (
-                                <Info className="ml-2 h-4 w-4 text-blue-500" />
-                              )}
-
-                              {/* Tooltip rendering logic */}
-                              {(doc.error_msg || (doc.metadata && Object.keys(doc.metadata).length > 0) || doc.track_id) && (
-                                <div className="invisible group-hover:visible tooltip">
-                                  {doc.track_id && (
-                                    <div className="mt-1">Track ID: {doc.track_id}</div>
-                                  )}
-                                  {doc.metadata && Object.keys(doc.metadata).length > 0 && (
-                                    <pre>{formatMetadata(doc.metadata)}</pre>
-                                  )}
-                                  {doc.error_msg && (
-                                    <pre>{doc.error_msg}</pre>
-                                  )}
-                                </div>
+                  <TooltipProvider>
+                    <Table className="w-full">
+                      <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                        <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
+                          <TableHead className="w-12 text-center">
+                            <CheckSquareIcon className="h-4 w-4 mx-auto text-gray-500" />
+                          </TableHead>
+                          <TableHead
+                            onClick={() => handleSort('id')}
+                            className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                          >
+                            <div className="flex items-center">
+                              {showFileName
+                                ? t('documentPanel.documentManager.columns.fileName')
+                                : t('documentPanel.documentManager.columns.id')
+                              }
+                              {((sortField === 'id' && !showFileName) || (sortField === 'file_path' && showFileName)) && (
+                                <span className="ml-1">
+                                  {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                                </span>
                               )}
                             </div>
-                          </TableCell>
-                          <TableCell>{doc.content_length ?? '-'}</TableCell>
-                          <TableCell>{doc.chunks_count ?? '-'}</TableCell>
-                          <TableCell className="truncate">
-                            {new Date(doc.created_at).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="truncate">
-                            {new Date(doc.updated_at).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
-                            {doc.metadata?.sequence_index !== undefined ? (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => handleDeleteSequencedClick(doc, e)}
-                                className="hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400"
-                                tooltip="Delete sequenced document"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            ) : (
-                              <span className="text-gray-400">-</span>
-                            )}
-                          </TableCell>
+                          </TableHead>
+                          <TableHead className="w-20 text-center">
+                            {t('documentPanel.documentManager.columns.sequence', 'Seq')}
+                          </TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                          <TableHead
+                            onClick={() => handleSort('created_at')}
+                            className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                          >
+                            <div className="flex items-center">
+                              {t('documentPanel.documentManager.columns.created')}
+                              {sortField === 'created_at' && (
+                                <span className="ml-1">
+                                  {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                                </span>
+                              )}
+                            </div>
+                          </TableHead>
+                          <TableHead
+                            onClick={() => handleSort('updated_at')}
+                            className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                          >
+                            <div className="flex items-center">
+                              {t('documentPanel.documentManager.columns.updated')}
+                              {sortField === 'updated_at' && (
+                                <span className="ml-1">
+                                  {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                                </span>
+                              )}
+                            </div>
+                          </TableHead>
+                          <TableHead className="w-20 text-center">
+                            {t('documentPanel.documentManager.columns.actions', 'Actions')}
+                          </TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody className="text-sm overflow-auto">
+                        {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
+                          <TableRow
+                            key={doc.id}
+                            onClick={() => handleDocumentClick(doc)}
+                            className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+                          >
+                            <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                              <Checkbox
+                                checked={selectedDocIds.includes(doc.id)}
+                                onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
+                                className="mx-auto"
+                              />
+                            </TableCell>
+                            <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
+                              {showFileName ? (
+                                <>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <div className="truncate">
+                                        {getDisplayFileName(doc, 30)}
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="max-w-2xl">
+                                      {doc.file_path}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                  <div className="text-xs text-gray-500">{doc.id}</div>
+                                </>
+                              ) : (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div className="truncate">
+                                      {doc.id}
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" className="max-w-2xl">
+                                    {doc.file_path}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-center">
+                              {doc.metadata?.sequence_index !== undefined ? (
+                                <span className="inline-flex items-center justify-center w-8 h-8 text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 rounded-full">
+                                  {doc.metadata.sequence_index}
+                                </span>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="truncate">
+                                    {doc.content_summary}
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-2xl">
+                                  {doc.content_summary}
+                                </TooltipContent>
+                              </Tooltip>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center">
+                                {(() => {
+                                  const statusDisplay = getStatusDisplay(doc.status)
+                                  return (
+                                    <span className={statusDisplay.className}>
+                                      {t(statusDisplay.labelKey)}
+                                    </span>
+                                  )
+                                })()}
+
+                                {hasDocumentDetails(doc) && <DocumentStatusDetailsDialog doc={doc} />}
+                              </div>
+                            </TableCell>
+                            <TableCell>{doc.content_length ?? '-'}</TableCell>
+                            <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                            <TableCell className="truncate">
+                              {new Date(doc.created_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="truncate">
+                              {new Date(doc.updated_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                              {doc.metadata?.sequence_index !== undefined ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => handleDeleteSequencedClick(doc, e)}
+                                  className="hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-600 dark:hover:text-red-400"
+                                  tooltip="Delete sequenced document"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TooltipProvider>
                 </div>
               </div>
             )}

@@ -13,12 +13,8 @@ _file_ops_cleanup() {
 }
 trap '_file_ops_cleanup' EXIT INT TERM
 
-# Keys whose values are always written with double quotes (e.g. may contain spaces).
-_ALWAYS_QUOTED_KEYS="|WEBUI_TITLE|WEBUI_DESCRIPTION|"
-
 format_env_value() {
   local value="$1"
-  local key="${2:-}"
   local escaped
 
   if [[ -z "$value" ]]; then
@@ -26,8 +22,15 @@ format_env_value() {
     return
   fi
 
-  if [[ -n "$key" && "$_ALWAYS_QUOTED_KEYS" == *"|${key}|"* ]] || \
-     [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* || "$value" == *"#"* ]]; then
+  if [[ "$value" =~ [[:space:]] || "$value" == *"\""* || "$value" == *"$"* || "$value" == *"#"* ]]; then
+    # Prefer single quotes when quoting is required so generated .env values
+    # match env.example style and remain Compose-friendly. Fall back to
+    # double quotes only when the value itself contains a single quote.
+    if [[ "$value" != *"'"* ]]; then
+      printf "'%s'" "$value"
+      return
+    fi
+
     # Double-quoted .env values only need escaping for backslash and double quote.
     # Do not escape '$': python-dotenv preserves plain '$' literally, while '\$'
     # changes the loaded value.
@@ -149,12 +152,155 @@ resolve_staged_ssl_basename() {
   printf '%s' "$basename_value"
 }
 
+append_preserved_non_template_env_lines() {
+  local template_file="$1"
+  local existing_env_file="$2"
+  local output_file="$3"
+  local line key
+  local in_preserved_section="no"
+  local line_is_commented_env="no"
+  local template_in_preserved_section="no"
+  local template_has_preserved_section="no"
+  local old_has_preserved_section="no"
+  local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
+  local preserved_notice="### ----- Comments in this session will persist across regenerations -----"
+  local -a pending_lines=()
+  local -a preserved_payload=()
+  local -a discovered_payload=()
+  local -a template_preserved_payload=()
+  local -a effective_preserved_payload=()
+  local -A ignored_keys=(
+    ["LIGHTRAG_SETUP_PROFILE"]=1
+  )
+  local -A template_keys=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$preserved_header" ]]; then
+      template_has_preserved_section="yes"
+      template_in_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$template_in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+      continue
+    fi
+
+    if [[ "$template_in_preserved_section" == "yes" ]]; then
+      template_preserved_payload+=("$line")
+    fi
+
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
+      template_keys["${line%%=*}"]=1
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
+      template_keys["${BASH_REMATCH[1]}"]=1
+    fi
+  done < "$template_file"
+
+  if [[ -f "$existing_env_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "$preserved_header" ]]; then
+        in_preserved_section="yes"
+        old_has_preserved_section="yes"
+        pending_lines=()
+        continue
+      fi
+
+      if [[ "$in_preserved_section" == "yes" && "$line" == "$preserved_notice" ]]; then
+        continue
+      fi
+
+      key=""
+      line_is_commented_env="no"
+
+      if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
+        key="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
+        key="${BASH_REMATCH[1]}"
+        line_is_commented_env="yes"
+      fi
+
+      if [[ -z "$key" ]]; then
+        if [[ "$in_preserved_section" == "yes" ]]; then
+          pending_lines+=("$line")
+        fi
+        continue
+      fi
+
+      if [[ -n "${ignored_keys[$key]+set}" ]]; then
+        if [[ "$in_preserved_section" == "yes" ]] && ((${#pending_lines[@]} > 0)); then
+          preserved_payload+=("${pending_lines[@]}")
+        fi
+        pending_lines=()
+        continue
+      fi
+
+      if [[ -z "${template_keys[$key]+set}" || \
+        ("$in_preserved_section" == "yes" && "$line_is_commented_env" == "yes") ]]; then
+        if ((${#pending_lines[@]} > 0)); then
+          if [[ "$in_preserved_section" == "yes" ]]; then
+            preserved_payload+=("${pending_lines[@]}")
+          fi
+        fi
+
+        if [[ "$in_preserved_section" == "yes" ]]; then
+          preserved_payload+=("$line")
+        else
+          discovered_payload+=("$line")
+        fi
+      elif [[ "$in_preserved_section" == "yes" && ${#pending_lines[@]} -gt 0 ]]; then
+        preserved_payload+=("${pending_lines[@]}")
+      fi
+
+      pending_lines=()
+    done < "$existing_env_file"
+
+    if ((${#pending_lines[@]} > 0)); then
+      preserved_payload+=("${pending_lines[@]}")
+    fi
+  fi
+
+  effective_preserved_payload=("${preserved_payload[@]}")
+
+  if [[ "$template_has_preserved_section" == "yes" ]]; then
+    printf '%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+
+    if [[ "$old_has_preserved_section" != "yes" ]] && ((${#template_preserved_payload[@]} > 0)); then
+      printf '%s\n' "${template_preserved_payload[@]}" >> "$output_file"
+    fi
+
+    if ((${#effective_preserved_payload[@]} > 0)); then
+      printf '%s\n' "${effective_preserved_payload[@]}" >> "$output_file"
+    fi
+
+    if ((${#discovered_payload[@]} > 0)); then
+      printf '%s\n' "${discovered_payload[@]}" >> "$output_file"
+    fi
+    return 0
+  fi
+
+  if ((${#effective_preserved_payload[@]} == 0 && ${#discovered_payload[@]} == 0)); then
+    return 0
+  fi
+
+  printf '\n%s\n%s\n' "$preserved_header" "$preserved_notice" >> "$output_file"
+
+  if ((${#effective_preserved_payload[@]} > 0)); then
+    printf '%s\n' "${effective_preserved_payload[@]}" >> "$output_file"
+  fi
+
+  if ((${#discovered_payload[@]} > 0)); then
+    printf '%s\n' "${discovered_payload[@]}" >> "$output_file"
+  fi
+}
+
 generate_env_file() {
   local template_file="${1:-${REPO_ROOT:-.}/env.example}"
   local output_file="${2:-${REPO_ROOT:-.}/.env}"
   local tmp_file="${output_file}.tmp"
   _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
   local line key value
+  local preserved_header="### ----- Preserved custom environment variables from previous .env  -----"
+  local in_template_preserved_section="no"
   local -A written_keys=()
   local -A match_write_keys=()
 
@@ -168,7 +314,16 @@ generate_env_file() {
   # leaving all other commented examples intact.
   local _prescan_key _prescan_val _prescan_env_val _prescan_fmt
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_template_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$in_template_preserved_section" == "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       _prescan_key="${BASH_REMATCH[1]}"
       _prescan_val="${BASH_REMATCH[2]}"
       if [[ -z "${match_write_keys[$_prescan_key]+set}" && -n "${ENV_VALUES[$_prescan_key]+set}" ]]; then
@@ -183,8 +338,18 @@ generate_env_file() {
 
   : > "$tmp_file"
 
+  in_template_preserved_section="no"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[A-Z0-9_]+= ]]; then
+    if [[ "$line" == "$preserved_header" ]]; then
+      in_template_preserved_section="yes"
+      continue
+    fi
+
+    if [[ "$in_template_preserved_section" == "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       if [[ -z "${written_keys[$key]+set}" ]]; then
         if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
@@ -207,7 +372,7 @@ generate_env_file() {
           printf '%s\n' "$line" >> "$tmp_file"
         fi
       fi
-    elif [[ "$line" =~ ^#[[:space:]]*([A-Z0-9_]+)=(.*)$ ]]; then
+    elif [[ "$line" =~ ^#[[:space:]]*([A-Za-z0-9_]+)=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
       local _commented_val="${BASH_REMATCH[2]}"
       if [[ -z "${written_keys[$key]+set}" && -n "${ENV_VALUES[$key]+set}" ]]; then
@@ -235,6 +400,8 @@ generate_env_file() {
     fi
   done < "$template_file"
 
+  append_preserved_non_template_env_lines "$template_file" "$output_file" "$tmp_file"
+
   mv "$tmp_file" "$output_file"
 }
 
@@ -245,15 +412,18 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
   "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI" "OPENSEARCH_HOSTS"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
-  "WORKING_DIR" "INPUT_DIR"
+  "WORKING_DIR" "INPUT_DIR" "PROMPT_DIR"
 )
 
 _managed_service_root_name() {
   local service_name="$1"
 
   case "$service_name" in
-    postgres|neo4j|mongodb|redis|qdrant|memgraph|opensearch|vllm-embed|vllm-rerank)
+    postgres|neo4j|mongodb|redis|qdrant|memgraph|vllm-embed|vllm-rerank)
       printf '%s' "$service_name"
+      ;;
+    opensearch|dashboards)
+      printf 'opensearch'
       ;;
     milvus|milvus-etcd|milvus-minio)
       printf 'milvus'
@@ -274,7 +444,7 @@ _managed_volume_root_name() {
     neo4j_data)
       printf 'neo4j'
       ;;
-    mongo_data)
+    mongo_data|mongo_config_data|mongo_mongot_data)
       printf 'mongodb'
       ;;
     redis_data)
@@ -738,6 +908,41 @@ read_service_environment_value() {
   return 1
 }
 
+# Parse the image: value for a named service from a compose file.
+# Assumes wizard-standard indentation: services at 2 spaces, properties at 4 spaces.
+read_service_image_value() {
+  local compose_file="$1"
+  local service_name="$2"
+  local line
+  local service_header="  ${service_name}:"
+  local in_service="no"
+
+  if [[ ! -f "$compose_file" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_service" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}image:[[:space:]]*(.+)$ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+        in_service="no"
+      elif [[ "$line" =~ ^[^[:space:]] ]]; then
+        in_service="no"
+      fi
+    fi
+
+    if [[ "$line" == "$service_header" ]]; then
+      in_service="yes"
+    fi
+  done < "$compose_file"
+
+  return 1
+}
+
 _extract_named_volume_name() {
   local mount_spec="$1"
   local source=""
@@ -1006,6 +1211,13 @@ generate_docker_compose() {
     inject_lightrag_port_mapping "$tmp_file" "$LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING"
   fi
 
+  # Ensure the optional prompts directory mount exists so users can supply
+  # custom entity-type prompt profiles without rebuilding the image. Mirrors
+  # the ./data/inputs and ./data/rag_storage bind layout.
+  if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/prompts"; then
+    lightrag_mounts+=("./data/prompts:/app/data/prompts")
+  fi
+
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
@@ -1096,6 +1308,13 @@ generate_docker_compose() {
       vllm-embed)
         ;;
     esac
+
+    if [[ -n "${COMPOSE_SERVICE_IMAGE_OVERRIDES[$service]+set}" ]]; then
+      inject_service_image_override \
+        "$service_blocks_file" \
+        "$service" \
+        "${COMPOSE_SERVICE_IMAGE_OVERRIDES[$service]}"
+    fi
   done
 
   _merge_managed_service_blocks "$tmp_file" "$service_blocks_file"
@@ -1403,6 +1622,114 @@ inject_service_environment_overrides() {
   mv "$tmp_file" "$compose_file"
 }
 
+inject_service_image_override() {
+  local compose_file="$1"
+  local service_name="$2"
+  local image_value="$3"
+  local tmp_file="${compose_file}.${service_name}.image"
+  _FILE_OPS_CLEANUP_TMP+=("$tmp_file")
+  local line
+  local in_service="no"
+  local inserted="no"
+  local service_header="  ${service_name}:"
+
+  if [[ -z "$image_value" || ! -f "$compose_file" ]]; then
+    return 0
+  fi
+
+  : > "$tmp_file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_service" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}image:[[:space:]]*.+$ ]]; then
+        printf '    image: %s\n' "$image_value" >> "$tmp_file"
+        inserted="yes"
+        continue
+      fi
+
+      if [[ "$inserted" == "no" && "$line" =~ ^[[:space:]]{4}[^[:space:]] ]]; then
+        printf '    image: %s\n' "$image_value" >> "$tmp_file"
+        inserted="yes"
+      fi
+
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "$service_header" ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          printf '    image: %s\n' "$image_value" >> "$tmp_file"
+          inserted="yes"
+        fi
+        in_service="no"
+      elif [[ "$line" =~ ^[^[:space:]] ]]; then
+        if [[ "$inserted" == "no" ]]; then
+          printf '    image: %s\n' "$image_value" >> "$tmp_file"
+          inserted="yes"
+        fi
+        in_service="no"
+      fi
+    fi
+
+    printf '%s\n' "$line" >> "$tmp_file"
+
+    if [[ "$line" == "$service_header" ]]; then
+      in_service="yes"
+    fi
+  done < "$compose_file"
+
+  if [[ "$in_service" == "yes" && "$inserted" == "no" ]]; then
+    printf '    image: %s\n' "$image_value" >> "$tmp_file"
+  fi
+
+  mv "$tmp_file" "$compose_file"
+}
+
+# Return success when the lightrag service already has a volume mount whose
+# container target matches the supplied path. Used to make idempotent mount
+# injections that should not duplicate existing user/wizard entries.
+_lightrag_volumes_have_container_target() {
+  local compose_file="$1"
+  local target_path="$2"
+  local line
+  local in_lightrag="no"
+  local in_volumes="no"
+  local mount_spec=""
+  local remainder=""
+  local container_path=""
+
+  if [[ ! -f "$compose_file" || -z "$target_path" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]] || \
+         [[ "$line" =~ ^[^[:space:]] ]]; then
+        in_lightrag="no"
+        in_volumes="no"
+      elif [[ "$line" == "    volumes:" ]]; then
+        in_volumes="yes"
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]-] ]]; then
+        in_volumes="no"
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+        mount_spec="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        remainder="${mount_spec#*:}"
+        if [[ "$remainder" == "$mount_spec" ]]; then
+          continue
+        fi
+        container_path="${remainder%%:*}"
+        if [[ "$container_path" == "$target_path" ]]; then
+          return 0
+        fi
+      fi
+    fi
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_volumes="no"
+    fi
+  done < "$compose_file"
+
+  return 1
+}
+
 # Return success when a volume mount entry is a wizard-managed SSL cert/key
 # bind mount (./data/certs/* -> /app/data/certs/*, optional :ro suffix).
 _is_wizard_ssl_bind_mount() {
@@ -1570,7 +1897,7 @@ inject_lightrag_bind_mounts() {
       if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
         if [[ "$inserted" == "no" ]]; then
           for mount in "${mounts[@]}"; do
-            printf '      - "%s"\n' "$mount" >> "$tmp_file"
+            printf '      - %s\n' "$mount" >> "$tmp_file"
           done
           inserted="yes"
         fi
@@ -1580,7 +1907,7 @@ inject_lightrag_bind_mounts() {
       if [[ "$inserted" == "no" ]]; then
         printf '    volumes:\n' >> "$tmp_file"
         for mount in "${mounts[@]}"; do
-          printf '      - "%s"\n' "$mount" >> "$tmp_file"
+          printf '      - %s\n' "$mount" >> "$tmp_file"
         done
         inserted="yes"
       fi
@@ -1602,7 +1929,7 @@ inject_lightrag_bind_mounts() {
       printf '    volumes:\n' >> "$tmp_file"
     fi
     for mount in "${mounts[@]}"; do
-      printf '      - "%s"\n' "$mount" >> "$tmp_file"
+      printf '      - %s\n' "$mount" >> "$tmp_file"
     done
   fi
 
@@ -1986,8 +2313,6 @@ inject_lightrag_depends_on() {
 # Prints the path if found, empty string if not.
 find_generated_compose_file() {
   local repo_root="${REPO_ROOT:-.}"
-  local preferred_profile=""
-  local preferred_candidate=""
   local candidates=(
     "final:$repo_root/docker-compose.final.yml"
     "development:$repo_root/docker-compose.development.yml"
@@ -1995,19 +2320,7 @@ find_generated_compose_file() {
     "custom:$repo_root/docker-compose.custom.yml"
     "local:$repo_root/docker-compose.local.yml"
   )
-  local candidate profile f
-
-  preferred_profile="$(_read_legacy_setup_profile_from_env "$repo_root/.env")"
-  if [[ -n "$preferred_profile" ]]; then
-    for candidate in "${candidates[@]}"; do
-      profile="${candidate%%:*}"
-      f="${candidate#*:}"
-      if [[ "$profile" == "$preferred_profile" && -f "$f" ]]; then
-        printf '%s' "$f"
-        return 0
-      fi
-    done
-  fi
+  local candidate f
 
   for candidate in "${candidates[@]}"; do
     f="${candidate#*:}"
@@ -2017,34 +2330,6 @@ find_generated_compose_file() {
     fi
   done
   printf ''
-}
-
-_read_legacy_setup_profile_from_env() {
-  local env_file="$1"
-  local line value
-
-  if [[ ! -f "$env_file" ]]; then
-    return 0
-  fi
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^LIGHTRAG_SETUP_PROFILE=(.*)$ ]]; then
-      value="${BASH_REMATCH[1]}"
-      if [[ "$value" =~ ^\".*\"$ ]]; then
-        value="${value:1:${#value}-2}"
-      elif [[ "$value" =~ ^\'.*\'$ ]]; then
-        value="${value:1:${#value}-2}"
-      fi
-      case "$value" in
-        development|production|custom|local)
-          printf '%s' "$value"
-          ;;
-      esac
-      return 0
-    fi
-  done < "$env_file"
-
-  return 0
 }
 
 # Detect service names in a compose file's services: block (excluding lightrag).

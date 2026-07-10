@@ -9,7 +9,8 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
+import { ZapIcon, LogOutIcon } from 'lucide-react'
+import GithubIcon from '@/components/icons/GithubIcon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
 import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
@@ -191,7 +192,7 @@ export default function SiteHeader() {
           )}
           <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
             <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
-              <GithubIcon className="size-4" aria-hidden="true" />
+              <GithubIcon className="size-4" />
             </a>
           </Button>
           <AppSettings />

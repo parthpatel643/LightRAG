@@ -21,12 +21,12 @@ cd LightRAG
 
 ```bash
 # Linux/MacOS
-cp .env.example .env
+cp env.example .env
 # Edit .env with your preferred configuration
 ```
 ```powershell
 # Windows PowerShell
-Copy-Item .env.example .env
+Copy-Item env.example .env
 # Edit .env with your preferred configuration
 ```
 
@@ -48,10 +48,16 @@ LightRAG can be configured using environment variables in the `.env` file:
 - `EMBEDDING_BINDING`: Embedding backend (lollms/ollama/openai)
 - `EMBEDDING_BINDING_HOST`: Embedding server host URL
 - `EMBEDDING_MODEL`: Embedding model name
+- `EMBEDDING_ASYMMETRIC`: Explicitly enable query/document asymmetric embeddings
+- `EMBEDDING_DOCUMENT_PREFIX`: Document prefix for prefix-based asymmetric embeddings (or `NO_PREFIX`)
+- `EMBEDDING_QUERY_PREFIX`: Query prefix for prefix-based asymmetric embeddings (or `NO_PREFIX`)
+
+See [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md) for prefix
+validation rules and provider-specific behavior.
 
 **RAG Configuration**
 
-- `MAX_ASYNC`: Maximum async operations
+- `MAX_ASYNC_LLM`: Maximum async operations (deprecated alias: `MAX_ASYNC`)
 - `MAX_TOKENS`: Maximum token size
 - `EMBEDDING_DIM`: Embedding dimensions
 
@@ -106,6 +112,19 @@ data/
 ├── rag_storage/    # RAG data persistence
 └── inputs/         # Input documents
 ```
+
+### Container security (non-root)
+
+The official images run the server as a non-root user (`lightrag`, uid/gid `1000`) to satisfy CIS Docker Benchmark 4.1. The behavior is designed so existing deployments keep working on upgrade:
+
+- The container starts as root, takes ownership of the writable data directories, then drops to uid 1000 via `gosu`. This means **existing root-owned bind-mount / PVC data is adopted automatically** — no manual `chown` is needed when upgrading from an older image.
+- Ownership is fixed for `/app/data` **and** any custom locations you set via `WORKING_DIR`, `INPUT_DIR`, `PROMPT_DIR`, or `TIKTOKEN_CACHE_DIR`, so pointing data outside `/app/data` still works.
+- If you instead start the container with an explicit non-root user (Compose `user: "1000:1000"` or Kubernetes `runAsUser: 1000`), the startup `chown` is skipped — make sure the mounted directories are already owned by that uid.
+- `.env` is **not** chowned, so the host keeps ownership and you can edit it freely. It only needs to be *readable* by uid 1000, which the default `0644` permission satisfies. A `.env` mounted read-only as `0600`/`0400` owned by a different uid will fail to load (clear `PermissionError` at startup); make it readable by uid 1000, or supply configuration via environment variables instead (`env_file:` / `environment:`, or k8s `env` / `envFrom`).
+
+Passing server flags still works as before, e.g. `docker run ghcr.io/hkuds/lightrag:latest --port 9622`.
+
+> Note: the image starts as root and drops privileges at runtime (the pattern used by the official PostgreSQL/Redis images), so the *running process* is non-root while the image's configured `USER` is still root. Scanners that judge CIS 4.1 purely from the `USER` directive may still flag the image even though no server process runs as root.
 
 ### Optional: local vLLM embedding and reranker
 
@@ -231,8 +250,45 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 
 ### PostgreSQL image
 
-The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:16.6`.
-That image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
+The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:pg18-age-pgvector`. This image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
+
+The image no longer ships fixed credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables. The setup wizard prompts for these values (defaulting to `rag` / `rag` / `lightrag`) and injects them into the generated `docker-compose.final.yml`, so you can choose any user, password, and database name.
+
+**Important Note**: If PGGraphStorage is not required for vector storage, you may replace the upper docker image with the latest official pgvector image `pgvector/pgvector:pg18`. Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
+
+#### Build the PostgreSQL image
+
+The default PostgreSQL image can be rebuilt from the repository root with `Dockerfile.postgres`. The Dockerfile starts from `pgvector/pgvector:pg18-trixie`, builds Apache AGE for PostgreSQL 18, and installs an init script that creates both the `vector` and `age` extensions for new databases.
+
+For local development or single-host deployment:
+
+```bash
+docker build -f Dockerfile.postgres \
+  -t gzdaniel/postgres-for-rag:pg18-age-pgvector \
+  .
+```
+
+To publish the image to your own registry, use a private tag:
+
+```bash
+docker build -f Dockerfile.postgres \
+  -t registry.example.com/postgres-for-rag:pg18-age-pgvector \
+  .
+docker push registry.example.com/postgres-for-rag:pg18-age-pgvector
+```
+
+For a multi-architecture image:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -f Dockerfile.postgres \
+  -t registry.example.com/postgres-for-rag:pg18-age-pgvector \
+  --push \
+  .
+```
+
+After building a custom tag, update the `postgres.image` value in the generated `docker-compose.final.yml` to point at that tag. On later setup wizard reruns, existing wizard-managed service images are preserved.
 
 ### Updates
 
@@ -245,7 +301,7 @@ docker compose up
 
 ### Offline deployment
 
-Software packages requiring `transformers`, `torch`, or `cuda` will is not preinstalled in the dokcer images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, can not be used in an off line enviroment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
+Software packages requiring `transformers`, `torch`, or `cuda` are not preinstalled in the docker images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, cannot be used in an offline environment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
 
 ## 📦 Build Docker Images
 
@@ -285,3 +341,17 @@ Before building multi-architecture images, ensure you have:
 - Docker 20.10+ with Buildx support
 - Sufficient disk space (20GB+ recommended for offline image)
 - Registry access credentials (if pushing images)
+
+### Verify official GHCR images with Cosign
+
+Official LightRAG images published to GitHub Container Registry by GitHub Actions are signed with Sigstore Cosign using GitHub OIDC keyless signing.
+
+Install `cosign`, then verify the image tag you want to run:
+
+```bash
+cosign verify ghcr.io/HKUDS/LightRAG:<tag> \
+  --certificate-identity-regexp '^https://github.com/HKUDS/LightRAG/.github/workflows/(docker-publish|docker-build-manual|docker-build-lite)\.yml@refs/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Replace `<tag>` with the version tag you want to validate, for example a release tag, `latest`, `<tag>-lite`, or `lite`.
