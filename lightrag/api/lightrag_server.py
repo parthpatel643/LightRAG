@@ -2086,10 +2086,34 @@ def create_app(args):
         "language": args.summary_language,
     }
 
+    def _select_role_llm_func(role_name: str, role_settings: dict[str, Any]):
+        """Reuse the custom functions.py LLM func for roles that are not
+        cross-provider and have no role-specific model/host/api_key override.
+
+        create_role_llm_func() always builds a generic provider client (see
+        openai_complete_if_cache / azure_openai_complete_if_cache) that does
+        not carry any custom httpx transport (e.g. a verify=False client
+        needed for self-signed-cert proxies) configured in functions.py's
+        custom_llm_func. When a role's effective binding/model/host/api_key
+        are identical to the base LLM config, route it through
+        custom_llm_func instead so it benefits from the same transport used
+        by the base llm_model_func.
+        """
+        if custom_llm_func is None:
+            return create_role_llm_func(role_name)
+        if (
+            role_settings["is_cross_provider"]
+            or role_settings["model"] != args.llm_model
+            or role_settings["host"] != args.llm_binding_host
+            or role_settings["api_key"] != args.llm_binding_api_key
+        ):
+            return create_role_llm_func(role_name)
+        return custom_llm_func
+
     role_llm_configs = {
         spec.name: {
-            **resolve_role_llm_settings(spec.name),
-            "func": create_role_llm_func(spec.name),
+            **(role_settings := resolve_role_llm_settings(spec.name)),
+            "func": _select_role_llm_func(spec.name, role_settings),
             "kwargs": create_role_llm_model_kwargs(spec.name),
         }
         for spec in ROLES
