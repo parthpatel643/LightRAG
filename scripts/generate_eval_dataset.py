@@ -53,6 +53,17 @@ DATA_DIR = PROJECT_ROOT / "data"
 # this limit is reached.
 DEFAULT_MAX_CHARS = 120_000
 
+# A handful of workspaces have an inputs/ directory name that differs from
+# their actual workspace/data/ directory name (the documents were originally
+# organized under a different name before the workspace was renamed). Maps
+# workspace name -> actual inputs/ subdirectory name, used as a last-resort
+# fallback in _read_doc_content() when inputs/{workspace}/ doesn't contain
+# the file (that dir may exist but be empty, or not exist at all).
+WORKSPACE_INPUT_DIR_OVERRIDES = {
+    "muc_ground_handling_atw_cw70430": "muc_passenger_handling_atw_cw70430",
+    "rdu_cabin_cleaning_5911": "rdu_passenger_cleaning_5911",
+}
+
 # ---------------------------------------------------------------------------
 # Config & LLM client (mirrors lightrag/functions.py)
 # ---------------------------------------------------------------------------
@@ -154,8 +165,12 @@ def _read_doc_content(file_path: str, workspace: str) -> str:
     if not p.exists():
         # Fallback: same filename under the workspace's own inputs directory
         fallback = INPUTS_DIR / workspace / p.name
+        override_dir = WORKSPACE_INPUT_DIR_OVERRIDES.get(workspace)
         if fallback.exists():
             p = fallback
+        elif override_dir and (INPUTS_DIR / override_dir / p.name).exists():
+            # Last resort: known inputs/ dir name mismatch for this workspace
+            p = INPUTS_DIR / override_dir / p.name
         else:
             logger.warning("Document file not found, skipping: %s", p)
             return ""
@@ -194,6 +209,21 @@ def _build_combined_context(docs: list[dict], workspace: str, max_chars: int) ->
         block = header + content
 
         if total + len(block) > max_chars:
+            if not sections:
+                # This is the PRIMARY (first/only) document — it must never
+                # be dropped entirely, or the workspace ends up with zero
+                # context. Truncate its content to fit instead.
+                available = max_chars - total - len(header)
+                if available > 0:
+                    block = header + content[:available]
+                    sections.append(block)
+                    total += len(block)
+                    logger.warning(
+                        "PRIMARY document alone exceeds %d chars; truncated "
+                        "to fit. Increase --max-chars to include full content.",
+                        max_chars,
+                    )
+                break
             logger.warning(
                 "Combined document content would exceed %d chars. "
                 "Stopping at sequence_index %d. "
@@ -334,6 +364,7 @@ def _build_dataset(
     workspace: str,
     questions: list[dict],
     reference_date: str,
+    generation_model: str,
 ) -> dict:
     """Assemble the full dataset.json structure."""
     test_cases = []
@@ -357,10 +388,12 @@ def _build_dataset(
         "evaluation_type": "temporal",
         "description": f"Temporal evaluation dataset for {workspace} service contracts",
         "created_at": f"{reference_date}T00:00:00Z",
+        "generation_model": generation_model,
         "documentation": {
             "reference_date": "Date used to filter versioned entities. Format: YYYY-MM-DD",
             "expected_version": "Expected sequence_index of the correct entity version (optional)",
             "metadata.entity_type": "Type of entity being queried (e.g., service_rate, pricing)",
+            "generation_model": "LLM_MODEL used to generate these questions, recorded for reproducibility",
         },
         "test_cases": test_cases,
     }
@@ -433,7 +466,9 @@ async def _process_workspace(
         )
 
     # 4. Assemble and write
-    dataset = _build_dataset(workspace, questions, reference_date)
+    dataset = _build_dataset(
+        workspace, questions, reference_date, os.getenv("LLM_MODEL", "unknown")
+    )
     dest = _write_dataset(output_dir, workspace, dataset)
     logger.info(
         "  Written %d test cases → %s",
@@ -449,11 +484,25 @@ async def _process_workspace(
 
 
 def _discover_workspaces() -> list[str]:
-    """Return all workspace directory names under inputs/."""
-    if not INPUTS_DIR.is_dir():
-        logger.error("inputs/ directory not found at %s", INPUTS_DIR)
+    """Return all built workspace directory names under data/.
+
+    Uses data/ (not inputs/) as the source of truth: a handful of workspaces
+    have an inputs/ directory name that differs from their actual workspace
+    name (e.g. muc_ground_handling_atw_cw70430's docs live under
+    inputs/muc_passenger_handling_atw_cw70430/), so listing inputs/ directly
+    silently mismatches those workspaces. data/<workspace>/kv_store_doc_status.json
+    presence confirms a workspace was actually built.
+    """
+    if not DATA_DIR.is_dir():
+        logger.error("data/ directory not found at %s", DATA_DIR)
         sys.exit(1)
-    return sorted(p.name for p in INPUTS_DIR.iterdir() if p.is_dir())
+    return sorted(
+        p.name
+        for p in DATA_DIR.iterdir()
+        if p.is_dir()
+        and not p.name.endswith(("_prerebuild", "_rebuild"))
+        and (p / "kv_store_doc_status.json").exists()
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -480,7 +529,7 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=12,
         metavar="N",
-        help="Number of Q&A pairs to generate per workspace (10-15, default: 12).",
+        help="Number of Q&A pairs to generate per workspace (10-20, default: 12).",
     )
     parser.add_argument(
         "--reference-date",
@@ -506,8 +555,8 @@ def _parse_args() -> argparse.Namespace:
 
 async def _run(args: argparse.Namespace) -> None:
     # Validate count
-    if not (10 <= args.count <= 15):
-        logger.error("--count must be between 10 and 15; got %d", args.count)
+    if not (10 <= args.count <= 20):
+        logger.error("--count must be between 10 and 20; got %d", args.count)
         sys.exit(1)
 
     output_dir = Path(args.output_dir)

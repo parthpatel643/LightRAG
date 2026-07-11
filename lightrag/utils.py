@@ -4456,9 +4456,19 @@ async def process_chunks_unified(
         if min_rerank_score > 0.0:
             original_count = len(unique_chunks)
 
-            # Filter chunks with score below threshold
+            # Filter chunks with score below threshold. Chunks reached via the
+            # KG entity/relation path ("source" == "E"/"R") are already
+            # graph-linked to the queried entities -- trust that provenance
+            # over the generic semantic reranker's opinion and bypass the
+            # score exclusion for them, same rationale as the temporal
+            # Stage 3.5 provenance fix. Only vector-search-path chunks
+            # ("source" == "C") or untagged chunks (other call sites, e.g.
+            # naive mode) remain subject to the score filter.
             filtered_chunks = []
             for chunk in unique_chunks:
+                if chunk.get("source") in ("E", "R"):
+                    filtered_chunks.append(chunk)
+                    continue
                 rerank_score = chunk.get(
                     "rerank_score", 1.0
                 )  # Default to 1.0 if no score
@@ -4474,6 +4484,21 @@ async def process_chunks_unified(
                 )
             if not unique_chunks:
                 return []
+
+    # 2b. Reorder so KG-linked ("E"/"R") chunks precede vector-only ("C")
+    # chunks, preserving each group's existing (rerank-score-sorted) relative
+    # order. Bypassing the score exclusion above is not sufficient on its
+    # own: chunk_top_k slicing (step 3) and token-budget truncation (step 4)
+    # below both cut the list by *position*, not by "source" -- a KG-linked
+    # chunk with a low raw rerank score would still be sorted near the end
+    # of the list and silently dropped by either of those steps even though
+    # step 2 just decided to trust it. Reordering ensures budget is spent on
+    # trusted chunks first, consistent with the same provenance-over-rerank
+    # rationale as the score bypass and the temporal Stage 3.5 fix.
+    if query_param.enable_rerank and unique_chunks:
+        er_chunks = [c for c in unique_chunks if c.get("source") in ("E", "R")]
+        c_chunks = [c for c in unique_chunks if c.get("source") not in ("E", "R")]
+        unique_chunks = er_chunks + c_chunks
 
     # 3. Apply chunk_top_k limiting if specified
     if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:

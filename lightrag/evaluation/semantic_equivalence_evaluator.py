@@ -343,11 +343,15 @@ class SemanticEquivalenceEvaluator:
                 answer=answer,
             )
 
-            # Call LLM using existing llm_model_func from functions.py
+            # Call LLM using existing llm_model_func from functions.py.
+            # temperature=0 for deterministic scoring: this is a judge/grading
+            # task, not creative generation, and non-zero sampling was causing
+            # +/-25pp swings across identical reruns.
             response = await llm_model_func(
                 prompt=user_prompt,
                 system_prompt=SEMANTIC_EQUIVALENCE_SYSTEM_PROMPT,
                 history_messages=[],
+                temperature=0,
             )
 
             # Parse JSON response

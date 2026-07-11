@@ -465,3 +465,82 @@ class TestTemporalMode:
             assert result is not None
         finally:
             await rag.finalize_storages()
+
+    @pytest.mark.integration
+    @pytest.mark.requires_api
+    async def test_partial_overlap_unrelated_amendment_does_not_strip_base_fact(
+        self, temp_rag_dir
+    ):
+        """
+        Regression test for Root Cause B (2026-07-11): a newer, unrelated
+        amendment must NOT cause an unrelated fact from the base document to
+        be dropped from temporal-mode retrieval.
+
+        This reproduces the real-world bug shape found in
+        lga_wheelchairs_135661: a v1 base contract contains a fact (loading
+        dock gate assignment) that has no competing version anywhere. A v2
+        amendment exists but only changes an unrelated fact (parking fee) and
+        never mentions the loading dock. Before the Root Cause B fix, Stage
+        3.5 in operate.py computed one global max_sequence (=2, from the
+        amendment) and applied it to the FULLY MERGED chunk set -- including
+        chunks reached via the entity/relation path -- stripping the v1
+        loading-dock chunk purely because a newer, unrelated document existed
+        anywhere in the workspace. After the fix, entity/relation-path chunks
+        bypass that global gate and rely on filter_by_version()'s per-base-
+        name arbitration instead, so the loading-dock fact (never superseded)
+        must survive.
+        """
+        rag = LightRAG(
+            working_dir=temp_rag_dir,
+            llm_model_func=llm_model_func,
+            embedding_func=embedding_func,
+        )
+        await rag.initialize_storages()
+
+        try:
+            base_contract = """
+            GROUND HANDLING SERVICE AGREEMENT
+
+            Article 1: Loading Dock Assignment
+            The Supplier shall use Loading Dock Gate 7 for all deliveries.
+
+            Article 2: Parking Fee
+            The daily parking fee is $10 per vehicle.
+            """
+
+            # Amendment only touches the parking fee; never mentions the
+            # loading dock. This is the "unrelated newer document" that must
+            # not cause the loading-dock fact to be stripped.
+            unrelated_amendment = """
+            AMENDMENT 1 TO GROUND HANDLING SERVICE AGREEMENT
+
+            Article 2: Parking Fee Amendment
+            The daily parking fee is hereby amended to $25 per vehicle.
+            """
+
+            await rag.ainsert(
+                base_contract,
+                metadata={"sequence_index": 1},
+            )
+            await rag.ainsert(
+                unrelated_amendment,
+                metadata={"sequence_index": 2},
+            )
+
+            # Query for the fact that only exists in v1 and has no v2
+            # competitor. Under the pre-fix behavior, the global
+            # max_sequence=2 gate applied to the merged chunk set would have
+            # stripped this chunk even though filter_by_version() never
+            # found a newer "Loading Dock Assignment" entity to supersede it.
+            result = await rag.aquery(
+                "Which loading dock gate should the Supplier use?",
+                param=QueryParam(mode="temporal"),
+            )
+            assert result is not None
+            assert "7" in result, (
+                "Loading dock fact (sequence_index=1, no newer competitor) "
+                "was stripped by temporal filtering despite having no "
+                "competing version -- Root Cause B regression."
+            )
+        finally:
+            await rag.finalize_storages()

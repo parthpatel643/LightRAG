@@ -5442,6 +5442,38 @@ async def _merge_all_chunks(
             query_embedding=query_embedding,
         )
 
+    # Precompute chunk_id membership per source list so provenance tagging
+    # reflects ALL the ways a chunk was reached, not just whichever branch
+    # happens to claim it first in the round-robin below. A chunk that is
+    # BOTH a raw vector-search hit AND graph-linked (entity/relation) must be
+    # tagged as graph-linked ("E"/"R") -- trusting KG provenance over a
+    # generic reranker's opinion, same rationale as filter_by_version()'s
+    # per-base-name arbitration used by Stage 3.5. If tagging instead used
+    # "whichever branch inserts it first" (vector_chunks is always checked
+    # first each iteration), a graph-linked chunk that also happens to
+    # surface via vector search would be silently mistagged "C" and lose the
+    # rerank-score bypass entirely -- defeating the point of this fix.
+    entity_chunk_ids = {
+        cid
+        for c in entity_chunks
+        if (cid := (c.get("chunk_id") or c.get("id")))
+    }
+    relation_chunk_ids = {
+        cid
+        for c in relation_chunks
+        if (cid := (c.get("chunk_id") or c.get("id")))
+    }
+
+    def _provenance_source(chunk_id: str) -> str:
+        # Relation-linked chunks reflect the strongest KG signal (edge
+        # between two queried entities), so prefer "R" over "E" when a
+        # chunk_id appears in both; both are bypass-eligible either way.
+        if chunk_id in relation_chunk_ids:
+            return "R"
+        if chunk_id in entity_chunk_ids:
+            return "E"
+        return "C"
+
     # Round-robin merge chunks from different sources with deduplication
     merged_chunks = []
     seen_chunk_ids = set()
@@ -5461,6 +5493,17 @@ async def _merge_all_chunks(
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
                         "sequence_index": chunk.get("sequence_index", 0),
+                        # Retrieval provenance ("C"=vector-only, "E"=entity-
+                        # linked, "R"=relation-linked). Computed from
+                        # membership across all three source lists (see
+                        # _provenance_source above), NOT from
+                        # chunk_tracking[chunk_id]["source"] -- that dict is
+                        # last-write-wins and can be stale if the same
+                        # chunk_id was also reached via another path.
+                        # Consumed by process_chunks_unified()'s
+                        # min_rerank_score filter in utils.py to bypass score
+                        # exclusion for KG-linked ("E"/"R") chunks.
+                        "source": _provenance_source(chunk_id),
                     }
                 )
 
@@ -5476,6 +5519,7 @@ async def _merge_all_chunks(
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
                         "sequence_index": chunk.get("sequence_index", 0),
+                        "source": _provenance_source(chunk_id),
                     }
                 )
 
@@ -5491,6 +5535,7 @@ async def _merge_all_chunks(
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
                         "sequence_index": chunk.get("sequence_index", 0),
+                        "source": _provenance_source(chunk_id),
                     }
                 )
 
@@ -5524,6 +5569,103 @@ async def _merge_all_chunks(
         await _attach_content_headings(merged_chunks, text_chunks_db)
 
     return merged_chunks
+
+
+async def _apply_temporal_merged_chunk_filter(
+    merged_chunks: list[dict],
+    vector_path_chunk_ids: set,
+    max_sequence: int,
+    text_chunks_db: BaseKVStorage,
+) -> tuple[list[dict], dict[str, Any]]:
+    """
+    Stage 3.5 of the temporal query pipeline: filter the fully merged chunk
+    set (vector-search chunks + entity-linked chunks + relation-linked
+    chunks) by document version.
+
+    Scope note (Root Cause B fix, 2026-07-11): this gate is intentionally
+    scoped to vector-search-path chunks only. filter_by_version() (Stage 1.5,
+    upstream of this function) already performs a more precise per-base-name
+    arbitration on the entities/relations that _merge_all_chunks used to
+    derive entity_chunks/relation_chunks -- it keeps an entity/relation
+    unless a newer version of THAT SAME base name exists. Re-gating the
+    fully merged chunk set by a single global max_sequence unconditionally
+    (the original behavior of this stage) stripped entity/relation-path
+    chunks that filter_by_version had already correctly determined were NOT
+    superseded, just because some unrelated newer document existed anywhere
+    else in the workspace (e.g. a small pricing-only amendment with no
+    Term/Notice content of its own).
+
+    Vector-path chunks have no such KG-aware arbitration -- they come from
+    raw similarity search -- so they remain fully gated here. (Stage 1,
+    upstream of this function, already filtered the vector-chunks list to
+    max_sequence, so re-checking them here is redundant-but-safe defense in
+    depth, not the primary guard against a stale vector-search hit.)
+
+    Known residual limitation (documented, not fixed here): if a single
+    chunk contains multiple entities and only some of them are superseded, a
+    stale fact riding along in the same chunk as a non-superseded entity can
+    leak back in, because filtering happens per-chunk, not per-fact. This is
+    unchanged from the original design and out of scope for this fix.
+
+    Args:
+        merged_chunks: Chunks after Stage 3 round-robin merge.
+        vector_path_chunk_ids: chunk_id set of chunks reached via the
+            vector-search path (i.e. search_result["vector_chunks"] after
+            Stage 1 filtering). Any merged chunk NOT in this set was reached
+            via the entity/relation path.
+        max_sequence: Global max sequence_index seen across the query.
+        text_chunks_db: KV storage to batch-fetch chunk metadata
+            (sequence_index) from.
+
+    Returns:
+        Tuple of (filtered_merged_chunks, stats) where stats contains
+        seq_counts, vector_path_kept, and entity_relation_path_kept for
+        diagnostics/logging by the caller.
+    """
+    merged_chunk_ids = [
+        chunk.get("chunk_id") or chunk.get("id")
+        for chunk in merged_chunks
+        if chunk.get("chunk_id") or chunk.get("id")
+    ]
+
+    stats = {"seq_counts": {}, "vector_path_kept": 0, "entity_relation_path_kept": 0}
+
+    if not merged_chunk_ids:
+        return [], stats
+
+    # Batch retrieval - much faster than individual lookups
+    merged_chunk_data_list = await text_chunks_db.get_by_ids(merged_chunk_ids)
+    merged_chunk_data_map = {
+        data.get("_id") or data.get("id"): data
+        for data in merged_chunk_data_list
+        if data
+    }
+
+    filtered_merged_chunks = []
+    seq_counts = stats["seq_counts"]
+
+    for chunk in merged_chunks:
+        chunk_id = chunk.get("chunk_id") or chunk.get("id")
+        if chunk_id and (chunk_data := merged_chunk_data_map.get(chunk_id)):
+            chunk_seq = chunk_data.get("sequence_index", 0)
+            seq_counts[chunk_seq] = seq_counts.get(chunk_seq, 0) + 1
+
+            if chunk_id in vector_path_chunk_ids:
+                # Vector-search path: no KG-aware supersession arbitration
+                # happened for this chunk, so it must pass the global
+                # max_sequence gate.
+                if chunk_seq == max_sequence:
+                    filtered_merged_chunks.append(chunk)
+                    stats["vector_path_kept"] += 1
+            else:
+                # Entity/relation path: filter_by_version() already
+                # arbitrated this chunk's source entity/relation against its
+                # own base-name competitors. Trust that result instead of
+                # re-gating by an unrelated global max_sequence.
+                filtered_merged_chunks.append(chunk)
+                stats["entity_relation_path_kept"] += 1
+
+    return filtered_merged_chunks, stats
 
 
 async def _build_context_str(
@@ -5942,46 +6084,37 @@ async def _build_query_context(
         query_embedding=search_result["query_embedding"],
     )
 
-    # Stage 3.5: Apply temporal filtering to merged chunks if in temporal mode
+    # Stage 3.5: Apply temporal filtering to merged chunks if in temporal
+    # mode. See _apply_temporal_merged_chunk_filter()'s docstring for the
+    # provenance-scoped fix rationale (Root Cause B, 2026-07-11): vector-path
+    # chunks stay gated by the global max_sequence; entity/relation-path
+    # chunks bypass it, trusting filter_by_version()'s per-base-name
+    # arbitration instead.
     if query_param.mode == "temporal" and max_sequence > 0:
-        # Filter merged chunks to keep ONLY those from max sequence
         original_merged_count = len(merged_chunks)
 
-        # Batch fetch all chunk data at once
-        merged_chunk_ids = [
+        # Vector-path chunk ids: already reduced to max_sequence by Stage 1
+        # above. Anything in merged_chunks NOT in this set reached
+        # merged_chunks via entity_chunks/relation_chunks in
+        # _merge_all_chunks.
+        vector_path_chunk_ids = {
             chunk.get("chunk_id") or chunk.get("id")
-            for chunk in merged_chunks
+            for chunk in search_result.get("vector_chunks", [])
             if chunk.get("chunk_id") or chunk.get("id")
-        ]
+        }
 
-        if merged_chunk_ids:
-            # Batch retrieval - much faster than individual lookups
-            merged_chunk_data_list = await text_chunks_db.get_by_ids(merged_chunk_ids)
-            merged_chunk_data_map = {
-                data.get("_id") or data.get("id"): data
-                for data in merged_chunk_data_list
-                if data
-            }
+        merged_chunks, filter_stats = await _apply_temporal_merged_chunk_filter(
+            merged_chunks,
+            vector_path_chunk_ids,
+            max_sequence,
+            text_chunks_db,
+        )
 
-            # For debugging: track sequences
-            seq_counts = {}
-            filtered_merged_chunks = []
-
-            for chunk in merged_chunks:
-                chunk_id = chunk.get("chunk_id") or chunk.get("id")
-                if chunk_id and (chunk_data := merged_chunk_data_map.get(chunk_id)):
-                    chunk_seq = chunk_data.get("sequence_index", 0)
-                    seq_counts[chunk_seq] = seq_counts.get(chunk_seq, 0) + 1
-                    if chunk_seq == max_sequence:
-                        filtered_merged_chunks.append(chunk)
-        else:
-            filtered_merged_chunks = []
-            seq_counts = {}
-
-        merged_chunks = filtered_merged_chunks
         logger.info(
-            f"Temporal filter: Merged chunks {original_merged_count} -> {len(filtered_merged_chunks)} "
-            f"(keeping only sequence {max_sequence}, had sequences: {dict(sorted(seq_counts.items()))})"
+            f"Temporal filter: Merged chunks {original_merged_count} -> {len(merged_chunks)} "
+            f"(max_sequence={max_sequence}, vector_path_kept={filter_stats['vector_path_kept']}, "
+            f"entity_relation_path_kept={filter_stats['entity_relation_path_kept']}, "
+            f"sequences seen: {dict(sorted(filter_stats['seq_counts'].items()))})"
         )
 
     if (
