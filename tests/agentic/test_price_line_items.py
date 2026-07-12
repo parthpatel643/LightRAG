@@ -76,6 +76,35 @@ async def test_classify_pricing_intent_false_on_exception():
 
 
 # ---------------------------------------------------------------------------
+# _parse_workspace_filters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "workspace,expected",
+    [
+        ("sea_cabin_cleaning_cw54832", ("sea", "cabin_cleaning", "cw54832")),
+        ("lga_cabin_cleaning_179242", ("lga", "cabin_cleaning", "179242")),
+        ("cle_cabin_cleaning_cawl21454", ("cle", "cabin_cleaning", "cawl21454")),
+        ("muc_ground_handling_cw19225", ("muc", "ground_handling", "cw19225")),
+        (
+            "muc_ground_handling_atw_cw70430",
+            ("muc", "ground_handling_atw", "cw70430"),
+        ),
+        # Contract numbers aren't always numeric.
+        ("fra_ground_handling_cw", ("fra", "ground_handling", "cw")),
+        ("yyz_deicing_unk", ("yyz", "deicing", "unk")),
+        ("sea_cw54832", ("sea", None, "cw54832")),
+        (None, (None, None, None)),
+        ("", (None, None, None)),
+        ("sea", (None, None, None)),
+    ],
+)
+def test_parse_workspace_filters(workspace, expected):
+    assert pli._parse_workspace_filters(workspace) == expected
+
+
+# ---------------------------------------------------------------------------
 # _extract_keywords
 # ---------------------------------------------------------------------------
 
@@ -164,7 +193,7 @@ async def test_fetch_price_line_items_returns_rows_on_success(monkeypatch):
     assert rows == expected_rows
     assert "contract_price_line" in captured_args["sql"]
     assert "bos_line_station.contract_price_line" in captured_args["sql"]
-    assert captured_args["args"] == (5, ["rate", "cabin", "cleaning"])
+    assert captured_args["args"] == (5, ["rate", "cabin", "cleaning"], None, None, None)
 
 
 @pytest.mark.asyncio
@@ -211,7 +240,59 @@ async def test_fetch_price_line_items_passes_none_keywords_when_query_has_no_con
 
     await pli.fetch_price_line_items("what is it for", top_k=5)
 
-    assert captured_args["args"] == (5, None)
+    assert captured_args["args"] == (5, None, None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_price_line_items_scopes_by_parsed_workspace(monkeypatch):
+    captured_args = {}
+
+    class _OkConn:
+        async def fetch(self, sql, *args):
+            captured_args["sql"] = sql
+            captured_args["args"] = args
+            return []
+
+    class _OkPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield _OkConn()
+
+    monkeypatch.setattr(pli, "_get_pool", AsyncMock(return_value=_OkPool()))
+
+    await pli.fetch_price_line_items(
+        "price per event for 787 RON service",
+        workspace="sea_cabin_cleaning_cw54832",
+    )
+
+    assert "bos_line_station.contract c" in captured_args["sql"]
+    # (top_k, keywords, station_code, contract_number, service_line_code)
+    assert captured_args["args"][2] == "sea"
+    assert captured_args["args"][3] == "cw54832"
+    assert captured_args["args"][4] == "cabin_cleaning"
+
+
+@pytest.mark.asyncio
+async def test_fetch_price_line_items_unscoped_when_workspace_unparseable(
+    monkeypatch,
+):
+    captured_args = {}
+
+    class _OkConn:
+        async def fetch(self, sql, *args):
+            captured_args["args"] = args
+            return []
+
+    class _OkPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield _OkConn()
+
+    monkeypatch.setattr(pli, "_get_pool", AsyncMock(return_value=_OkPool()))
+
+    await pli.fetch_price_line_items("cabin cleaning rate", workspace="seaonly")
+
+    assert captured_args["args"][2:] == (None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +346,22 @@ async def test_get_price_context_fetches_and_formats_when_pricing_query(monkeypa
 
     assert result.startswith("<price_line_items>")
     assert "cabin cleaning" in result
+
+
+@pytest.mark.asyncio
+async def test_get_price_context_passes_workspace_through_to_fetch(monkeypatch):
+    pricing_func = AsyncMock(return_value={"is_pricing_query": True})
+    fetch_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(pli, "fetch_price_line_items", fetch_mock)
+
+    global_config = _global_config(pricing_func)
+    global_config["workspace"] = "sea_cabin_cleaning_cw54832"
+
+    await pli.get_price_context("What is the 787 RON rate?", global_config)
+
+    fetch_mock.assert_awaited_once_with(
+        "What is the 787 RON rate?", workspace="sea_cabin_cleaning_cw54832"
+    )
 
 
 @pytest.mark.asyncio

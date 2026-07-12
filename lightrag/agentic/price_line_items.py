@@ -8,6 +8,11 @@ Real schema (confirmed against a live dev instance):
         unit_price, currency, raw_service_description, raw_aircraft_type,
         active
     )
+    <schema>.contract(
+        id, contract_number, contract_title, contract_type, vendor_id,
+        station_code, effective_start_date, effective_end_date, active,
+        raw_json
+    )
     <schema>.service_type(id, code, description)
     <schema>.service_variant(id, service_type_id, code, description)
     <schema>.aircraft_group(id, code, display_name, body_category)
@@ -17,6 +22,23 @@ Real schema (confirmed against a live dev instance):
 joins the lookup tables and matches free-text keywords extracted from `query`
 against the description/raw-text columns (see `_extract_keywords`), keeping
 only currently-active/effective rows and the most recent matches first.
+
+Each LightRAG workspace in this fork is provisioned for exactly one contract,
+and its workspace name follows the convention
+``<station_code>_<service_line>_<contract_number>`` (e.g.
+``sea_cabin_cleaning_cw54832``). `_parse_workspace_filters` recovers the
+three identifiers from `global_config["workspace"]` by splitting on "_": the
+first token is the station code, the last token is the contract number
+(not always numeric — e.g. ``fra_ground_handling_cw``,
+``yyz_deicing_unk``), and everything in between is the service line
+(matches `service_type.code`, e.g. "cabin_cleaning"). `fetch_price_line_items`
+uses these as a hard pre-filter (joined via `contract`/`service_type`)
+before ranking by keyword match, so a query only ever surfaces price lines
+from its own contract/service line — never another station's or another
+line-of-business's pricing. When the workspace name doesn't follow the
+convention (fewer than two tokens, or empty), all three come back `None`
+and the filter is skipped (falls back to the prior unscoped, keyword-only
+behavior) rather than failing the query.
 
 This module intentionally does NOT touch `lightrag.kg.postgres_impl`'s
 `ClientManager` — that manager owns LightRAG's own storage tables and has
@@ -61,6 +83,34 @@ _STOPWORDS = {
 _pool: Any = None
 _pool_lock = asyncio.Lock()
 _warned_fetch_failure = False
+
+
+def _parse_workspace_filters(
+    workspace: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Recover (station_code, service_line_code, contract_number) from `workspace`.
+
+    Convention: ``<station>_<service_line...>_<contract_number>``. The first
+    token is the station code, the last token is the contract number (not
+    always numeric — e.g. "cw", "unk"), and everything in between (joined
+    back with "_") is the service line code (matches `service_type.code`,
+    e.g. "cabin_cleaning").
+
+    Returns `(None, None, None)` when `workspace` is empty or has fewer than
+    two "_"-separated tokens — callers should treat that as "not parseable"
+    and skip the contract-scoped filter rather than fail the query.
+    """
+    if not workspace:
+        return None, None, None
+
+    tokens = workspace.split("_")
+    if len(tokens) < 2:
+        return None, None, None
+
+    station_code = tokens[0]
+    contract_number = tokens[-1]
+    service_line_code = "_".join(tokens[1:-1]) or None
+    return station_code, service_line_code, contract_number
 
 
 def _extract_keywords(query: str, max_keywords: int = 8) -> list[str]:
@@ -169,18 +219,29 @@ async def classify_pricing_intent(query: str, global_config: dict) -> bool:
         return False
 
 
-async def fetch_price_line_items(query: str, top_k: int = 5) -> list[dict]:
+async def fetch_price_line_items(
+    query: str, top_k: int = 5, workspace: str | None = None
+) -> list[dict]:
     """Fetch candidate contract price-line rows matching `query`.
 
-    Joins `contract_price_line` with `service_type`, `service_variant`, and
-    `aircraft_group`; keeps only active, currently-effective rows; and
-    matches keywords extracted from `query` against the description/raw-text
-    columns. If no content keywords are found in `query`, no text filter is
-    applied (falls back to most-recent active rows). Rows are ranked by
-    number of matching keywords first (so e.g. a query naming both an
-    aircraft type and a service variant surfaces the row matching both,
-    ahead of unrelated rows that only match one generic keyword), then by
-    effective date (most recent first).
+    Joins `contract_price_line` with `service_type`, `service_variant`,
+    `aircraft_group`, and `contract`; keeps only active, currently-effective
+    rows. When `workspace` parses into (station_code, service_line,
+    contract_number) (see `_parse_workspace_filters`), those are applied as
+    a hard pre-filter via the `contract`/`service_type` join — so a query
+    only ever surfaces price lines from its own contract/service line, never
+    another station's or line-of-business's pricing. When `workspace` is
+    None/unparseable, no such filter is applied (unscoped, matching prior
+    behavior).
+
+    Within whatever scope results from that pre-filter, rows are further
+    ranked by keywords extracted from `query` against the description/raw-
+    text columns. If no content keywords are found in `query`, no text
+    filter is applied (falls back to most-recent active rows within scope).
+    Rows are ranked by number of matching keywords first (so e.g. a query
+    naming both an aircraft type and a service variant surfaces the row
+    matching both, ahead of unrelated rows that only match one generic
+    keyword), then by effective date (most recent first).
 
     Returns [] on any error (unprovisioned table/DB, connection failure,
     etc.) so a missing/incomplete price DB never breaks a query.
@@ -194,11 +255,16 @@ async def fetch_price_line_items(query: str, top_k: int = 5) -> list[dict]:
 
         schema = get_env_value("PRICE_DB_SCHEMA", PRICE_DB_DEFAULT_SCHEMA, str)
         keywords = _extract_keywords(query) or None
+        station_code, service_line_code, contract_number = _parse_workspace_filters(
+            workspace
+        )
 
         sql = f"""
             SELECT
                 cpl.id,
                 cpl.contract_id,
+                c.contract_number,
+                c.station_code AS contract_station_code,
                 st.code AS service_type_code,
                 st.description AS service_type_description,
                 sv.code AS service_variant_code,
@@ -216,9 +282,13 @@ async def fetch_price_line_items(query: str, top_k: int = 5) -> list[dict]:
             LEFT JOIN {schema}.service_type st ON st.id = cpl.service_type_id
             LEFT JOIN {schema}.service_variant sv ON sv.id = cpl.service_variant_id
             LEFT JOIN {schema}.aircraft_group ag ON ag.id = cpl.aircraft_group_id
+            LEFT JOIN {schema}.contract c ON c.id = cpl.contract_id
             WHERE cpl.active = true
               AND cpl.price_effective_date <= now()
               AND (cpl.price_end_date IS NULL OR cpl.price_end_date >= now())
+              AND ($3::text IS NULL OR c.station_code ILIKE $3)
+              AND ($4::text IS NULL OR c.contract_number ILIKE $4)
+              AND ($5::text IS NULL OR st.code ILIKE $5)
               AND (
                     $2::text[] IS NULL
                     OR EXISTS (
@@ -245,7 +315,9 @@ async def fetch_price_line_items(query: str, top_k: int = 5) -> list[dict]:
         """  # noqa: S608 - schema/table names from constant/env config, not user input
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, top_k, keywords)
+            rows = await conn.fetch(
+                sql, top_k, keywords, station_code, contract_number, service_line_code
+            )
         return [dict(row) for row in rows]
     except Exception as e:
         if not _warned_fetch_failure:
@@ -281,7 +353,7 @@ async def get_price_context(query: str, global_config: dict) -> str:
         if not is_pricing_query:
             return ""
 
-        rows = await fetch_price_line_items(query)
+        rows = await fetch_price_line_items(query, workspace=global_config.get("workspace"))
         return format_price_context(rows)
     except Exception as e:
         logger.warning(f"[price_line_items] get_price_context failed: {e}")
