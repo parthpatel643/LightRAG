@@ -154,7 +154,7 @@ graph LR
 - **Temporal RAG** -- Query documents as they existed on any date
 - **Version Tracking** -- Track all changes to entities across documents
 - **Audit Trails** -- Complete history with sequence numbers
-- **Multi-Mode Queries** -- Local, Global, Hybrid, Temporal, Naive, Mix, Bypass
+- **Multi-Mode Queries** -- Local, Global, Hybrid, Agentic, Naive, Mix, Bypass
 - **Production Ready** -- Distributed locking, ACID transactions, monitoring
 - **Scalable** -- 50+ concurrent users, millions of entities
 - **Flexible Storage** -- Neptune, Neo4j, PostgreSQL, MongoDB, Milvus, OpenSearch, and more

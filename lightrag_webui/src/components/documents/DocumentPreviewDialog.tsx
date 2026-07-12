@@ -1,6 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/Dialog'
 import { DocStatusResponse } from '@/api/lightrag'
-import { useTranslation } from 'react-i18next'
 import { FileText, Calendar, Hash, FileType, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -11,8 +10,6 @@ interface DocumentPreviewDialogProps {
 }
 
 export function DocumentPreviewDialog({ open, onOpenChange, document }: DocumentPreviewDialogProps) {
-  const { t } = useTranslation()
-
   if (!document) return null
 
   const formatDate = (dateString: string) => {

@@ -1759,7 +1759,7 @@ export default function DocumentManager() {
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       {statusFilter === 'all'
                         ? t('documentPanel.documentManager.noDocumentsHint', 'Upload documents or scan for new files to get started')
-                        : t('documentPanel.documentManager.noDocumentsForStatusHint', `Try selecting a different status filter or upload new documents`)}
+                        : t('documentPanel.documentManager.noDocumentsForStatusHint', 'Try selecting a different status filter or upload new documents')}
                     </p>
                   </div>
                   {statusFilter === 'all' && (

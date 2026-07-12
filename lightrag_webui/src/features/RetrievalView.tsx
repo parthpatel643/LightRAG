@@ -155,15 +155,20 @@ export default function RetrievalView() {
   // Smart switching logic: use Input for single line, Textarea for multi-line
   const hasMultipleLines = inputValue.includes('\n')
 
-  // Monitor workspace changes and reset retrieval state
+  // Monitor workspace changes and reset retrieval state. Render-time
+  // comparison avoids cascading renders from setState-in-useEffect; the
+  // `null` initial value preserves the original behavior of also clearing
+  // on mount.
   const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
-  useEffect(() => {
+  const [previousWorkspace, setPreviousWorkspace] = useState<string | null>(null)
+  if (currentWorkspace !== previousWorkspace) {
+    setPreviousWorkspace(currentWorkspace)
     console.log('[RetrievalTesting] Workspace changed to:', currentWorkspace, 'clearing messages...')
     // Clear messages and history when workspace changes
     setMessages([])
     setInputValue('')
     useSettingsStore.getState().setRetrievalHistory([])
-  }, [currentWorkspace])
+  }
 
   // Enhanced event handlers for smart switching
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -198,7 +203,7 @@ export default function RetrievalView() {
       if (!inputValue.trim() || isLoading) return
 
       // Parse query mode prefix
-      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass', 'temporal']
+      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass', 'agentic']
       const prefixMatch = inputValue.match(/^\/(\w+)\s+([\s\S]+)/)
       let modeOverride: QueryMode | undefined = undefined
       let actualQuery = inputValue
@@ -215,7 +220,7 @@ export default function RetrievalView() {
         if (!allowedModes.includes(mode)) {
           setInputError(
             t('retrievePanel.retrieval.queryModeError', {
-              modes: 'naive, local, global, hybrid, mix, bypass',
+              modes: 'naive, local, global, hybrid, mix, bypass, agentic',
             })
           )
           return

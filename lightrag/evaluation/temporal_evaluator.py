@@ -18,7 +18,7 @@ Usage:
     results = await evaluator.run()
 
     # Or with per-test-case reference dates in dataset
-    # Just set mode="temporal" and include reference_date in each test case
+    # Just set mode="agentic" and include reference_date in each test case
 """
 
 import asyncio
@@ -83,7 +83,7 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
             workspace=workspace,
             test_dataset_path=test_dataset_path,
             rag_api_url=rag_api_url,
-            query_mode="temporal",
+            query_mode="agentic",
         )
 
         self.default_reference_date = default_reference_date or os.getenv(
@@ -120,11 +120,11 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
         expected_version = test_case.get("expected_version")
 
         try:
-            # Generate RAG response with temporal mode
+            # Generate RAG response with agentic mode
             rag_response = await self.generate_rag_response(
                 question=question,
                 client=client,
-                mode="temporal",
+                mode="agentic",
                 reference_date=reference_date,
                 enable_rerank=self.enable_rerank,
             )
@@ -221,7 +221,7 @@ class TemporalRAGEvaluator(BaseRAGEvaluator):
                 "question": question,
                 "reference_date": reference_date,
                 "expected_version": expected_version,
-                "mode": "temporal",
+                "mode": "agentic",
                 "workspace": test_case.get(
                     "workspace", test_case.get("project", self.workspace)
                 ),
@@ -467,7 +467,7 @@ class WorkspaceEvaluator:
         self,
         workspaces: Optional[List[str]] = None,
         rag_api_url: Optional[str] = None,
-        mode: str = "temporal",
+        mode: str = "agentic",
     ):
         """
         Initialize workspace evaluator.
@@ -508,7 +508,7 @@ class WorkspaceEvaluator:
         reference_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Evaluate a single workspace."""
-        if self.mode == "temporal":
+        if self.mode == "agentic":
             evaluator = TemporalRAGEvaluator(
                 workspace=workspace,
                 rag_api_url=self.rag_api_url,
@@ -581,7 +581,7 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Evaluate default workspace with temporal mode
+  # Evaluate default workspace with agentic mode
   python -m lightrag.evaluation.temporal_evaluator
 
   # Evaluate specific workspace
@@ -638,7 +638,7 @@ Examples:
         if args.all_workspaces:
             evaluator = WorkspaceEvaluator(
                 rag_api_url=args.ragendpoint,
-                mode="temporal",
+                mode="agentic",
             )
             await evaluator.evaluate_all_workspaces(args.reference_date)
         else:

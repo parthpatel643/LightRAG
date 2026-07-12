@@ -1,5 +1,5 @@
 import { useSigma } from '@react-sigma/core'
-import { Download, Image, FileCode } from 'lucide-react'
+import { Image, FileCode } from 'lucide-react'
 import { toast } from 'sonner'
 import { useState } from 'react'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -96,8 +96,7 @@ export default function ExportControl() {
 
     try {
       const graph = sigma.getGraph()
-      const camera = sigma.getCamera()
-      
+
       // Get graph bounds
       const nodes = graph.nodes()
       if (nodes.length === 0) {

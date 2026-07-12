@@ -16,7 +16,6 @@ import DeleteSequencedDocumentDialog from '@/components/documents/DeleteSequence
 import {
   Upload,
   GripVertical,
-  X,
   Calendar,
   FileText,
   CheckCircle2,
@@ -52,14 +51,12 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
   const [maxExistingSequence, setMaxExistingSequence] = useState<number>(0)
   const [totalExistingDocs, setTotalExistingDocs] = useState<number>(0)
   const [sequencedDocsCount, setSequencedDocsCount] = useState<number>(0)
-  const [isLoadingSequence, setIsLoadingSequence] = useState(false)
 
   // Fetch the highest sequence index from existing documents
   useEffect(() => {
     const fetchMaxSequence = async () => {
       if (!isDialogOpen) return
-      
-      setIsLoadingSequence(true)
+
       try {
         const response = await getDocuments()
         let maxSeq = 0
@@ -88,8 +85,6 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
         setMaxExistingSequence(0)
         setTotalExistingDocs(0)
         setSequencedDocsCount(0)
-      } finally {
-        setIsLoadingSequence(false)
       }
     }
 
@@ -236,7 +231,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
   return (
     <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
       <DialogTrigger asChild>
-        <Button variant="default" className={cn("group", className)}>
+        <Button variant="default" className={cn('group', className)}>
           <Upload className="h-4 w-4 mr-2" />
           {t('documentPanel.uploadDocuments.button', 'Upload')}
         </Button>
@@ -276,16 +271,16 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                       isActive
                         ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/50'
                         : isCompleted
-                        ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
-                        : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500'
+                          ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500'
                     )}
                     whileHover={{ scale: 1.1 }}
                   >
                     <Icon className="h-5 w-5" />
                   </motion.div>
                   <span className={cn(
-                    "text-xs mt-1 font-medium",
-                    isActive ? "text-emerald-600 dark:text-emerald-400" : "text-gray-500 dark:text-gray-400"
+                    'text-xs mt-1 font-medium',
+                    isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'
                   )}>
                     {step.label}
                   </span>
@@ -336,8 +331,8 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                       transition={{ duration: 0.2 }}
                     >
                       <Upload className={cn(
-                        "h-16 w-16 mx-auto mb-4 transition-colors",
-                        isDragActive ? "text-emerald-500 dark:text-emerald-400" : "text-gray-400 dark:text-gray-500"
+                        'h-16 w-16 mx-auto mb-4 transition-colors',
+                        isDragActive ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'
                       )} />
                     </motion.div>
                     <p className="text-base font-medium text-gray-700 dark:text-gray-200 mb-2">
@@ -436,7 +431,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                           </p>
                           <p className="text-xs text-yellow-700 dark:text-yellow-300">
                             You have {totalExistingDocs} total documents: {sequencedDocsCount} sequenced and {totalExistingDocs - sequencedDocsCount} non-sequenced.
-                            New documents will continue from version {maxExistingSequence + 1}, but non-sequenced documents won't appear in temporal queries.
+                            New documents will continue from version {maxExistingSequence + 1}, but non-sequenced documents won&apos;t appear in temporal queries.
                           </p>
                         </div>
                       </div>
@@ -481,15 +476,15 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                     className="space-y-2 max-h-[400px] overflow-y-auto pr-2"
                   >
                     <AnimatePresence>
-                      {documents.map((doc, index) => (
+                      {documents.map((doc) => (
                         <Reorder.Item
                           key={doc.id}
                           value={doc}
                           className="list-none"
                           whileDrag={{
                             scale: 1.05,
-                            boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
-                            cursor: "grabbing"
+                            boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
+                            cursor: 'grabbing'
                           }}
                         >
                           <motion.div
@@ -562,16 +557,16 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                           </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
                             <Calendar className={cn(
-                              "h-4 w-4 transition-colors",
-                              doc.effectiveDate ? "text-emerald-500 dark:text-emerald-400" : "text-gray-400 dark:text-gray-500"
+                              'h-4 w-4 transition-colors',
+                              doc.effectiveDate ? 'text-emerald-500 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'
                             )} />
                             <Input
                               type="date"
                               value={doc.effectiveDate || ''}
                               onChange={(e) => updateEffectiveDate(doc.id, e.target.value)}
                               className={cn(
-                                "w-40 transition-all",
-                                doc.effectiveDate ? "border-emerald-300 dark:border-emerald-600" : ""
+                                'w-40 transition-all',
+                                doc.effectiveDate ? 'border-emerald-300 dark:border-emerald-600' : ''
                               )}
                               placeholder="Select date"
                             />
@@ -687,7 +682,7 @@ export default function DocumentSequencer({ onUploadComplete, className }: Docum
                 onClick={() => setCurrentStep('confirm')}
                 disabled={!canProceedToConfirm}
                 className={cn(
-                  !canProceedToConfirm && "opacity-50"
+                  !canProceedToConfirm && 'opacity-50'
                 )}
               >
                 {t('common.next', 'Next: Review')}

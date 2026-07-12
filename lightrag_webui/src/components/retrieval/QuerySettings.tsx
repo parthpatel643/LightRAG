@@ -184,10 +184,10 @@ export default function QuerySettings() {
                           <span>{t('retrievePanel.querySettings.queryModeOptions.bypass')}</span>
                         </div>
                       </SelectItem>
-                      <SelectItem value="temporal">
+                      <SelectItem value="agentic">
                         <div className="flex items-center gap-2">
                           <Clock className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
-                          <span>{t('retrievePanel.querySettings.queryModeOptions.temporal', 'Temporal')}</span>
+                          <span>{t('retrievePanel.querySettings.queryModeOptions.agentic', 'Agentic')}</span>
                         </div>
                       </SelectItem>
                     </SelectGroup>
@@ -205,8 +205,8 @@ export default function QuerySettings() {
               )}
             </>
 
-            {/* Reference Date - Only show when mode is temporal */}
-            {querySettings.mode === 'temporal' && (
+            {/* Reference Date - Only show when mode is agentic */}
+            {querySettings.mode === 'agentic' && (
               <>
                 <TooltipProvider>
                   <Tooltip>
@@ -317,31 +317,6 @@ export default function QuerySettings() {
                 />
               </div>
             </>
-
-            {/* Reference Date - Only show when mode is temporal */}
-            {querySettings.mode === 'temporal' && (
-              <>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label htmlFor="reference_date" className="ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.referenceDate', 'Reference Date')}
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.referenceDateTooltip', 'Filter versioned entities by their effective date. Returns entities valid on or before this date.')}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <Input
-                  id="reference_date"
-                  type="date"
-                  value={querySettings.reference_date || new Date().toISOString().split('T')[0]}
-                  onChange={(e) => handleChange('reference_date', e.target.value)}
-                  className="h-9"
-                />
-              </>
-            )}
 
             {/* Top K */}
             <>

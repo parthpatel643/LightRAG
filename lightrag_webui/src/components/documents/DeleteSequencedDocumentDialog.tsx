@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import Button from '@/components/ui/Button'
 import {
@@ -88,8 +88,11 @@ export default function DeleteSequencedDocumentDialog({
 
   const docInfo = getDocumentInfo()
 
-  // Reset state when dialog closes
-  useEffect(() => {
+  // Reset state when dialog closes. Render-time comparison avoids cascading
+  // renders from setState-in-useEffect.
+  const [previousOpen, setPreviousOpen] = useState(open)
+  if (open !== previousOpen) {
+    setPreviousOpen(open)
     if (!open) {
       setReplaceMode(false)
       setReplacementFile(null)
@@ -98,7 +101,7 @@ export default function DeleteSequencedDocumentDialog({
       setIsProcessing(false)
       setUploadProgress(0)
     }
-  }, [open])
+  }
 
   // File upload handler
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -272,8 +275,8 @@ export default function DeleteSequencedDocumentDialog({
             >
               <input {...getInputProps()} />
               <Upload className={cn(
-                "h-10 w-10 mx-auto mb-2",
-                isDragActive ? "text-emerald-500" : "text-gray-400"
+                'h-10 w-10 mx-auto mb-2',
+                isDragActive ? 'text-emerald-500' : 'text-gray-400'
               )} />
               <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
                 {isDragActive

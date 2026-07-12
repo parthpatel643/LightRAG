@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useGraphStore } from '@/stores/graph'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronUp, Copy, ExternalLink } from 'lucide-react'
@@ -27,29 +27,34 @@ const ChunksPanel = () => {
   const { theme } = useTheme()
   const selectedNode = useGraphStore.use.selectedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
-  const [chunks, setChunks] = useState<ChunkReference[]>([])
   const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set())
 
   // Get chunks from graph store if available
   const nodeChunks = useGraphStore.use.nodeChunks()
   const edgeChunks = useGraphStore.use.edgeChunks()
 
+  // Derive chunks directly from selection during render instead of via
+  // useEffect+setState (avoids cascading renders flagged by
+  // react-hooks/set-state-in-effect). Memoized so the reference stays
+  // stable across renders where the inputs haven't changed, keeping the
+  // debug-logging effect's dependency array well-behaved.
+  const chunks: ChunkReference[] = useMemo(() => {
+    return selectedNode
+      ? nodeChunks[selectedNode] || []
+      : selectedEdge
+        ? edgeChunks[selectedEdge] || []
+        : []
+  }, [selectedNode, selectedEdge, nodeChunks, edgeChunks])
+
   useEffect(() => {
     if (selectedNode) {
-      // Get chunks for the selected node
-      const nodeChunkList = nodeChunks[selectedNode] || []
-      setChunks(nodeChunkList)
-      console.debug('[ChunksPanel] Node selected:', selectedNode, 'Chunks:', nodeChunkList)
+      console.debug('[ChunksPanel] Node selected:', selectedNode, 'Chunks:', chunks)
     } else if (selectedEdge) {
-      // Get chunks for the selected edge
-      const edgeChunkList = edgeChunks[selectedEdge] || []
-      setChunks(edgeChunkList)
-      console.debug('[ChunksPanel] Edge selected:', selectedEdge, 'Chunks:', edgeChunkList)
+      console.debug('[ChunksPanel] Edge selected:', selectedEdge, 'Chunks:', chunks)
     } else {
-      setChunks([])
       console.debug('[ChunksPanel] No selection')
     }
-  }, [selectedNode, selectedEdge, nodeChunks, edgeChunks])
+  }, [selectedNode, selectedEdge, chunks])
 
   const toggleChunkExpand = (chunkId: string) => {
     const newExpanded = new Set(expandedChunks)
@@ -152,6 +157,7 @@ const ChunksPanel = () => {
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
                           code: ({ node, inline, className, children, ...props }: any) => {
                             const match = /language-(\w+)/.exec(className || '')
                             return !inline && match ? (

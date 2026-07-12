@@ -16,7 +16,7 @@ import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
 import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
 import { switchWorkspace } from '@/api/lightrag'
 import { toast } from 'sonner'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
 interface NavigationTabProps {
   value: string
@@ -98,7 +98,7 @@ export default function SiteHeader() {
       
       // Call the API to switch workspace on the backend FIRST
       // API function handles camelCase to snake_case conversion
-      const response = await switchWorkspace(workspace)
+      await switchWorkspace(workspace)
       
       // Add a delay after workspace switch to ensure backend reload completes
       // The backend needs time to finalize old storages and initialize new ones
@@ -121,14 +121,15 @@ export default function SiteHeader() {
     }
   }
 
-  // Detect workspace changes and log them (actual refresh handled by individual components)
-  useEffect(() => {
-    if (currentWorkspace && currentWorkspace !== prevWorkspace) {
-      console.log(`[SiteHeader] Workspace changed from ${prevWorkspace} to ${currentWorkspace}`);
-      setPrevWorkspace(currentWorkspace);
-      // Note: Data refresh is handled by DocumentManager and GraphViewer via their own workspace listeners
-    }
-  }, [currentWorkspace, prevWorkspace])
+  // Detect workspace changes and log them (actual refresh handled by
+  // individual components). Comparison done directly at render time instead
+  // of via useEffect+setState (avoids cascading renders flagged by
+  // react-hooks/set-state-in-effect).
+  if (currentWorkspace && currentWorkspace !== prevWorkspace) {
+    console.log(`[SiteHeader] Workspace changed from ${prevWorkspace} to ${currentWorkspace}`);
+    setPrevWorkspace(currentWorkspace);
+    // Note: Data refresh is handled by DocumentManager and GraphViewer via their own workspace listeners
+  }
 
 
   return (

@@ -121,7 +121,7 @@ class SemanticEquivalenceEvaluator:
     LLM-based Semantic Equivalence Evaluator for temporal queries.
 
     This evaluator:
-    - Queries LightRAG using temporal mode
+    - Queries LightRAG using agentic mode
     - Uses LLM to judge semantic equivalence between answer and ground truth
     - Outputs detailed results in JSON and CSV formats
     """
@@ -143,7 +143,7 @@ class SemanticEquivalenceEvaluator:
             workspace: Workspace name for data isolation
             test_dataset_path: Path to test dataset JSON file
             rag_api_url: LightRAG API endpoint URL
-            default_reference_date: Default reference date for temporal queries
+            default_reference_date: Default reference date for agentic queries
                                    (YYYY-MM-DD format, used when test case doesn't specify)
             pass_threshold: Minimum normalized score (0.0-1.0) to count as a "pass"
             enable_rerank: Whether to enable reranking in queries
@@ -218,7 +218,7 @@ class SemanticEquivalenceEvaluator:
         logger.info(f"🎯 Semantic Equivalence Evaluator - Workspace: {self.workspace}")
         logger.info("=" * 70)
         logger.info("Configuration:")
-        logger.info("  • Query Mode:           temporal (fixed)")
+        logger.info("  • Query Mode:           agentic (fixed)")
         logger.info(f"  • Default Ref Date:     {self.default_reference_date}")
         logger.info(f"  • Pass Threshold:       {self.pass_threshold:.2f}")
         logger.info(f"  • Enable Rerank:        {self.enable_rerank}")
@@ -249,21 +249,21 @@ class SemanticEquivalenceEvaluator:
         reference_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Query LightRAG API with temporal mode.
+        Query LightRAG API with agentic mode.
 
         Args:
             question: Question to query
             client: HTTP client
-            reference_date: Reference date for temporal query
+            reference_date: Reference date for agentic query
 
         Returns:
             Dictionary with 'answer' and metadata
         """
         try:
-            # Build query payload - always temporal mode
+            # Build query payload - always agentic mode
             payload = {
                 "query": question,
-                "mode": "temporal",
+                "mode": "agentic",
                 "only_need_context": False,
                 "stream": False,
                 "include_references": True,
@@ -279,7 +279,7 @@ class SemanticEquivalenceEvaluator:
                     os.getenv("EVAL_ENABLE_RERANK", "true").lower() == "true"
                 )
 
-            # Add reference_date for temporal query
+            # Add reference_date for agentic query
             ref_date = reference_date or self.default_reference_date
             if ref_date:
                 payload["reference_date"] = ref_date
@@ -437,7 +437,7 @@ class SemanticEquivalenceEvaluator:
         reference_date = test_case.get("reference_date", self.default_reference_date)
 
         try:
-            # Generate RAG response with temporal mode
+            # Generate RAG response with agentic mode
             rag_response = await self._generate_rag_response(
                 question=question,
                 client=client,
@@ -457,7 +457,7 @@ class SemanticEquivalenceEvaluator:
                 "test_number": idx,
                 "question": question,
                 "reference_date": reference_date,
-                "mode": "temporal",
+                "mode": "agentic",
                 "workspace": test_case.get("workspace", self.workspace),
                 "answer": answer[:500] + "..." if len(answer) > 500 else answer,
                 "ground_truth": ground_truth[:500] + "..."
@@ -614,7 +614,7 @@ class SemanticEquivalenceEvaluator:
         json_path = self.results_dir / f"semantic_eval_{timestamp}.json"
         json_data = {
             "workspace": self.workspace,
-            "query_mode": "temporal",
+            "query_mode": "agentic",
             "default_reference_date": self.default_reference_date,
             "pass_threshold": self.pass_threshold,
             "timestamp": datetime.now().isoformat(),
@@ -682,7 +682,7 @@ class SemanticEquivalenceEvaluator:
         logger.info("📊 SEMANTIC EQUIVALENCE EVALUATION SUMMARY")
         logger.info("=" * 70)
         logger.info(f"Workspace:            {self.workspace}")
-        logger.info("Query Mode:           temporal")
+        logger.info("Query Mode:           agentic")
         logger.info(f"Pass Threshold:       {self.pass_threshold:.2f}")
         logger.info(f"Total Time:           {elapsed_time:.2f} seconds")
         logger.info("-" * 70)
@@ -868,7 +868,7 @@ Examples:
         "--reference-date",
         type=str,
         default=None,
-        help="Default reference date for temporal queries (YYYY-MM-DD format)",
+        help="Default reference date for agentic queries (YYYY-MM-DD format)",
     )
 
     parser.add_argument(

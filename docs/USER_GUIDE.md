@@ -34,8 +34,8 @@ flowchart TD
     Mode -->|Local| LocalQuery[Single-hop Search]
     Mode -->|Global| GlobalQuery[Multi-hop Search]
     Mode -->|Hybrid| HybridQuery[Balanced Search]
-    Mode -->|Temporal| TemporalQuery[Time-aware Search]
-    
+    Mode -->|Agentic| TemporalQuery[Time-aware Search]
+
     TemporalQuery --> SetDate[Set Reference Date]
     SetDate --> Filter[Apply Temporal Filter]
     Filter --> Generate[LLM Generate Answer]
@@ -262,7 +262,7 @@ result = await rag.aquery(
 )
 ```
 
-**Temporal Mode** - Version-aware with date filtering (NEW)
+**Agentic Mode** - Version-aware with date filtering (NEW)
 ```python
 result = await rag.aquery(
     "What is the parking fee?",
@@ -509,13 +509,13 @@ The web interface includes a dedicated temporal query component with these featu
 - **Quick Actions**: 
   - "Today" button for current state
   - "Clear" to reset date
-- **Mode Indicator**: Visual feedback when temporal mode is active
+- **Mode Indicator**: Visual feedback when agentic mode is active
 - **Tooltips**: Helpful information about temporal queries
 
 #### Using Temporal Queries in WebUI
 
 1. Open the Query tab
-2. Select mode: "Temporal"
+2. Select mode: "Agentic"
 3. Click "Select Reference Date"
 4. Choose date from calendar (or type YYYY-MM-DD)
 5. Type your question
@@ -524,7 +524,7 @@ The web interface includes a dedicated temporal query component with these featu
 
 **Example workflow:**
 ```
-Mode: Temporal
+Mode: Agentic
 Reference Date: 2024-01-15
 Question: "What is the parking fee?"
 Result: "The parking fee was $50/night (Sequence 1, Effective 2024-01-01)"
@@ -731,15 +731,11 @@ export MAX_PARALLEL_INSERT=1 # Single document at a time
 ## Testing
 
 ```bash
-# Comprehensive test suite
-uv run test_prep.py              # Sequencing
-uv run test_ingest.py            # Versioning
-uv run test_temporal.py          # Temporal queries
-uv run test_temporal_persona.py  # Response formats
-uv run test_soft_tags.py         # Soft tagging
+# Run the full test suite
+./scripts/test.sh tests
 
-# End-to-end demo
-uv run demo_temporal_rag.py
+# Run a specific test file
+./scripts/test.sh tests/kg/test_graph_storage.py
 ```
 
 ---

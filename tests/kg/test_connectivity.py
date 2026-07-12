@@ -296,7 +296,7 @@ class TestNeptuneOpenSearchConnectivity:
         # A match_all search against a wildcard index pattern works on both
         # standard OpenSearch and AOSS.  AOSS returns 404 if no indices match
         # the pattern, which still proves auth + connectivity succeeded.
-        from opensearchpy.exceptions import NotFoundError, AuthorizationException
+        from opensearchpy.exceptions import NotFoundError
 
         try:
             result = client.search(

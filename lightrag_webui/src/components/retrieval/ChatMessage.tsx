@@ -1,9 +1,10 @@
-import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
+import { HTMLAttributes, ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
 import { Message } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 
 import ReactMarkdown from 'react-markdown'
+import type { ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
 import rehypeRaw from 'rehype-raw'
@@ -102,7 +103,11 @@ export const ChatMessage = ({
   }, []);
 
   const mainMarkdownComponents = useMemo(() => ({
-    code: (props: any) => {
+    code: (props: HTMLAttributes<HTMLElement> & ExtraProps & { inline?: boolean }) => {
+      // HTMLAttributes is a generic type reference; eslint-plugin-react's static
+      // prop-types checker can't resolve `className` through it even though
+      // it's fully typed for tsc.
+      // eslint-disable-next-line react/prop-types
       const { inline, className, children, ...restProps } = props;
       const match = /language-(\w+)/.exec(className || '');
       const language = match ? match[1] : undefined;

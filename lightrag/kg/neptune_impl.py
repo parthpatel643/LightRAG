@@ -557,17 +557,6 @@ class NeptuneGraphStorage(BaseGraphStorage):
             return
         workspace = self._get_workspace_label()
 
-        # Collect all node IDs involved in these edges for a batched lookup
-        all_src_ids = set()
-        all_tgt_ids = set()
-        for src, tgt in edges:
-            all_src_ids.add(src)
-            all_tgt_ids.add(tgt)
-
-        all_node_ids = all_src_ids | all_tgt_ids
-        ids_escaped = [_gremlin_escape(nid) for nid in all_node_ids]
-        ids_str = "', '".join(ids_escaped)
-
         # For each edge pair, drop matching edges; use concurrent tasks for batches
         # Group into batches to avoid overly large queries
         BATCH_SIZE = 50
@@ -683,8 +672,6 @@ class NeptuneGraphStorage(BaseGraphStorage):
         If OpenSearch is configured, uses full-text search.
         Otherwise, falls back to client-side filtering.
         """
-        workspace = self._get_workspace_label()
-
         # Try OpenSearch if available
         if self._opensearch_client:
             try:

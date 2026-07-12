@@ -12,7 +12,6 @@ import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { uploadDocument } from '@/api/lightrag'
 import { UploadIcon, ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
 
 interface StagedFile {
   file: File
@@ -24,7 +23,6 @@ interface StagingAreaDialogProps {
 }
 
 export default function StagingAreaDialog({ onDocumentsUploaded }: StagingAreaDialogProps) {
-  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
   const [isUploading, setIsUploading] = useState(false)
@@ -219,7 +217,7 @@ export default function StagingAreaDialog({ onDocumentsUploaded }: StagingAreaDi
                   {/* Sequence Badge */}
                   <div className="flex flex-col items-center justify-center min-w-[60px]">
                     <span className="text-xs text-muted-foreground">
-                      {index === 0 ? 'Oldest' : index === stagedFiles.length - 1 ? 'Newest' : `Seq`}
+                      {index === 0 ? 'Oldest' : index === stagedFiles.length - 1 ? 'Newest' : 'Seq'}
                     </span>
                     <span className="font-bold text-lg">v{stagedFile.sequenceIndex}</span>
                   </div>

@@ -168,8 +168,9 @@ export type LightragDocumentsScanProgress = {
  * - "hybrid": Combines local and global retrieval methods.
  * - "mix": Integrates knowledge graph and vector retrieval.
  * - "bypass": Bypasses knowledge retrieval and directly uses the LLM.
+ * - "agentic": Hybrid mode with version filtering based on reference_date.
  */
-export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass' | 'temporal'
+export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass' | 'agentic'
 
 export type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -216,7 +217,7 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
-  /** Reference date for temporal mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='temporal'. */
+  /** Reference date for agentic mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='agentic'. */
   reference_date?: string
   /** If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references. */
   include_references?: boolean
@@ -1504,9 +1505,9 @@ export const batchUploadSequenced = async (
     },
     onUploadProgress: onUploadProgress
       ? (progressEvent) => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1))
-          onUploadProgress(percentCompleted)
-        }
+        const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1))
+        onUploadProgress(percentCompleted)
+      }
       : undefined
   })
   
@@ -1604,11 +1605,11 @@ export const replaceSequencedDocument = async (
       },
       onUploadProgress: onUploadProgress
         ? (progressEvent) => {
-            const percentCompleted = Math.round(
-              (progressEvent.loaded * 100) / (progressEvent.total || 1)
-            )
-            onUploadProgress(percentCompleted)
-          }
+          const percentCompleted = Math.round(
+            (progressEvent.loaded * 100) / (progressEvent.total || 1)
+          )
+          onUploadProgress(percentCompleted)
+        }
         : undefined
     }
   )

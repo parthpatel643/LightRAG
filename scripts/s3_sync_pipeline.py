@@ -66,7 +66,7 @@ logger = logging.getLogger("s3_sync_pipeline")
 # Import delta sync logic from migrate_storage
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from migrate_storage import KV_NAMESPACES, do_delta  # noqa: E402
+from migrate_storage import do_delta  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

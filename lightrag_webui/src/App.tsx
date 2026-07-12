@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
-import StatusIndicator from '@/components/status/StatusIndicator'
 import ErrorBanner from '@/components/ui/ErrorBanner'
 import KeyboardShortcutsDialog from '@/components/KeyboardShortcutsDialog'
 import { SiteInfo, webuiPrefix } from '@/lib/constants'
@@ -30,7 +29,6 @@ function App() {
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
-  const [showErrorBanner, setShowErrorBanner] = useState(false)
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false)
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
@@ -179,14 +177,10 @@ function App() {
     }
   }
 
-  // Show error banner when backend is disconnected
-  useEffect(() => {
-    if (enableHealthCheck && !health && !initializing) {
-      setShowErrorBanner(true)
-    } else {
-      setShowErrorBanner(false)
-    }
-  }, [health, enableHealthCheck, initializing])
+  // Show error banner when backend is disconnected. Derived directly during
+  // render rather than via useEffect+setState (avoids cascading renders
+  // flagged by react-hooks/set-state-in-effect).
+  const showErrorBanner = enableHealthCheck && !health && !initializing
 
   // Keyboard shortcuts
   const shortcuts = useMemo(() => [

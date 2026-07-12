@@ -166,7 +166,7 @@ class KongClient:
         logging.debug("generating consumer jwt credentials")
         kong_url = self.kong_admin_url
         kong_token = self.token
-        if kic_flag == True:
+        if kic_flag:
             kong_url = self.kic_kong_admin_url
             kong_token = self.kic_token
         consumer_config_resp = self.get_consumer_details(

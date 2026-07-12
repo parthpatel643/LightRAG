@@ -338,7 +338,7 @@ GET /info
 
 ## Query Modes
 
-### Temporal Mode (Recommended for Versioned Documents)
+### Agentic Mode (Recommended for Versioned Documents)
 
 Returns the latest version, respecting temporal constraints:
 
@@ -455,38 +455,9 @@ Complete implementation of 27 identified temporal logic issues:
 ### Environment Variables
 
 ```bash
-# Core temporal settings
-LIGHTRAG_TEMPORAL_ENABLED=true
-LIGHTRAG_SEQUENCE_FIRST=true
-
-# Version management
-LIGHTRAG_MAX_VERSION_PROBE=50          # Max versions to check
-LIGHTRAG_TRACK_EFFECTIVE_DATES=true    # Extract & store dates
-
-# Performance tuning
-LIGHTRAG_LOCK_TIMEOUT=30               # Seconds
-LIGHTRAG_TRANSACTION_TIMEOUT=60
-LIGHTRAG_MAX_PARALLEL_INSERT=4
-
-# Internationalization
-LIGHTRAG_LANGUAGE=en                   # en|es|fr|de|zh
-
-# Monitoring
-ENABLE_TEMPORAL_MONITORING=true
-CLOUDWATCH_NAMESPACE=LightRAG/Temporal
-```
-
-### Configuration File
-
-```ini
-[temporal]
-enabled = true
-sequence_first = true
-track_effective_dates = true
-max_versions_per_entity = 10
-lock_timeout_seconds = 30
-transaction_timeout_seconds = 60
-language = en
+# Maximum version number to probe when resolving the latest/effective version
+# of an entity (see lightrag/temporal/filtering.py)
+LIGHTRAG_MAX_VERSION_PROBE=100
 ```
 
 ---

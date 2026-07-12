@@ -245,7 +245,7 @@ python -m lightrag.evaluation.temporal_evaluator \
 Evaluate multiple workspaces for comparative analysis:
 
 ```bash
-# Evaluate all workspaces with temporal mode
+# Evaluate all workspaces with agentic mode
 python -m lightrag.evaluation.temporal_evaluator --all-workspaces --reference-date 2024-01-15
 ```
 

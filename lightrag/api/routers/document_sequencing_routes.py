@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.utils import logger
+
 # Add project root to path to import data_prep
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -27,10 +30,6 @@ except ImportError:
 
         def prepare_documents(self, *args, **kwargs):
             return []
-
-
-from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.utils import logger
 
 
 class DocumentSequenceUpdate(BaseModel):

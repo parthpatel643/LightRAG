@@ -229,7 +229,7 @@ await rag.ainsert(
 
 **Via Web UI:**
 1. Go to "Query" tab
-2. Select mode: "Temporal"
+2. Select mode: "Agentic"
 3. Set reference date (e.g., 2024-06-01)
 4. Type your question
 5. View results with citations
@@ -342,20 +342,15 @@ For detailed profiling workflows, see [PROFILING_GUIDE.md](PROFILING_GUIDE.md) a
 ## Testing Your Installation
 
 ```bash
-# Test data sequencing
-uv run test_prep.py
+# Run the full test suite (resolves the venv/uv/python interpreter automatically)
+./scripts/test.sh tests
 
-# Test entity versioning
-uv run test_ingest.py
+# Run a specific test file
+./scripts/test.sh tests/kg/test_graph_storage.py
 
-# Test temporal queries
-uv run test_temporal.py
-
-# Test complete workflow
-uv run demo_temporal_rag.py
+# Run with custom worker count
+./scripts/test.sh tests --test-workers 4
 ```
-
-All tests should pass with ✅ indicators.
 
 ---
 

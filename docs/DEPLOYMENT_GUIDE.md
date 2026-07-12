@@ -59,9 +59,7 @@ EMBEDDING_MODEL=text-embedding-3-small
 HOST=0.0.0.0
 PORT=9621
 
-# Optional: Temporal Settings
-LIGHTRAG_TEMPORAL_ENABLED=true
-LIGHTRAG_SEQUENCE_FIRST=true
+# Optional: Chunking Settings
 CHUNK_SIZE=2000
 CHUNK_OVERLAP_SIZE=200
 ```
@@ -89,8 +87,7 @@ bun run dev
 curl http://localhost:9621/health
 
 # Run tests
-uv run test_prep.py
-uv run demo_temporal_rag.py
+./scripts/test.sh tests
 ```
 
 ---
@@ -153,8 +150,7 @@ EMBEDDING_MODEL=text-embedding-3-small
 STORAGE_TYPE=networkx        # or neo4j, mongodb, etc.
 RAG_STORAGE_DIR=/data/rag_storage
 
-# Temporal Settings (optional)
-LIGHTRAG_TEMPORAL_ENABLED=true
+# Chunking Settings (optional)
 CHUNK_SIZE=2000
 ```
 
@@ -752,7 +748,7 @@ CACHE_BACKEND=redis
 ### Slow queries
 
 ```bash
-# Check if using temporal mode unnecessarily
+# Check if using agentic mode unnecessarily
 # Prefer local/hybrid over global
 
 # Increase chunk size for large documents
@@ -862,7 +858,7 @@ ps aux | grep lightrag-server
 - [ ] **Functionality Tests**
   - [ ] Document ingestion works
   - [ ] Query execution works
-  - [ ] All query modes functional (local, global, hybrid, temporal)
+  - [ ] All query modes functional (local, global, hybrid, agentic)
   - [ ] Multi-user concurrent access tested
   - [ ] Error handling verified
 

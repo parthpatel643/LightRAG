@@ -23,7 +23,7 @@ import { FolderOpen, Plus, Settings2, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
-import { listWorkspaces, switchWorkspace } from '@/api/lightrag'
+import { listWorkspaces } from '@/api/lightrag'
 
 export interface WorkspaceConfig {
   name: string
@@ -138,12 +138,15 @@ export default function WorkspaceSwitcher({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Run only once on mount
 
-  // Sync selectedWorkspace when currentWorkspace prop changes from outside
-  useEffect(() => {
+  // Sync selectedWorkspace when currentWorkspace prop changes from outside.
+  // Render-time comparison avoids cascading renders from setState-in-useEffect.
+  const [previousCurrentWorkspace, setPreviousCurrentWorkspace] = useState(currentWorkspace)
+  if (currentWorkspace !== previousCurrentWorkspace) {
+    setPreviousCurrentWorkspace(currentWorkspace)
     if (currentWorkspace && currentWorkspace !== selectedWorkspace) {
       setSelectedWorkspace(currentWorkspace)
     }
-  }, [currentWorkspace, selectedWorkspace])
+  }
 
   // Save workspaces to localStorage
   const saveWorkspaces = useCallback((updatedWorkspaces: WorkspaceConfig[]) => {
@@ -221,26 +224,6 @@ export default function WorkspaceSwitcher({
       setIsLoading(false)
     }
   }, [newWorkspace, workspaces, saveWorkspaces, handleWorkspaceSelect, t])
-
-  // Handle workspace deletion
-  const handleDeleteWorkspace = useCallback((workspaceName: string) => {
-    if (workspaceName === 'default') {
-      toast.error(t('workspace.cannotDeleteDefault', 'Cannot delete default workspace'))
-      return
-    }
-
-    const updatedWorkspaces = workspaces.filter(w => w.name !== workspaceName)
-    saveWorkspaces(updatedWorkspaces)
-
-    // If deleted workspace was selected, switch to default
-    if (selectedWorkspace === workspaceName) {
-      handleWorkspaceSelect('default')
-    }
-
-    toast.success(
-      t('workspace.deleted', 'Workspace deleted: {{name}}', { name: workspaceName })
-    )
-  }, [workspaces, selectedWorkspace, saveWorkspaces, handleWorkspaceSelect, t])
 
   return (
     <div className={`flex items-center gap-2 ${className || ''}`}>

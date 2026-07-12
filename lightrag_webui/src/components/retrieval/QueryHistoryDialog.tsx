@@ -1,8 +1,7 @@
 import { useState, useMemo } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/Dialog'
 import { useSettingsStore } from '@/stores/settings'
-import { useTranslation } from 'react-i18next'
-import { History, Search, Star, StarOff, Trash2, Copy, X } from 'lucide-react'
+import { History, Search, Star, StarOff, Trash2, Copy } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import { cn } from '@/lib/utils'
@@ -23,22 +22,25 @@ interface SavedQuery {
 }
 
 export function QueryHistoryDialog({ open, onOpenChange, onSelectQuery }: QueryHistoryDialogProps) {
-  const { t } = useTranslation()
   const userPromptHistory = useSettingsStore.use.userPromptHistory()
   const setUserPromptHistory = useSettingsStore.use.setUserPromptHistory()
-  
+
   const [searchTerm, setSearchTerm] = useState('')
   const [starredQueries, setStarredQueries] = useState<Set<string>>(new Set())
   const [filterStarred, setFilterStarred] = useState(false)
+  // Stable "now" captured once at mount, threaded explicitly into timestamp
+  // calculations instead of calling Date.now() during render (avoids
+  // react-hooks/purity violations).
+  const [now] = useState(() => Date.now())
 
   // Convert history to saved queries format
   const savedQueries = useMemo<SavedQuery[]>(() => {
     return userPromptHistory.map((query, index) => ({
       query,
-      timestamp: Date.now() - (userPromptHistory.length - index) * 60000, // Mock timestamps
+      timestamp: now - (userPromptHistory.length - index) * 60000, // Mock timestamps
       starred: starredQueries.has(query)
     }))
-  }, [userPromptHistory, starredQueries])
+  }, [userPromptHistory, starredQueries, now])
 
   // Filter queries based on search and starred filter
   const filteredQueries = useMemo(() => {
@@ -102,8 +104,7 @@ export function QueryHistoryDialog({ open, onOpenChange, onSelectQuery }: QueryH
     toast.success('Query loaded')
   }
 
-  const formatTimestamp = (timestamp: number) => {
-    const now = Date.now()
+  const formatTimestamp = (timestamp: number, now: number) => {
     const diff = now - timestamp
     const minutes = Math.floor(diff / 60000)
     const hours = Math.floor(diff / 3600000)
@@ -208,7 +209,7 @@ export function QueryHistoryDialog({ open, onOpenChange, onSelectQuery }: QueryH
                         </p>
                       </button>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                        {formatTimestamp(item.timestamp)}
+                        {formatTimestamp(item.timestamp, now)}
                       </p>
                     </div>
 

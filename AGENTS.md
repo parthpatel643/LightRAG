@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-LightRAG is a Retrieval-Augmented Generation (RAG) framework that uses graph-based knowledge representation for enhanced information retrieval. The system extracts entities and relationships from documents, builds a knowledge graph, and uses multiple retrieval modes (`local`, `global`, `hybrid`, `mix`, `naive`, `temporal`) for queries. This fork adds temporal/versioning graph features (document sequencing, version-linking, `temporal` query mode), Neptune+OpenSearch dual-write storage, a distributed worker pool, an evaluation framework, and aviation-domain prompt tuning — see `docs/TEMPORAL.md` and `docs/ARCHITECTURE.md` for details.
+LightRAG is a Retrieval-Augmented Generation (RAG) framework that uses graph-based knowledge representation for enhanced information retrieval. The system extracts entities and relationships from documents, builds a knowledge graph, and uses multiple retrieval modes (`local`, `global`, `hybrid`, `mix`, `naive`, `bypass`, `agentic`) for queries. This fork adds temporal/versioning graph features (document sequencing, version-linking, `agentic` query mode), Neptune+OpenSearch dual-write storage, an evaluation framework, and aviation-domain prompt tuning — see `docs/TEMPORAL.md` and `docs/ARCHITECTURE.md` for details.
 
 ## Project Structure
 
@@ -17,13 +17,13 @@ Top-level directories:
 ### Module Layout (`lightrag/`)
 
 - **lightrag.py**: Main orchestrator class (`LightRAG`) — assembled from mixins (see *LightRAG class composition*). Hosts `ainsert_custom_kg`, `_insert_done`, `_process_extract_entities`, `_refresh_addon_params_cache`, `addon_params` accessors, and this fork's `SequenceIndexManager` initialization. Critical: always call `await rag.initialize_storages()` after instantiation.
-- **pipeline.py**: `_PipelineMixin` — owns the document ingestion pipeline (`apipeline_enqueue_documents`, `apipeline_process_enqueue_documents`, `apipeline_process_error_documents`), the `parse_native` / `parse_mineru` / `parse_docling` parser dispatchers, multimodal analysis, validation, metadata-aware insertion (`sequence_index`/`effective_date`/`doc_type`), and the worker scaffolding (including this fork's distributed worker pool).
+- **pipeline.py**: `_PipelineMixin` — owns the document ingestion pipeline (`apipeline_enqueue_documents`, `apipeline_process_enqueue_documents`, `apipeline_process_error_documents`), the `parse_native` / `parse_mineru` / `parse_docling` parser dispatchers, multimodal analysis, validation, and metadata-aware insertion (`sequence_index`/`effective_date`/`doc_type`).
 - **utils_pipeline.py**: Pure helpers shared by the pipeline mixin and other entry points: doc-status field access, document identity (source key, content hash), parsed-artifact path resolution, parser payload normalization, multimodal entity augmentation, and `make_lightrag_doc_content`.
 - **llm_roles.py**: `RoleSpec` / `RoleLLMConfig` / `_RoleLLMState` / `ROLES` registry plus `_RoleLLMMixin` — role normalization, builder registration, wrapper rebuild, runtime config update, queue cleanup, sanitized config export, queue status reporting. Route role-specific behavior here rather than into provider modules.
 - **storage_migrations.py**: `_StorageMigrationMixin` — `check_and_migrate_data`, `_migrate_entity_relation_data`, `_migrate_chunk_tracking_storage`.
 - **addon_params.py**: `ObservableAddonParams` plus `default_addon_params` / `normalize_addon_params` helpers.
 - **operate.py**: Core extraction and query operations including entity/relation extraction, chunking, multi-mode retrieval logic, and this fork's version-linking utilities (`_extract_version_info`, `_create_version_link_edges`, `get_version_history`).
-- **base.py**: Abstract base classes for storage backends (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`, `BaseDocStatusStorage`); this fork extends doc-status fields with `sequence_index`/`effective_date`/`doc_type` and adds `reference_date` / the `temporal` query mode.
+- **base.py**: Abstract base classes for storage backends (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`, `BaseDocStatusStorage`); this fork extends doc-status fields with `sequence_index`/`effective_date`/`doc_type` and adds `reference_date` / the `agentic` query mode.
 - **kg/**: Storage implementations (JSON, NetworkX, Neo4j, PostgreSQL, MongoDB, Redis, Milvus, Qdrant, Faiss, Memgraph, OpenSearch, NanoVectorDB). The backend registry (`STORAGE_IMPLEMENTATIONS` / `STORAGES`) lives in `kg/__init__.py`; `kg/factory.py::get_storage_class()` resolves backend classes from configuration. This fork adds Neptune+OpenSearch dual-write support.
 - **llm/**: LLM and embedding provider bindings (OpenAI, Ollama, Azure, Gemini, Bedrock, Anthropic, etc.). All async with caching support.
 - **parser/**: Unified parsing layer. `parser/routing.py` resolves engine and filename hints for `legacy`, `native`, `mineru`, and `docling` flows; `parser/debug.py` provides an offline LightRAG stub for the `parser/cli.py` debug entry point (`python -m lightrag.parser.cli`). Native format parsers live as sibling sub-packages under `parser/` (currently `parser/docx/`); external HTTP-based adapters live under `parser/external/` (`mineru`, `docling`) with shared helpers in `parser/external/_common.py`, `_manifest.py`, `_zip.py`.
@@ -90,7 +90,7 @@ For the rest — write ordering of `full_docs` vs `doc_status`, the workspace-sc
 - **hybrid**: Combines local and global
 - **naive**: Direct vector search without graph
 - **mix**: Integrates KG and vector retrieval (recommended with reranker)
-- **temporal** (this fork): Time-aware retrieval using `reference_date` and document version-linking; see `docs/TEMPORAL.md`
+- **agentic** (this fork): Time-aware retrieval using `reference_date` and document version-linking; see `docs/TEMPORAL.md`
 
 ## Development Commands
 
@@ -170,7 +170,7 @@ Use `--profile` and/or `--timing` flags with the standalone `query_graph.py` and
 
 - `tests/`: main test suite, mirrors feature folders. Place new tests under the subdirectory matching the module under test:
   - `tests/api/{auth,config,routes}/` for FastAPI server tests (auth/token, config loading, route handlers); top-level `tests/api/` for app-wide concerns (path prefixes, Ollama-compatible endpoint).
-  - `tests/chunker/`, `tests/evaluation/`, `tests/extraction/` for the like-named modules.
+  - `tests/agentic/`, `tests/chunker/`, `tests/evaluation/`, `tests/extraction/`, `tests/temporal/`, `tests/tools/` for the like-named modules.
   - `tests/kg/<backend>_impl/` for backend-specific storage tests, mirroring the `lightrag/kg/<backend>_impl.py` file naming. The `_impl` suffix on every subdirectory keeps the layout uniform and avoids `sys.path` shadowing on names that overlap with top-level PyPI/stdlib packages (`faiss`, `json`, `neo4j`, `networkx`, `redis`) when a test is launched directly via `python tests/kg/...`. Current backends: `faiss_impl/`, `json_impl/`, `memgraph_impl/`, `milvus_impl/`, `mongo_impl/`, `nano_impl/`, `neo4j_impl/`, `networkx_impl/`, `opensearch_impl/`, `postgres_impl/`, `qdrant_impl/`, `redis_impl/`. `tests/kg/` root holds cross-backend tests (`test_graph_storage`, `test_batch_graph_operations`, `test_unified_lock_safety`, `test_file_atomic`).
   - `tests/llm/<provider>_impl/` for provider-specific behavior, same `_impl` convention: `bedrock_impl/`, `gemini_impl/`, `ollama_impl/`, `openai_impl/`, `voyageai_impl/`, `zhipu_impl/`. `tests/llm/` root holds cross-provider concerns (embedding, VLM, cache, role).
   - `tests/parser/`, `tests/parser/docx/`, `tests/parser/external/{mineru,docling}/` for parser implementations.

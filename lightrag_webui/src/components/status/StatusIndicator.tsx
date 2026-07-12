@@ -27,8 +27,8 @@ const StatusIndicator = () => {
       {/* Header indicator - more prominent when disconnected */}
       <div
         className={cn(
-          "flex items-center gap-2 cursor-pointer transition-all duration-300 px-2 py-1 rounded-md",
-          !health && "bg-red-50 dark:bg-red-900/20 animate-pulse"
+          'flex items-center gap-2 cursor-pointer transition-all duration-300 px-2 py-1 rounded-md',
+          !health && 'bg-red-50 dark:bg-red-900/20 animate-pulse'
         )}
         onClick={() => setDialogOpen(true)}
         title={health ? t('graphPanel.statusIndicator.connected') : t('graphPanel.statusIndicator.disconnected')}

@@ -234,27 +234,6 @@ The temporal extensions integrate seamlessly with LightRAG's existing architectu
 
 ---
 
-## Configuration
-
-Enable temporal mode in `config.ini`:
-
-```ini
-[temporal]
-enabled = true
-sequence_first = true
-track_effective_dates = true
-max_versions_per_entity = 10
-```
-
-Or via environment variables:
-
-```bash
-export LIGHTRAG_TEMPORAL_ENABLED=true
-export LIGHTRAG_SEQUENCE_FIRST=true
-```
-
----
-
 ## Retrieval Pipeline
 
 ### The Max-Sequence Algorithm

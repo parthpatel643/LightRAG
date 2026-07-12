@@ -103,12 +103,13 @@ def main(
     ctx.obj["trace_name"] = trace_name
 
 
-# Import and register subcommands
-from lightrag.cli.build import app as build_app
-from lightrag.cli.config import app as config_app
-from lightrag.cli.info import app as info_app
-from lightrag.cli.interactive import app as interactive_app
-from lightrag.cli.query import app as query_app
+# Import and register subcommands (after `app` is defined above, since these
+# submodules are attached to it via add_typer below)
+from lightrag.cli.build import app as build_app  # noqa: E402
+from lightrag.cli.config import app as config_app  # noqa: E402
+from lightrag.cli.info import app as info_app  # noqa: E402
+from lightrag.cli.interactive import app as interactive_app  # noqa: E402
+from lightrag.cli.query import app as query_app  # noqa: E402
 
 app.add_typer(build_app, name="build", help="Build knowledge graph from documents")
 app.add_typer(query_app, name="query", help="Query the knowledge graph")

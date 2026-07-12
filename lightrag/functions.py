@@ -18,8 +18,13 @@ extra_body = {"extra_body": {"trace_data": {"session_id": str(uuid4())}}}
 
 
 def new_httpx_client():
-    # Create a new client per call; adjust options as needed
-    return httpx.AsyncClient(http2=True, verify=False)
+    # Create a new client per call; adjust options as needed.
+    # Internal LLM proxies (Kong-fronted) use an internal/self-signed CA, so
+    # blanket verify=True fails and blanket verify=False disables TLS
+    # validation entirely. Pin the specific CA bundle instead via
+    # LLM_PROXY_CA_BUNDLE; if unset, fall back to default verification.
+    ca_bundle = os.getenv("LLM_PROXY_CA_BUNDLE")
+    return httpx.AsyncClient(http2=True, verify=ca_bundle or True)
 
 
 # Define LLM model function

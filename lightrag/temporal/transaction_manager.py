@@ -283,7 +283,6 @@ async def example_transaction_usage():
     # Example: Insert entities and relations with transaction
     async with transaction() as tx:
         # Step 1: Insert entities
-        entities_to_insert = [{"name": "Entity1"}, {"name": "Entity2"}]
         inserted_entity_ids = []
 
         async def insert_entities():

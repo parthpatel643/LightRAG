@@ -131,7 +131,7 @@ const GraphLabels = () => {
 
   const fetchData = useCallback(
     async (query?: string): Promise<GraphLabelOption[]> => {
-      let results: GraphLabelOption[] = [];
+      let results: GraphLabelOption[];
       const graph = useGraphStore.getState().sigmaGraph
 
 
@@ -353,7 +353,7 @@ const GraphLabels = () => {
           value={label !== null ? label : '*'}
           onChange={(selectedLabel) => {
             // select the last item means query all
-            let newLabel = selectedLabel === '...' ? '*' : selectedLabel;
+            const newLabel = selectedLabel === '...' ? '*' : selectedLabel;
             const currentLabel = useSettingsStore.getState().queryLabel;
 
             // Handle reselecting the same label

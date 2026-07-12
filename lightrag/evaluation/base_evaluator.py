@@ -4,7 +4,7 @@ Base RAGAS Evaluator with Workspace Support
 
 This module provides a base evaluator class that supports:
 - Workspace-specific evaluation datasets and results
-- Multiple query modes including temporal
+- Multiple query modes including agentic
 - Consistent evaluation metrics across all modes
 
 Usage:
@@ -33,7 +33,6 @@ from dotenv import load_dotenv
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from lightrag.functions import llm_model_func
 from lightrag.utils import logger
 
 # Suppress deprecation warnings
@@ -57,7 +56,7 @@ READ_TIMEOUT_SECONDS = 180.0
 TOTAL_TIMEOUT_SECONDS = 210.0
 
 # Query modes supported
-QueryMode = Literal["local", "global", "hybrid", "naive", "mix", "temporal", "bypass"]
+QueryMode = Literal["local", "global", "hybrid", "naive", "mix", "agentic", "bypass"]
 
 
 def _is_nan(value: Any) -> bool:
@@ -72,7 +71,6 @@ try:
     from ragas import evaluate
     from ragas.llms import LangchainLLMWrapper
     from ragas.metrics import SimpleCriteriaScore
-    from tqdm.auto import tqdm
 
     RAGAS_AVAILABLE = True
 
@@ -313,7 +311,7 @@ class BaseRAGEvaluator(ABC):
             question: Question to query
             client: HTTP client
             mode: Query mode (defaults to self.query_mode)
-            reference_date: Reference date for temporal queries
+            reference_date: Reference date for agentic queries
             enable_rerank: Whether to enable reranking (defaults to env EVAL_ENABLE_RERANK or RERANK_BY_DEFAULT)
 
         Returns:
@@ -339,8 +337,8 @@ class BaseRAGEvaluator(ABC):
                     os.getenv("EVAL_ENABLE_RERANK", "true").lower() == "true"
                 )
 
-            # Add reference_date for temporal queries
-            if reference_date and payload["mode"] == "temporal":
+            # Add reference_date for agentic queries
+            if reference_date and payload["mode"] == "agentic":
                 payload["reference_date"] = reference_date
 
             # Make request

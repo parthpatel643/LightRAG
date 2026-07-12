@@ -60,7 +60,7 @@ prompts/entity_type/
 
 # Evaluation results
 lightrag/evaluation/results/
-evaluation/
+/evaluation/
 
 # Miscellaneous
 .DS_Store

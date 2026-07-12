@@ -1,5 +1,4 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/Dialog'
-import { useTranslation } from 'react-i18next'
 import { Keyboard } from 'lucide-react'
 
 interface KeyboardShortcutsDialogProps {
@@ -23,8 +22,6 @@ const shortcuts: Shortcut[] = [
 ]
 
 export function KeyboardShortcutsDialog({ open, onOpenChange }: KeyboardShortcutsDialogProps) {
-  const { t } = useTranslation()
-
   const categories = Array.from(new Set(shortcuts.map(s => s.category)))
 
   return (
