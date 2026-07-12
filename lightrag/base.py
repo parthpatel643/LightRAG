@@ -92,7 +92,7 @@ T = TypeVar("T")
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "temporal"] = (
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "agentic"] = (
         "mix"
     )
     """Specifies the retrieval mode:
@@ -101,7 +101,7 @@ class QueryParam:
     - "hybrid": Combines local and global retrieval methods.
     - "naive": Performs a basic search without advanced techniques.
     - "mix": Integrates knowledge graph and vector retrieval.
-    - "temporal": Hybrid mode with version filtering based on reference_date.
+    - "agentic": Hybrid mode with version filtering based on reference_date.
     """
 
     only_need_context: bool = False
@@ -152,10 +152,10 @@ class QueryParam:
     """
 
     reference_date: str | None = None
-    """Reference date for temporal mode queries.
+    """Reference date for agentic mode queries.
     Used to filter versioned entities by their effective_date.
     Format: 'YYYY-MM-DD' (e.g., '2024-01-01').
-    Only applicable when mode='temporal'.
+    Only applicable when mode='agentic'.
     """
 
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))

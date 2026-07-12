@@ -70,7 +70,7 @@ lightrag query "What was the landing fee in Q1 2024?" --as-of 2024-03-31
 POST /query
 {
   "query": "What was the landing fee?",
-  "mode": "temporal",
+  "mode": "agentic",
   "reference_date": "2024-03-31"
 }
 ```
@@ -90,7 +90,7 @@ lightrag query "What was the lavatory fee?" --as-of 2024-12-01
 Analyze how entities evolved across document revisions:
 
 ```bash
-lightrag query "How did parking fees change over time?" --mode temporal
+lightrag query "How did parking fees change over time?" --mode agentic
 # Compares all versions, showing effective dates and sequence numbers
 ```
 
@@ -287,7 +287,7 @@ msg = get_message("error.invalid_date", date="2024-02-30")
 POST /query
 {
   "query": "What is the aircraft landing fee?",
-  "mode": "temporal",
+  "mode": "agentic",
   "reference_date": "2024-06-15"
 }
 
@@ -344,10 +344,10 @@ Returns the latest version, respecting temporal constraints:
 
 ```bash
 # Query with specific date
-lightrag query "What was the fee?" --mode temporal --date 2024-01-01
+lightrag query "What was the fee?" --mode agentic --date 2024-01-01
 
 # Query latest version
-lightrag query "What is the current fee?" --mode temporal --latest
+lightrag query "What is the current fee?" --mode agentic --latest
 ```
 
 ### Local Mode (Single-Hop)

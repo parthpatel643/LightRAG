@@ -104,6 +104,7 @@ from lightrag.base import (
 )
 from lightrag.namespace import NameSpace
 from lightrag.chunker import chunking_by_token_size
+from lightrag.agentic.price_line_items import get_price_context
 from lightrag.operate import (
     extract_entities,
     kg_query,
@@ -2441,11 +2442,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = self._build_global_config()
+        price_context = await get_price_context(query.strip(), global_config)
 
         try:
             query_result = None
 
-            if param.mode in ["local", "global", "hybrid", "mix", "temporal"]:
+            if param.mode in ["local", "global", "hybrid", "mix", "agentic"]:
                 query_result = await kg_query(
                     query.strip(),
                     self.chunk_entity_relation_graph,
@@ -2457,6 +2459,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
+                    price_context=price_context,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -2467,6 +2470,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     text_chunks_db=self.text_chunks,
+                    price_context=price_context,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
@@ -2482,10 +2486,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     _date_preface = make_date_preface(param.reference_date)
                 except Exception:
                     _date_preface = make_date_preface(None)
+                _preface = "\n\n".join(p for p in (price_context, _date_preface) if p)
                 effective_system_prompt = (
-                    f"{_date_preface}\n\n{system_prompt}"
-                    if (_date_preface and system_prompt)
-                    else (_date_preface or system_prompt)
+                    f"{_preface}\n\n{system_prompt}"
+                    if (_preface and system_prompt)
+                    else (_preface or system_prompt)
                 )
                 response = await use_llm_func(
                     query.strip(),

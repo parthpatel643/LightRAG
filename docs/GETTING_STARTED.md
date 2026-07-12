@@ -185,7 +185,7 @@ bun run dev
 # Query directly
 python query_graph.py \
   --query "What are the current rates?" \
-  --mode temporal \
+  --mode agentic \
   --date 2025-01-01
 ```
 
@@ -240,7 +240,7 @@ curl -X POST "http://localhost:9621/query" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "What is the parking fee?",
-    "mode": "temporal",
+    "mode": "agentic",
     "reference_date": "2024-06-01"
   }'
 ```
@@ -250,7 +250,7 @@ curl -X POST "http://localhost:9621/query" \
 result = await rag.aquery(
     "What is the parking fee?",
     param=QueryParam(
-        mode="temporal",
+        mode="agentic",
         reference_date="2024-06-01"
     )
 )
@@ -274,7 +274,7 @@ print(result)
 ```bash
 python build_graph.py \
   --input-dir ./contracts \
-  --mode temporal
+  --mode agentic
 ```
 
 ### Query Historical Information
@@ -284,7 +284,7 @@ python build_graph.py \
 result = await rag.aquery(
     "What was the fee in Q1 2024?",
     param=QueryParam(
-        mode="temporal",
+        mode="agentic",
         reference_date="2024-03-31"  # Q1 2024
     )
 )
@@ -296,7 +296,7 @@ result = await rag.aquery(
 result = await rag.aquery(
     "How did the fee change over time?",
     param=QueryParam(
-        mode="temporal",
+        mode="agentic",
         reference_date="2025-01-01"  # Latest version
     )
 )

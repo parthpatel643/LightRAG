@@ -42,7 +42,7 @@ async def execute_query(
         rag: LightRAG instance
         query: Query string
         mode: Query mode
-        reference_date: Reference date for temporal mode
+        reference_date: Reference date for agentic mode
         stream: Whether to stream response
         timing: Optional timing breakdown
 
@@ -55,7 +55,7 @@ async def execute_query(
     # Build query parameters
     param = QueryParam(
         mode=mode,
-        reference_date=reference_date if mode == "temporal" else None,
+        reference_date=reference_date if mode == "agentic" else None,
     )
 
     # Log query details
@@ -67,7 +67,7 @@ async def execute_query(
         "[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]"
     )
     console.print(f"[bold]Mode:[/bold] {mode}")
-    if mode == "temporal" and reference_date:
+    if mode == "agentic" and reference_date:
         console.print(f"[bold]Reference Date:[/bold] {reference_date}")
     console.print(f"[bold]Query:[/bold] {query}")
     console.print(
@@ -111,13 +111,13 @@ def main(
         "hybrid",
         "--mode",
         "-m",
-        help="Query mode: local, global, hybrid, temporal, naive, mix, bypass",
+        help="Query mode: local, global, hybrid, agentic, naive, mix, bypass",
     ),
     date: Optional[str] = typer.Option(
         None,
         "--date",
         "-d",
-        help="Reference date for temporal mode (YYYY-MM-DD)",
+        help="Reference date for agentic mode (YYYY-MM-DD)",
     ),
     as_of: Optional[str] = typer.Option(
         None,
@@ -127,7 +127,7 @@ def main(
     latest: bool = typer.Option(
         False,
         "--latest",
-        help="Use latest version (temporal mode with today's date)",
+        help="Use latest version (agentic mode with today's date)",
     ),
     working_dir: Optional[str] = typer.Option(
         None,
@@ -245,8 +245,8 @@ def main(
     reference_date = as_of or date
     if latest:
         reference_date = datetime.now().strftime("%Y-%m-%d")
-        mode = "temporal"
-    elif mode == "temporal" and not reference_date:
+        mode = "agentic"
+    elif mode == "agentic" and not reference_date:
         reference_date = datetime.now().strftime("%Y-%m-%d")
         print_info(f"No date specified, using today: {reference_date}")
 

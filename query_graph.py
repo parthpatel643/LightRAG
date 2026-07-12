@@ -6,17 +6,17 @@ This script queries the LightRAG knowledge graph with support for temporal mode,
 allowing chronologically accurate retrieval based on reference dates.
 
 Usage:
-    # Query with temporal mode (specific date)
-    python query_graph.py --query "What is the service fee?" --mode temporal --date 2023-06-01
+    # Query with agentic mode (specific date)
+    python query_graph.py --query "What is the service fee?" --mode agentic --date 2023-06-01
 
     # Query with hybrid mode (no temporal filtering)
     python query_graph.py --query "What are the lease terms?" --mode hybrid
 
     # Interactive query mode
-    python query_graph.py --interactive --mode temporal
+    python query_graph.py --interactive --mode agentic
 
     # Compare responses at different dates
-    python query_graph.py --query "How did costs change?" --mode temporal --date 2024-06-01
+    python query_graph.py --query "How did costs change?" --mode agentic --date 2024-06-01
 """
 
 import argparse
@@ -46,8 +46,8 @@ async def query_rag(
     Args:
         rag: LightRAG instance
         query: Query string
-        mode: Query mode (local, global, hybrid, temporal, etc.)
-        reference_date: Reference date for temporal mode (YYYY-MM-DD)
+        mode: Query mode (local, global, hybrid, agentic, etc.)
+        reference_date: Reference date for agentic mode (YYYY-MM-DD)
         stream: Whether to stream the response
         profiler: Optional RAGProfiler for per-phase timing
 
@@ -57,7 +57,7 @@ async def query_rag(
     # Build query parameters
     param = QueryParam(
         mode=mode,
-        reference_date=reference_date if mode == "temporal" else None,
+        reference_date=reference_date if mode == "agentic" else None,
         enable_rerank=os.getenv("RERANK_BY_DEFAULT", "false").lower() == "true",
     )
 
@@ -66,7 +66,7 @@ async def query_rag(
     logger.info("QUERY")
     logger.info("=" * 60)
     logger.info(f"Mode: {mode}")
-    if mode == "temporal" and reference_date:
+    if mode == "agentic" and reference_date:
         logger.info(f"Reference Date: {reference_date}")
     logger.info(f"Query: {query}")
     logger.info("=" * 60 + "\n")
@@ -107,18 +107,18 @@ async def interactive_mode(
     Args:
         rag: LightRAG instance
         mode: Default query mode
-        default_date: Default reference date for temporal mode
+        default_date: Default reference date for agentic mode
         profiler: Optional RAGProfiler for per-phase timing
     """
     print("\n" + "=" * 60)
     print("INTERACTIVE QUERY MODE")
     print("=" * 60)
     print(f"Default mode: {mode}")
-    if mode == "temporal":
+    if mode == "agentic":
         print(f"Default date: {default_date or 'today'}")
     print("\nCommands:")
     print("  /mode <mode>       - Change query mode")
-    print("  /date <YYYY-MM-DD> - Set reference date (temporal mode)")
+    print("  /date <YYYY-MM-DD> - Set reference date (agentic mode)")
     print("  /help              - Show this help")
     print("  /quit or /exit     - Exit interactive mode")
     print("=" * 60 + "\n")
@@ -146,21 +146,21 @@ async def interactive_mode(
                 elif cmd == "/help":
                     print("\nCommands:")
                     print("  /mode <mode>       - Change query mode")
-                    print("  /date <YYYY-MM-DD> - Set reference date (temporal mode)")
+                    print("  /date <YYYY-MM-DD> - Set reference date (agentic mode)")
                     print("  /help              - Show this help")
                     print("  /quit or /exit     - Exit interactive mode")
                     continue
 
                 elif cmd == "/mode":
                     if len(cmd_parts) < 2:
-                        print("Usage: /mode <local|global|hybrid|temporal|naive|mix>")
+                        print("Usage: /mode <local|global|hybrid|agentic|naive|mix>")
                         continue
                     new_mode = cmd_parts[1].lower()
                     if new_mode in [
                         "local",
                         "global",
                         "hybrid",
-                        "temporal",
+                        "agentic",
                         "naive",
                         "mix",
                         "bypass",
@@ -177,8 +177,8 @@ async def interactive_mode(
                         continue
                     current_date = cmd_parts[1]
                     print(f"✓ Reference date set to: {current_date}")
-                    if current_mode != "temporal":
-                        print("  Note: Date only applies in temporal mode")
+                    if current_mode != "agentic":
+                        print("  Note: Date only applies in agentic mode")
                     continue
 
                 else:
@@ -191,7 +191,7 @@ async def interactive_mode(
                 rag=rag,
                 query=user_input,
                 mode=current_mode,
-                reference_date=current_date if current_mode == "temporal" else None,
+                reference_date=current_date if current_mode == "agentic" else None,
                 stream=False,
                 profiler=profiler,
             )
@@ -217,8 +217,8 @@ async def main():
     if not args.interactive and not args.query:
         parser.error("--query is required unless --interactive is specified")
 
-    if args.mode == "temporal" and not args.date and not args.interactive:
-        # Default to today's date for temporal mode
+    if args.mode == "agentic" and not args.date and not args.interactive:
+        # Default to today's date for agentic mode
         args.date = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"No --date specified, using today: {args.date}")
 
@@ -243,10 +243,10 @@ async def main():
                 embedding_func=embedding_func,
                 rerank_model_func=rerank_model_func,
                 enable_llm_cache=False,
-                kv_storage="MongoKVStorage",
-                vector_storage="MilvusVectorDBStorage",
-                graph_storage="NeptuneGraphStorage",
-                doc_status_storage="MongoDocStatusStorage",
+                # kv_storage="MongoKVStorage",
+                # vector_storage="MilvusVectorDBStorage",
+                # graph_storage="NeptuneGraphStorage",
+                # doc_status_storage="MongoDocStatusStorage",
             )
             await rag.initialize_storages()
     else:
@@ -256,10 +256,10 @@ async def main():
             embedding_func=embedding_func,
             rerank_model_func=rerank_model_func,
             enable_llm_cache=False,
-            kv_storage="MongoKVStorage",
-            vector_storage="MilvusVectorDBStorage",
-            graph_storage="NeptuneGraphStorage",
-            doc_status_storage="MongoDocStatusStorage",
+            # kv_storage="MongoKVStorage",
+            # vector_storage="MilvusVectorDBStorage",
+            # graph_storage="NeptuneGraphStorage",
+            # doc_status_storage="MongoDocStatusStorage",
         )
         await rag.initialize_storages()
 
@@ -303,14 +303,14 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single query with temporal mode
-  python query_graph.py --query "What is the service fee?" --mode temporal --date 2023-06-01
+  # Single query with agentic mode
+  python query_graph.py --query "What is the service fee?" --mode agentic --date 2023-06-01
 
   # Interactive mode
-  python query_graph.py --interactive --mode temporal --date 2024-01-01
+  python query_graph.py --interactive --mode agentic --date 2024-01-01
 
   # Stream response with timing breakdown
-  python query_graph.py --query "What changed?" --mode temporal --date 2024-06-01 --stream --timing
+  python query_graph.py --query "What changed?" --mode agentic --date 2024-06-01 --stream --timing
         """,
     )
     parser.add_argument(
@@ -325,12 +325,12 @@ Examples:
     parser.add_argument(
         "--mode",
         type=str,
-        default="temporal",
-        choices=["local", "global", "hybrid", "temporal", "naive", "mix", "bypass"],
+        default="agentic",
+        choices=["local", "global", "hybrid", "agentic", "naive", "mix", "bypass"],
         help="Query mode (default: hybrid)",
     )
     parser.add_argument(
-        "--date", type=str, help="Reference date for temporal mode (YYYY-MM-DD format)"
+        "--date", type=str, help="Reference date for agentic mode (YYYY-MM-DD format)"
     )
     parser.add_argument("--stream", action="store_true", help="Stream the response")
     parser.add_argument(

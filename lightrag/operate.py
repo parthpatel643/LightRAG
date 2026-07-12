@@ -4409,6 +4409,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    price_context: str | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -4424,6 +4425,10 @@ async def kg_query(
         hashing_kv: Cache storage
         system_prompt: System prompt
         chunks_vdb: Document chunks vector database
+        price_context: Pre-computed `<price_line_items>` preface (highest
+            priority — prepended before the date preface), or None/"" when
+            the query is not a pricing question. See
+            `lightrag.agentic.price_line_items.get_price_context`.
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -4501,10 +4506,10 @@ async def kg_query(
         else "Multiple Paragraphs"
     )
 
-    # Build system prompt - use temporal prompt for temporal mode
-    if query_param.mode == "temporal":
+    # Build system prompt - use agentic prompt for agentic mode
+    if query_param.mode == "agentic":
         sys_prompt_temp = (
-            system_prompt if system_prompt else PROMPTS["temporal_response"]
+            system_prompt if system_prompt else PROMPTS["agentic_response"]
         )
     else:
         sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
@@ -4515,16 +4520,17 @@ async def kg_query(
         context_data=context_result.context,
     )
 
-    # Inject date preface for LLM awareness (align to temporal when set)
+    # Inject date preface for LLM awareness (align to agentic when set)
     try:
         _ref_date = (
-            query_param.reference_date if query_param.mode == "temporal" else None
+            query_param.reference_date if query_param.mode == "agentic" else None
         )
     except Exception:
         _ref_date = None
     _date_preface = make_date_preface(_ref_date)
-    if _date_preface:
-        sys_prompt = f"{_date_preface}\n\n{sys_prompt}"
+    _preface = "\n\n".join(p for p in (price_context, _date_preface) if p)
+    if _preface:
+        sys_prompt = f"{_preface}\n\n{sys_prompt}"
 
     user_query = query
 
@@ -4553,7 +4559,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
-        query_param.reference_date or "",  # Include reference_date for temporal mode
+        query_param.reference_date or "",  # Include reference_date for agentic mode
         global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
@@ -4593,7 +4599,7 @@ async def kg_query(
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
                 "reference_date": query_param.reference_date
-                or "",  # Include for temporal mode
+                or "",  # Include for agentic mode
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
                 ),
@@ -5070,7 +5076,7 @@ async def _perform_kg_search(
             )
 
         # Get vector chunks for mix mode
-        if query_param.mode in ["mix", "temporal"] and chunks_vdb:
+        if query_param.mode in ["mix", "agentic"] and chunks_vdb:
             vector_chunks = await _get_vector_context(
                 query,
                 chunks_vdb,
@@ -5952,14 +5958,14 @@ async def _build_query_context(
     )
 
     if not search_result["final_entities"] and not search_result["final_relations"]:
-        if query_param.mode not in ["mix", "temporal"]:
+        if query_param.mode not in ["mix", "agentic"]:
             return None
         else:
             if not search_result["chunk_tracking"]:
                 return None
 
-    # Stage 1.5: Apply temporal filtering if in temporal mode (sequence-first, no date required)
-    if query_param.mode == "temporal":
+    # Stage 1.5: Apply temporal filtering if in agentic mode (sequence-first, no date required)
+    if query_param.mode == "agentic":
         logger.info(
             f"Applying temporal filter (sequence-first). reference_date ignored={bool(query_param.reference_date)}"
         )
@@ -6084,13 +6090,13 @@ async def _build_query_context(
         query_embedding=search_result["query_embedding"],
     )
 
-    # Stage 3.5: Apply temporal filtering to merged chunks if in temporal
+    # Stage 3.5: Apply temporal filtering to merged chunks if in agentic
     # mode. See _apply_temporal_merged_chunk_filter()'s docstring for the
     # provenance-scoped fix rationale (Root Cause B, 2026-07-11): vector-path
     # chunks stay gated by the global max_sequence; entity/relation-path
     # chunks bypass it, trusting filter_by_version()'s per-base-name
     # arbitration instead.
-    if query_param.mode == "temporal" and max_sequence > 0:
+    if query_param.mode == "agentic" and max_sequence > 0:
         original_merged_count = len(merged_chunks)
 
         # Vector-path chunk ids: already reduced to max_sequence by Stage 1
@@ -6755,6 +6761,7 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
+    price_context: str | None = None,
     return_raw_data: Literal[True] = True,
 ) -> dict[str, Any]: ...
 
@@ -6768,6 +6775,7 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
+    price_context: str | None = None,
     return_raw_data: Literal[False] = False,
 ) -> str | AsyncIterator[str]: ...
 
@@ -6780,6 +6788,7 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
+    price_context: str | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -6791,6 +6800,11 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        text_chunks_db: Text chunks storage
+        price_context: Pre-computed `<price_line_items>` preface (highest
+            priority — prepended before the date preface), or None/"" when
+            the query is not a pricing question. See
+            `lightrag.agentic.price_line_items.get_price_context`.
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -6945,8 +6959,9 @@ async def naive_query(
         _date_preface = make_date_preface(getattr(query_param, "reference_date", None))
     except Exception:
         _date_preface = make_date_preface(None)
-    if _date_preface:
-        sys_prompt = f"{_date_preface}\n\n{sys_prompt}"
+    _preface = "\n\n".join(p for p in (price_context, _date_preface) if p)
+    if _preface:
+        sys_prompt = f"{_preface}\n\n{sys_prompt}"
 
     user_query = query
 

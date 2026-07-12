@@ -961,8 +961,8 @@ python query_graph.py --query "test" --profile --timing
 # Profile specific modes
 python query_graph.py --query "test" --mode hybrid --profile
 
-# Temporal query profiling
-python query_graph.py --query "What changed?" --mode temporal --date 2024-01-01 --profile
+# Agentic query profiling
+python query_graph.py --query "What changed?" --mode agentic --date 2024-01-01 --profile
 
 # Full profiling with stats
 python build_graph.py --profile --timing > profiling_results.txt
@@ -1010,7 +1010,7 @@ python query_graph.py --query "What is the fee?" --profile --timing
 
 # Profile specific modes
 python query_graph.py --query "test" --mode hybrid --profile
-python query_graph.py --query "test" --mode temporal --date 2024-01-01 --profile
+python query_graph.py --query "test" --mode agentic --date 2024-01-01 --profile
 python query_graph.py --query "test" --mode global --profile
 
 # Profile with reranking

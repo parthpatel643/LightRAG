@@ -277,7 +277,7 @@ sequenceDiagram
     participant Filter as Temporal Filter
     participant LLM as LLM Generator
     
-    User->>API: POST /query<br/>{query, mode: "temporal", reference_date}
+    User->>API: POST /query<br/>{query, mode: "agentic", reference_date}
     API->>Vector: Embedding Search
     Note over Vector: Convert query to embedding<br/>Find top-k similar chunks
     Vector-->>API: Candidate Chunks<br/>[v1, v2, v3 entities]

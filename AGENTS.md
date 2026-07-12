@@ -147,7 +147,7 @@ bun test src/api/lightrag.test.ts  # Single test file
 
 Use `--profile` and/or `--timing` flags with the standalone `query_graph.py` and `build_graph.py` CLI helpers:
 - `python query_graph.py --query "text" --mode hybrid --timing`: Query with phase timing breakdown
-- `python query_graph.py --query "text" --mode temporal --date YYYY-MM-DD --profile`: Profile temporal queries
+- `python query_graph.py --query "text" --mode agentic --date YYYY-MM-DD --profile`: Profile agentic queries
 - `python build_graph.py --profile --timing`: Profile document ingestion
 
 ### Testing

@@ -18,7 +18,7 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "temporal"] = (
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "agentic"] = (
         Field(
             default="mix",
             description="Query mode",
@@ -98,7 +98,7 @@ class QueryRequest(BaseModel):
 
     reference_date: Optional[str] = Field(
         default=None,
-        description="Reference date for temporal mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='temporal'.",
+        description="Reference date for agentic mode queries. Format: 'YYYY-MM-DD' (e.g., '2024-01-01'). Only applicable when mode='agentic'.",
     )
 
     include_references: Optional[bool] = Field(

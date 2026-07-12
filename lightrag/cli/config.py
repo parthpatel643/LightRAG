@@ -179,7 +179,7 @@ def validate_config():
             "local",
             "global",
             "hybrid",
-            "temporal",
+            "agentic",
             "naive",
             "mix",
             "bypass",

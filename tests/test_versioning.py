@@ -403,7 +403,7 @@ class TestTemporalMode:
             result_early = await rag.aquery(
                 "What is Rule A and the monthly service fee?",
                 param=QueryParam(
-                    mode="temporal",
+                    mode="agentic",
                     reference_date="2023-12-31",
                 ),
             )
@@ -413,7 +413,7 @@ class TestTemporalMode:
             result_late = await rag.aquery(
                 "What is Rule A and the monthly service fee?",
                 param=QueryParam(
-                    mode="temporal",
+                    mode="agentic",
                     reference_date="2025-01-01",
                 ),
             )
@@ -534,7 +534,7 @@ class TestTemporalMode:
             # found a newer "Loading Dock Assignment" entity to supersede it.
             result = await rag.aquery(
                 "Which loading dock gate should the Supplier use?",
-                param=QueryParam(mode="temporal"),
+                param=QueryParam(mode="agentic"),
             )
             assert result is not None
             assert "7" in result, (

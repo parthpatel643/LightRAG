@@ -121,7 +121,7 @@ lightrag query [OPTIONS] "your question"
 --mode MODE, -m MODE             # Query mode (default: hybrid)
 --date DATE, -d DATE             # Reference date (YYYY-MM-DD)
 --as-of DATE                     # Alias for --date
---latest                         # Use today's date (temporal mode)
+--latest                         # Use today's date (agentic mode)
 --working-dir DIR, -w DIR        # Working directory
 --list-graphs                    # List available graphs
 --stream, -s                     # Stream response
@@ -138,7 +138,7 @@ lightrag query [OPTIONS] "your question"
 - `local` - Single-hop graph traversal (fast)
 - `global` - Multi-hop traversal (comprehensive)
 - `hybrid` - Balanced combination (default)
-- `temporal` - Time-aware with version filtering
+- `agentic` - Time-aware with version filtering
 - `naive` - Simple keyword matching
 - `mix` - Mixed strategy
 - `bypass` - Direct LLM query
@@ -204,8 +204,8 @@ lightrag interactive [OPTIONS]
 # Start interactive mode
 lightrag interactive
 
-# With temporal mode
-lightrag interactive --mode temporal --date 2024-01-01
+# With agentic mode
+lightrag interactive --mode agentic --date 2024-01-01
 
 # With specific graph
 lightrag interactive --working-dir ./contracts_rag
@@ -219,19 +219,19 @@ lightrag interactive --trace --trace-name "analysis-session"
 [hybrid] Query: What is the parking fee?
 Response: The parking fee is $200 per night...
 
-[hybrid] Query: /mode temporal
-✓ Mode changed to: temporal
+[hybrid] Query: /mode agentic
+✓ Mode changed to: agentic
 
-[temporal] Query: /date 2024-01-01
+[agentic] Query: /date 2024-01-01
 ✓ Reference date set to: 2024-01-01
 
-[temporal] Query: What was the parking fee?
+[agentic] Query: What was the parking fee?
 Response: In January 2024, the parking fee was $150 per night...
 
-[temporal] Query: /graph ./contracts_rag
+[agentic] Query: /graph ./contracts_rag
 ✓ Switched to working directory: ./contracts_rag
 
-[temporal] Query: /quit
+[agentic] Query: /quit
 Exiting interactive mode...
 ```
 
@@ -316,7 +316,7 @@ lightrag config show
 lightrag config set working-dir ./my_rag
 
 # Set default mode
-lightrag config set default-mode temporal
+lightrag config set default-mode agentic
 
 # Initialize new project
 lightrag config init ./my_project
@@ -437,12 +437,12 @@ lightrag query "What was the fee?" --as-of 2024-01-01
 lightrag query "What was the fee?" --as-of 2024-06-01
 lightrag query "What is the current fee?" --latest
 
-# Interactive temporal analysis
-lightrag interactive --mode temporal
-[temporal] Query: /date 2024-01-01
-[temporal] Query: What was the fee?
-[temporal] Query: /date 2024-06-01
-[temporal] Query: What was the fee?
+# Interactive agentic analysis
+lightrag interactive --mode agentic
+[agentic] Query: /date 2024-01-01
+[agentic] Query: What was the fee?
+[agentic] Query: /date 2024-06-01
+[agentic] Query: What was the fee?
 ```
 
 ### Production Deployment

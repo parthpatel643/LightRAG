@@ -50,7 +50,7 @@ async def interactive_session(
         "[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]"
     )
     console.print(f"[bold]Default mode:[/bold] {current_mode}")
-    if current_mode == "temporal":
+    if current_mode == "agentic":
         console.print(f"[bold]Default date:[/bold] {current_date}")
     console.print(f"[bold]Working directory:[/bold] {current_working_dir}")
 
@@ -98,7 +98,7 @@ async def interactive_session(
                 elif cmd == "/mode":
                     if len(cmd_parts) < 2:
                         print_error(
-                            "Usage: /mode <local|global|hybrid|temporal|naive|mix>"
+                            "Usage: /mode <local|global|hybrid|agentic|naive|mix>"
                         )
                         continue
                     new_mode = cmd_parts[1].lower()
@@ -106,7 +106,7 @@ async def interactive_session(
                         "local",
                         "global",
                         "hybrid",
-                        "temporal",
+                        "agentic",
                         "naive",
                         "mix",
                         "bypass",
@@ -125,8 +125,8 @@ async def interactive_session(
                         datetime.strptime(cmd_parts[1], "%Y-%m-%d")
                         current_date = cmd_parts[1]
                         print_success(f"Reference date set to: {current_date}")
-                        if current_mode != "temporal":
-                            print_info("Note: Date only applies in temporal mode")
+                        if current_mode != "agentic":
+                            print_info("Note: Date only applies in agentic mode")
                     except ValueError:
                         print_error(f"Invalid date format: {cmd_parts[1]}")
                         print_info("Expected format: YYYY-MM-DD")
@@ -179,7 +179,7 @@ async def interactive_session(
             # Execute query
             param = QueryParam(
                 mode=current_mode,
-                reference_date=current_date if current_mode == "temporal" else None,
+                reference_date=current_date if current_mode == "agentic" else None,
             )
 
             try:
@@ -222,7 +222,7 @@ def main(
         None,
         "--date",
         "-d",
-        help="Default reference date for temporal mode",
+        help="Default reference date for agentic mode",
     ),
     working_dir: Optional[str] = typer.Option(
         None,
@@ -249,8 +249,8 @@ def main(
         # Start interactive mode
         lightrag interactive
 
-        # With temporal mode
-        lightrag interactive --mode temporal --date 2024-01-01
+        # With agentic mode
+        lightrag interactive --mode agentic --date 2024-01-01
 
         # With specific working directory
         lightrag interactive --working-dir ./contracts_rag

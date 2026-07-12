@@ -13,7 +13,7 @@ Usage:
     python tests/debug_query_process.py --query "What are the key terms?" --working-dir "data/output/my-project"
 
     # Run with specific query mode
-    python tests/debug_query_process.py --query "Tell me about changes" --mode temporal --date 2024-01-01
+    python tests/debug_query_process.py --query "Tell me about changes" --mode agentic --date 2024-01-01
 
     # Keep intermediate results in debug output
     python tests/debug_query_process.py --query "What happened?" --keep-results
@@ -383,18 +383,18 @@ class QueryDebugger:
             query_info = {
                 "query_text": query,
                 "mode": mode,
-                "reference_date": date if mode == "temporal" else None,
+                "reference_date": date if mode == "agentic" else None,
                 "timestamp": datetime.now().isoformat(),
             }
 
             self.debug_logger.info(f"📝 Query text: {query}")
             self.debug_logger.info(f"🔄 Query mode: {mode}")
-            if mode == "temporal" and date:
+            if mode == "agentic" and date:
                 self.debug_logger.info(f"📅 Reference date: {date}")
 
             # Create QueryParam
             param = QueryParam(
-                mode=mode, reference_date=date if mode == "temporal" else None
+                mode=mode, reference_date=date if mode == "agentic" else None
             )
 
             query_info["query_param"] = {
@@ -432,7 +432,7 @@ class QueryDebugger:
                 raise RuntimeError("LightRAG not initialized")
 
             param = QueryParam(
-                mode=mode, reference_date=date if mode == "temporal" else None
+                mode=mode, reference_date=date if mode == "agentic" else None
             )
 
             self.debug_logger.info("⏳ Executing query (this may take a moment)...")
@@ -507,7 +507,7 @@ class QueryDebugger:
         Args:
             query: Query string
             mode: Query mode
-            date: Reference date for temporal mode
+            date: Reference date for agentic mode
 
         Returns:
             True if successful, False otherwise
@@ -594,8 +594,8 @@ Examples:
   # Basic query
   python tests/debug_query_process.py --query "What is the service fee?"
   
-  # With temporal mode and date
-  python tests/debug_query_process.py --query "What changed?" --mode temporal --date 2024-01-01
+  # With agentic mode and date
+  python tests/debug_query_process.py --query "What changed?" --mode agentic --date 2024-01-01
   
   # Verbose output with custom working directory
   python tests/debug_query_process.py --query "Query text" --working-dir "data/output/project" --verbose
@@ -615,11 +615,11 @@ Examples:
         "--mode",
         type=str,
         default="hybrid",
-        choices=["local", "global", "hybrid", "temporal", "naive", "mix", "bypass"],
+        choices=["local", "global", "hybrid", "agentic", "naive", "mix", "bypass"],
         help="Query mode (default: hybrid)",
     )
     parser.add_argument(
-        "--date", type=str, help="Reference date for temporal mode (YYYY-MM-DD format)"
+        "--date", type=str, help="Reference date for agentic mode (YYYY-MM-DD format)"
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Enable verbose debug output"

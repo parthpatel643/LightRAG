@@ -22,7 +22,7 @@ Start here for first-time users. Covers installation, setup, and your first quer
 Complete workflow guide for using LightRAG with best practices and advanced features.
 
 - Document organization & upload
-- Query modes (local, global, hybrid, temporal, naive, mix, bypass)
+- Query modes (local, global, hybrid, agentic, naive, mix, bypass)
 - Temporal queries with dates
 - WebUI features & controls
 - Workspace management

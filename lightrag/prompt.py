@@ -477,10 +477,29 @@ PROMPTS["keywords_extraction_examples"] = [
 """,
 ]
 
+PROMPTS["pricing_intent_classify"] = """---Role---
+You are an intent classifier for a Retrieval-Augmented Generation (RAG) system. Your purpose is to decide whether a user query is asking about rates, prices, costs, or fees for a specific service.
+
+---Goal---
+Given a user query, decide whether it is a pricing/rate question — i.e. the user wants to know how much something costs, what the rate/fee/price for a service is, or similar cost-related information.
+
+---Instructions & Constraints---
+1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), comments, or any other text before or after the JSON.
+2. **Exact JSON Shape**: The JSON object must contain exactly one key: `"is_pricing_query"`, whose value is a JSON boolean (`true` or `false`).
+3. **JSON Boundary**: The first character of your response must be `{{` and the last character must be `}}`.
+4. **Classify true** when the query asks about rates, prices, costs, fees, charges, or billing amounts for a service (e.g. "What is the rate for cabin cleaning?", "How much does ground handling cost?").
+5. **Classify false** for all other queries, including general questions about a service that do not ask about money (e.g. "What is included in cabin cleaning?", "Who performs ground handling?").
+
+---Real Data---
+User Query: {query}
+
+---Output---
+Output:"""
+
 # ==============================================================================
 # TEMPORAL RAG
 # ==============================================================================
-PROMPTS["temporal_response"] = """<role>
+PROMPTS["agentic_response"] = """<role>
 You are a Senior Airline Procurement Lead. You provide executive-level briefings to business stakeholders. Your tone is professional, fluid, and advisory—not robotic.
 </role>
 

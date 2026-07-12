@@ -180,7 +180,7 @@ for doc in docs:
 python build_graph.py \
   --input-dir ./contracts \
   --output-dir ./rag_storage \
-  --mode temporal
+  --mode agentic
 ```
 
 ---
@@ -267,7 +267,7 @@ result = await rag.aquery(
 result = await rag.aquery(
     "What is the parking fee?",
     param=QueryParam(
-        mode="temporal",
+        mode="agentic",
         reference_date="2024-06-01"
     )
 )
@@ -280,7 +280,7 @@ result = await rag.aquery(
 # Get latest version
 result = await rag.aquery(
     "What is the current parking fee?",
-    param=QueryParam(mode="temporal")
+    param=QueryParam(mode="agentic")
 )
 ```
 
@@ -290,7 +290,7 @@ result = await rag.aquery(
 result = await rag.aquery(
     "What was the parking fee?",
     param=QueryParam(
-        mode="temporal",
+        mode="agentic",
         reference_date="2024-01-01"
     )
 )
@@ -302,7 +302,7 @@ result = await rag.aquery(
 result = await rag.aquery(
     "How did the parking fee change?",
     param=QueryParam(
-        mode="temporal",
+        mode="agentic",
         reference_date="2025-01-01"  # Latest
     )
 )
@@ -467,19 +467,19 @@ Different reference dates produce different cache entries:
 # First query (cached)
 result1 = await rag.aquery(
     "What is the fee?",
-    param=QueryParam(mode="temporal", reference_date="2024-01-01")
+    param=QueryParam(mode="agentic", reference_date="2024-01-01")
 )
 
 # Different date = different cache entry
 result2 = await rag.aquery(
     "What is the fee?",
-    param=QueryParam(mode="temporal", reference_date="2024-06-01")
+    param=QueryParam(mode="agentic", reference_date="2024-06-01")
 )
 
 # Same query and date = uses cache
 result3 = await rag.aquery(
     "What is the fee?",
-    param=QueryParam(mode="temporal", reference_date="2024-01-01")
+    param=QueryParam(mode="agentic", reference_date="2024-01-01")
 )
 ```
 
@@ -494,7 +494,7 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("lightrag")
 
 # Queries now show detailed processing steps
-result = await rag.aquery("What is the fee?", param=QueryParam(mode="temporal"))
+result = await rag.aquery("What is the fee?", param=QueryParam(mode="agentic"))
 ```
 
 ---
