@@ -25,8 +25,8 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
-from lightrag.evaluation.semantic_equivalence_evaluator import SemanticEquivalenceEvaluator
-from lightrag.utils import logger
+from lightrag.evaluation.semantic_equivalence_evaluator import SemanticEquivalenceEvaluator  # noqa: E402
+from lightrag.utils import logger  # noqa: E402
 
 EVAL_DIR = PROJECT_ROOT / "evaluation"
 RESULTS_DIR = EVAL_DIR / "results"

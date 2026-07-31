@@ -256,10 +256,10 @@ async def main():
             embedding_func=embedding_func,
             rerank_model_func=rerank_model_func,
             enable_llm_cache=False,
-            # kv_storage="MongoKVStorage",
-            # vector_storage="MilvusVectorDBStorage",
-            # graph_storage="NeptuneGraphStorage",
-            # doc_status_storage="MongoDocStatusStorage",
+            kv_storage="MongoKVStorage",
+            vector_storage="MilvusVectorDBStorage",
+            graph_storage="NeptuneGraphStorage",
+            doc_status_storage="MongoDocStatusStorage",
         )
         await rag.initialize_storages()
 

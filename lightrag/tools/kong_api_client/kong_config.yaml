@@ -1,5 +1,5 @@
-app_name: "kong-app" # align with Chart.Name
-app_version: "1.0.0" # align with Chart.AppVersion 
+# app_name: "kong-app" # align with Chart.Name
+# app_version: "1.0.0" # align with Chart.AppVersion 
 kong_creds_secret: bos-kong-admin-creds
 kong_kic_creds_secret: bos-kong-admin-kic-creds
 oauth2_tenant_id: 1146cf6d-9b72-4828-bd04-9f1ccb305586

@@ -225,23 +225,31 @@ async def fetch_price_line_items(
     """Fetch candidate contract price-line rows matching `query`.
 
     Joins `contract_price_line` with `service_type`, `service_variant`,
-    `aircraft_group`, and `contract`; keeps only active, currently-effective
-    rows. When `workspace` parses into (station_code, service_line,
-    contract_number) (see `_parse_workspace_filters`), those are applied as
-    a hard pre-filter via the `contract`/`service_type` join — so a query
-    only ever surfaces price lines from its own contract/service line, never
-    another station's or line-of-business's pricing. When `workspace` is
-    None/unparseable, no such filter is applied (unscoped, matching prior
-    behavior).
+    `aircraft_group`, and `contract`. When `workspace` parses into
+    (station_code, service_line, contract_number) (see
+    `_parse_workspace_filters`), those are applied as a hard pre-filter via
+    the `contract`/`service_type` join — so a query only ever surfaces price
+    lines from its own contract/service line, never another station's or
+    line-of-business's pricing. When `workspace` is None/unparseable, no
+    such filter is applied (unscoped, matching prior behavior).
 
-    Within whatever scope results from that pre-filter, rows are further
-    ranked by keywords extracted from `query` against the description/raw-
-    text columns. If no content keywords are found in `query`, no text
-    filter is applied (falls back to most-recent active rows within scope).
-    Rows are ranked by number of matching keywords first (so e.g. a query
-    naming both an aircraft type and a service variant surfaces the row
-    matching both, ahead of unrelated rows that only match one generic
-    keyword), then by effective date (most recent first).
+    Matching is two-phase:
+    1. Within whatever scope results from the pre-filter, distinct
+       (aircraft_group_id, service_variant_id, contract_id) line items are
+       ranked by how many keywords (extracted from `query`) match their
+       description/raw-text columns. If no content keywords are found in
+       `query`, no text filter is applied (falls back to most-recently-
+       amended line items within scope). The top `top_k` distinct line
+       items are kept.
+    2. For each of those matched line items, ALL of its price rows are
+       returned — every historical effective-date window, not just the one
+       effective today. This is deliberate: a query comparing rates across
+       two periods (e.g. "how much did the rate increase from July 2025 to
+       January 2026") needs the superseded/historical row in context, not
+       only the currently-active one. Rows within a line item are ordered
+       most-recent-first; the model is expected to pick the row(s) matching
+       whatever date/period the query asks about (see
+       `price_database_protocol` in `agentic_response`).
 
     Returns [] on any error (unprovisioned table/DB, connection failure,
     etc.) so a missing/incomplete price DB never breaks a query.
@@ -260,6 +268,49 @@ async def fetch_price_line_items(
         )
 
         sql = f"""
+            WITH ranked_lines AS (
+                SELECT
+                    cpl.aircraft_group_id,
+                    cpl.service_variant_id,
+                    cpl.contract_id,
+                    MAX(cpl.price_effective_date) AS most_recent_effective_date,
+                    string_agg(
+                        coalesce(cpl.raw_service_description, '') || ' ' ||
+                        coalesce(st.description, '') || ' ' ||
+                        coalesce(sv.description, '') || ' ' ||
+                        coalesce(cpl.raw_aircraft_type, '') || ' ' ||
+                        coalesce(ag.display_name, ''),
+                        ' '
+                    ) AS searchable_text
+                FROM {schema}.contract_price_line cpl
+                LEFT JOIN {schema}.service_type st ON st.id = cpl.service_type_id
+                LEFT JOIN {schema}.service_variant sv ON sv.id = cpl.service_variant_id
+                LEFT JOIN {schema}.aircraft_group ag ON ag.id = cpl.aircraft_group_id
+                LEFT JOIN {schema}.contract c ON c.id = cpl.contract_id
+                WHERE cpl.active = true
+                  AND ($3::text IS NULL OR c.station_code ILIKE $3)
+                  AND ($4::text IS NULL OR c.contract_number ILIKE $4)
+                  AND ($5::text IS NULL OR st.code ILIKE $5)
+                GROUP BY cpl.aircraft_group_id, cpl.service_variant_id, cpl.contract_id
+            ),
+            scored_lines AS (
+                SELECT
+                    aircraft_group_id,
+                    service_variant_id,
+                    contract_id,
+                    most_recent_effective_date,
+                    CASE WHEN $2::text[] IS NULL THEN 0 ELSE (
+                        SELECT count(*) FROM unnest($2::text[]) AS kw
+                        WHERE searchable_text ILIKE '%' || kw || '%'
+                    ) END AS match_count
+                FROM ranked_lines
+            ),
+            top_lines AS (
+                SELECT aircraft_group_id, service_variant_id, contract_id
+                FROM scored_lines
+                ORDER BY match_count DESC, most_recent_effective_date DESC
+                LIMIT $1
+            )
             SELECT
                 cpl.id,
                 cpl.contract_id,
@@ -279,39 +330,17 @@ async def fetch_price_line_items(
                 cpl.raw_service_description,
                 cpl.raw_aircraft_type
             FROM {schema}.contract_price_line cpl
+            JOIN top_lines tl
+                ON tl.contract_id = cpl.contract_id
+               AND tl.aircraft_group_id IS NOT DISTINCT FROM cpl.aircraft_group_id
+               AND tl.service_variant_id IS NOT DISTINCT FROM cpl.service_variant_id
             LEFT JOIN {schema}.service_type st ON st.id = cpl.service_type_id
             LEFT JOIN {schema}.service_variant sv ON sv.id = cpl.service_variant_id
             LEFT JOIN {schema}.aircraft_group ag ON ag.id = cpl.aircraft_group_id
             LEFT JOIN {schema}.contract c ON c.id = cpl.contract_id
             WHERE cpl.active = true
-              AND cpl.price_effective_date <= now()
-              AND (cpl.price_end_date IS NULL OR cpl.price_end_date >= now())
-              AND ($3::text IS NULL OR c.station_code ILIKE $3)
-              AND ($4::text IS NULL OR c.contract_number ILIKE $4)
-              AND ($5::text IS NULL OR st.code ILIKE $5)
-              AND (
-                    $2::text[] IS NULL
-                    OR EXISTS (
-                        SELECT 1 FROM unnest($2::text[]) AS kw
-                        WHERE cpl.raw_service_description ILIKE '%' || kw || '%'
-                           OR st.description ILIKE '%' || kw || '%'
-                           OR sv.description ILIKE '%' || kw || '%'
-                           OR cpl.raw_aircraft_type ILIKE '%' || kw || '%'
-                           OR ag.display_name ILIKE '%' || kw || '%'
-                    )
-              )
-            ORDER BY (
-                CASE WHEN $2::text[] IS NULL THEN 0 ELSE (
-                    SELECT count(*) FROM unnest($2::text[]) AS kw
-                    WHERE cpl.raw_service_description ILIKE '%' || kw || '%'
-                       OR st.description ILIKE '%' || kw || '%'
-                       OR sv.description ILIKE '%' || kw || '%'
-                       OR cpl.raw_aircraft_type ILIKE '%' || kw || '%'
-                       OR ag.display_name ILIKE '%' || kw || '%'
-                )
-                END
-            ) DESC, cpl.price_effective_date DESC
-            LIMIT $1
+            ORDER BY cpl.aircraft_group_id, cpl.service_variant_id,
+                     cpl.price_effective_date DESC
         """  # noqa: S608 - schema/table names from constant/env config, not user input
 
         async with pool.acquire() as conn:

@@ -18,18 +18,24 @@ from .utils import rest_call
 last_token_updated_time = datetime.now()
 # Create a cache with a default TTL of 50 minutes (3000 seconds)
 # This ensures tokens are automatically invalidated after expiry
-ttl_seconds = 3000
-token_cache = Cache(ttl=ttl_seconds)
+cache_ttl_seconds = 3000
+# Generate token valid for 60 minutes while the cache is valid for 50 minutes
+# This would provide a safe 10 min buffer
+token_ttl_seconds = 3600
+token_cache = Cache(ttl=cache_ttl_seconds)
 
 
 # Extend MlAppConfig with additional Kong/OAuth2 configuration
 @dataclass
 class MlAppConfigExtended:
-    app_name: str
-    app_version: str
     kong_creds_secret: str | None = None
     kong_kic_creds_secret: str | None = None
-    oauth2_tenant_id: str | None = None
+    oauth2_tenant_id: str | None = None  # Legacy field for backward compatibility
+    oauth2_global_test_tenent_id: str | None = (
+        None  # Legacy field for backward compatibility
+    )
+    oauth2_tenants: dict | None = None  # New tenant-specific configuration
+    default_oauth2_tenant_type: str = "global"  # Default tenant type
     oauth2_token_generation_scope: str | None = None
     oauth2_token_generation_grant_type: str | None = None
 
@@ -87,7 +93,6 @@ class KongClient:
         # Retrieve Kong admin credentials from AWS Secrets Manager
         self.secret_name = config.kong_creds_secret
         self.secret = self.get_secret(self.secret_name, self.region_name)
-        self.kong_admin_url = self.secret.get("KONG_ADMIN_URL")
         self.token = self.secret.get("token")
 
         # Retrieve kic Kong admin credentials from AWS Secrets Manager
@@ -161,14 +166,24 @@ class KongClient:
         secret = response.json()["secret"]
         return key, secret
 
-    def generate_consumer_jwt_cred(self, user_cred, kic_flag):
+    def generate_consumer_jwt_cred(self, user_cred, kic_flag, app_env="dev"):
         # Retrieve or create JWT credentials for a consumer
         logging.debug("generating consumer jwt credentials")
-        kong_url = self.kong_admin_url
-        kong_token = self.token
-        if kic_flag:
-            kong_url = self.kic_kong_admin_url
-            kong_token = self.kic_token
+        if app_env.lower() in ["stg", "stage"]:
+            app_env = "STG"
+        elif app_env.lower() in ["prd", "prod"]:
+            app_env = "PRD"
+        elif app_env.lower() in ["qa"]:
+            app_env = "QA"
+        # Try env-specific key first (e.g. KONG_ADMIN_URL_DEV), fall back to KONG_ADMIN_URL
+        env_key = f"KONG_ADMIN_URL_{app_env.upper()}"
+        kong_url = self.kic_secret.get(env_key) or self.secret.get("KONG_ADMIN_URL")
+        if not kong_url:
+            raise ValueError(
+                f"Neither '{env_key}' nor 'KONG_ADMIN_URL' found in secret '{self.secret_name}'. "
+                f"Ensure the secret contains a key for the requested environment."
+            )
+        kong_token = self.kic_token
         consumer_config_resp = self.get_consumer_details(
             kong_url, kong_token, user_cred
         )
@@ -224,7 +239,7 @@ class KongClient:
         now = int(time.time())
 
         # Prepare payload
-        payload = {"iss": jwt_key, "exp": now + ttl_seconds}
+        payload = {"iss": jwt_key, "exp": now + token_ttl_seconds}
         if custom_payload is not None and isinstance(custom_payload, dict):
             payload.update(custom_payload)
 
@@ -232,49 +247,139 @@ class KongClient:
         bearer_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
 
         # Store in cache with the same TTL
-        token_cache.set(cache_key, bearer_token, ttl=ttl_seconds)
+        token_cache.set(cache_key, bearer_token, ttl=cache_ttl_seconds)
 
         return bearer_token
 
-    def generate_oauth2_token(self, client_id, client_secret, refresh_token=False):
-        # Create a unique cache key based on the client_id
-        cache_key = f"token_{client_id}"
+    def generate_oauth2_token(
+        self, client_id, client_secret, refresh_token=False, tenant_type=None
+    ):
+        """
+        Generate OAuth2 token with tenant-specific configuration.
+
+        Args:
+            client_id: OAuth2 client ID
+            client_secret: OAuth2 client secret
+            refresh_token: Force refresh the token even if cached
+            tenant_type: The tenant type to use (global, global_test, etc.).
+                        If None, uses default_oauth2_tenant_type from config
+
+        Returns:
+            Access token string
+
+        Raises:
+            ValueError: If tenant_type is invalid
+            Exception: If token generation request fails
+        """
+        # Resolve tenant type with fallback to default
+        resolved_tenant_type = tenant_type or config.default_oauth2_tenant_type
+
+        # Get tenant-specific OAuth2 tenant ID
+        if config.oauth2_tenants:
+            tenant_config = config.oauth2_tenants.get(resolved_tenant_type)
+            if not tenant_config:
+                raise ValueError(
+                    f"Invalid tenant_type: {resolved_tenant_type}. "
+                    f"Valid options: {list(config.oauth2_tenants.keys())}"
+                )
+            oauth2_tenant_id = tenant_config.get("tenant_id")
+            if not oauth2_tenant_id:
+                raise ValueError(
+                    f"tenant_id not found in config for tenant: {resolved_tenant_type}"
+                )
+        else:
+            # Backward compatibility: use legacy config keys if oauth2_tenants is not defined
+            if resolved_tenant_type == "global":
+                oauth2_tenant_id = config.oauth2_tenant_id
+            elif resolved_tenant_type == "global_test":
+                oauth2_tenant_id = config.oauth2_global_test_tenent_id
+            else:
+                raise ValueError(f"Unknown tenant type: {resolved_tenant_type}")
+
+            if not oauth2_tenant_id:
+                raise ValueError(
+                    f"oauth2_tenant_id not found in config for tenant: {resolved_tenant_type}"
+                )
+
+        # Create a unique cache key based on client_id and tenant_type
+        cache_key = f"token_{client_id}_{resolved_tenant_type}"
 
         # Return cached token if available and not forcing refresh
         if not refresh_token and cache_key in token_cache:
-            logging.debug("Using cached token for OAuth2 client.")
+            logging.debug(
+                f"Using cached token for OAuth2 client {client_id[:4]}****, tenant {resolved_tenant_type}"
+            )
             return token_cache.get(cache_key)
 
-        # generating the oauth2 token
-        logging.info("generating oauth2 token")
-        url = f"https://login.microsoftonline.com/{config.oauth2_tenant_id}/oauth2/v2.0/token"
+        # Generate the oauth2 token
+        logging.info(f"Generating oauth2 token for tenant type: {resolved_tenant_type}")
+        url = f"https://login.microsoftonline.com/{oauth2_tenant_id}/oauth2/v2.0/token"
 
         # Construct payload for client credentials flow
         payload = {
             "client_id": client_id,
             "client_secret": client_secret,
-            "scope": config.oauth2_token_generation_scope,
+            "scope": f"{client_id}/.default",
             "grant_type": config.oauth2_token_generation_grant_type,
         }
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         response = requests.request("POST", url, headers=headers, data=payload)
         if response.status_code == 200:
-            logging.info("Got successful response, fetching the token.")
+            logging.info(
+                f"OAuth2 token fetched successfully for tenant type: {resolved_tenant_type}"
+            )
             data = response.json()
             token = data["access_token"]
 
             # Store in cache with the same TTL
-            token_cache.set(cache_key, token, ttl=ttl_seconds)
+            token_cache.set(cache_key, token, ttl=cache_ttl_seconds)
 
             return token
         else:
-            # Raise error if token request failed
-            raise Exception(
-                f"Token generation request failed for {client_id} with status {response.status_code}: {response.text}"
-            )
+            # Check for specific error and retry with config scope if needed
+            if response.status_code == 400:
+                try:
+                    error_data = response.json()
+                    if (
+                        error_data.get("error") == "invalid_grant"
+                        and payload["scope"] == f"{client_id}/.default"
+                        and config.oauth2_token_generation_scope
+                    ):
+                        logging.info(
+                            "Retrying OAuth2 token generation with configured scope from config."
+                        )
+                        payload["scope"] = config.oauth2_token_generation_scope
+                        response = requests.request(
+                            "POST", url, headers=headers, data=payload
+                        )
+                        if response.status_code == 200:
+                            data = response.json()
+                            token = data["access_token"]
+                            token_cache.set(cache_key, token, ttl=cache_ttl_seconds)
+                            return token
+                        else:
+                            raise Exception(
+                                f"Retry with config scope failed with status {response.status_code}: {response.text}"
+                            )
+                    else:
+                        raise Exception(
+                            f"Token generation failed with status {response.status_code}: {response.text}"
+                        )
+                except Exception as e:
+                    raise Exception(f"Error parsing OAuth2 error response: {e}")
+            else:
+                # Raise error if token request failed
+                raise Exception(
+                    f"Token generation request failed for {client_id} with status {response.status_code}: {response.text}"
+                )
 
     def generate_token(
-        self, jwt_key=None, jwt_secret=None, refresh_token=True, custom_payload=None
+        self,
+        jwt_key=None,
+        jwt_secret=None,
+        refresh_token=False,
+        custom_payload=None,
+        tenant_type=None,
     ):
         """
         Generate a token for Kong authentication with caching based on the token type mentioned.
@@ -284,6 +389,9 @@ class KongClient:
             jwt_secret: the secret required for generating the token
             refresh_token: Force refresh the token even if cached
             custom_payload: Optional dict to include additional claims in the JWT token
+            tenant_type: The tenant type to use for OAuth2 tokens (global, global_test, etc.).
+                        If None, uses default_oauth2_tenant_type from config.
+                        Ignored for JWT authentication.
 
         Returns:
              bearer token string
@@ -293,6 +401,7 @@ class KongClient:
             ValueError: If jwt_key and jwt_secret are empty or None in the secret in case of jwt authentication.
             ValueError: If oauth2_client_id and oauth2_client_secret is empty or None in the secret in case of oidc authentication.
             ValueError: If the value of authentication type provided is not correct.
+            ValueError: If tenant_type is invalid for OAuth2 authentication.
         """
         # Validate input
         if self.authentication_type == "jwt":
@@ -330,7 +439,10 @@ class KongClient:
                 )
 
             token = self.generate_oauth2_token(
-                self.oauth2_client_id, self.oauth2_client_secret, refresh_token
+                self.oauth2_client_id,
+                self.oauth2_client_secret,
+                refresh_token,
+                tenant_type=tenant_type,
             )
 
         # Invalid auth type

@@ -9,7 +9,7 @@ Usage:
     python upload_to_s3.py --folder <local_folder> --s3-uri <s3://bucket/prefix>
 
 Example:
-    python upload_to_s3.py --folder ./rag_storage --s3-uri s3://my-lightrag-bucket/backups/2024-01-15/
+    python upload_to_s3.py --folder data/[workspace] --s3-uri s3://bos-model-monitoring-data-artifacts/line_stations/[workspace]
 """
 
 import argparse
