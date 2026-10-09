@@ -1,7 +1,5 @@
 """Surrounding-context enrichment for native multimodal sidecars.
 
-See ``docs/NativeMultimodalSurroundingContextPlan-zh.md``.
-
 For each entry in ``drawings.json`` / ``tables.json`` / ``equations.json``,
 this module locates the matching ``<drawing … id="…" … />``,
 ``<table … id="…" …>…</table>`` / table ``<cite refid="…">`` or
@@ -67,6 +65,7 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
 from html import escape as html_escape
 from html import unescape as html_unescape
 from pathlib import Path
@@ -268,6 +267,33 @@ def _char_trim_trailing(text: str, max_tokens: int, tokenizer: Tokenizer) -> str
 # ---------------------------------------------------------------------------
 
 
+def _largest_fitting_row_prefix(
+    row_count: int,
+    build,
+    max_tokens: int,
+    tokenizer: Tokenizer,
+) -> str | None:
+    """Return ``build(k)`` for the largest ``k`` in ``[1, row_count - 1]`` that fits.
+
+    ``build(k)`` renders a table holding ``k`` rows; its token count grows
+    with ``k``, so the search bisects instead of probing every ``k``: each
+    probe re-serializes and re-tokenizes the whole candidate, and a linear
+    scan over a large table is quadratic.  Bisection relies on that growth
+    being monotonic, the same tokenizer assumption ``_char_trim_trailing``
+    makes over characters.  Returns ``None`` when not even one row fits.
+    """
+    lo, hi = 0, row_count - 1
+    best: str | None = None
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = build(mid)
+        if _count_tokens(tokenizer, candidate) <= max_tokens:
+            lo, best = mid, candidate
+        else:
+            hi = mid - 1
+    return best
+
+
 def _row_trim_table_leading(
     tag_text: str, max_tokens: int, tokenizer: Tokenizer
 ) -> str | None:
@@ -289,14 +315,18 @@ def _row_trim_table_leading(
         if not parsed:
             return None
         attrs_str, rows = parsed
-        for k in range(len(rows) - 1, 0, -1):
-            candidate = (
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: (
                 f"<table {attrs_str}>"
                 f"{json.dumps(rows[-k:], ensure_ascii=False)}"
                 f"</table>"
-            )
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+            ),
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_json_table(
             attrs_str,
             json.dumps(rows[-1], ensure_ascii=False) if rows else body,
@@ -308,11 +338,14 @@ def _row_trim_table_leading(
         rows = split_html_rows(body)
         if not rows:
             return None
-        for k in range(len(rows) - 1, 0, -1):
-            inner = serialize_html_rows(rows[-k:])
-            candidate = f"<table {attrs}>{inner}</table>"
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs}>{serialize_html_rows(rows[-k:])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_html_table(
             attrs,
             rows[-1][1] if rows else body,
@@ -338,12 +371,16 @@ def _row_trim_table_trailing(
         if not parsed:
             return None
         attrs_str, rows = parsed
-        for k in range(len(rows) - 1, 0, -1):
-            candidate = (
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: (
                 f"<table {attrs_str}>{json.dumps(rows[:k], ensure_ascii=False)}</table>"
-            )
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+            ),
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_json_table(
             attrs_str,
             json.dumps(rows[0], ensure_ascii=False) if rows else body,
@@ -355,11 +392,14 @@ def _row_trim_table_trailing(
         rows = split_html_rows(body)
         if not rows:
             return None
-        for k in range(len(rows) - 1, 0, -1):
-            inner = serialize_html_rows(rows[:k])
-            candidate = f"<table {attrs}>{inner}</table>"
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs}>{serialize_html_rows(rows[:k])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_html_table(
             attrs,
             rows[0][1] if rows else body,
@@ -686,28 +726,44 @@ def _accumulate_text_trailing(
 # ---------------------------------------------------------------------------
 
 
-def load_chunk_separators() -> list[str]:
-    """Resolve the recursive-character separator cascade.
+@lru_cache(maxsize=32)
+def _cached_surrounding_chunk_separators(raw: str | None) -> tuple[str, ...]:
+    """Resolve and cache the usable surrounding-context separator cascade.
 
-    Reads ``CHUNK_R_SEPARATORS`` and falls back to
-    :data:`lightrag.constants.DEFAULT_R_SEPARATORS` on missing / invalid
-    JSON.  The returned list always has the empty-string sentinel
-    dropped — char fallback is signalled separately by the caller.
+    ``env_r_separators_for`` owns parsing, bounds, and the one-time correction
+    diagnostic. This companion cache owns the one-time diagnostic for the
+    surrounding-specific fallback when every configured separator was dropped.
+
+    ``raw`` is both the cache key and the value that gets parsed — reading the
+    environment a second time inside would let the cached entry be keyed on one
+    value and populated from another.
     """
-    raw = os.getenv("CHUNK_R_SEPARATORS")
-    separators: list[str]
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
-                separators = parsed
-            else:
-                separators = list(DEFAULT_R_SEPARATORS)
-        except json.JSONDecodeError:
-            separators = list(DEFAULT_R_SEPARATORS)
-    else:
-        separators = list(DEFAULT_R_SEPARATORS)
-    return [s for s in separators if s]
+    from lightrag.parser.routing import env_r_separators_for
+
+    # ``CHUNK_R_SEPARATORS`` reaches ``enrich_sidecars_with_surrounding``, which
+    # scans each block once per separator. Reuse the same bounded environment
+    # configuration as the R chunker; the empty sentinel remains deliberately
+    # absent because this caller signals char fallback separately.
+    result = [s for s in env_r_separators_for(raw) if s]
+    if not result:
+        # Unlike the chunker, this function has no "splitter default" to fall back
+        # to — its callers expect a usable cascade — so it falls back the same way
+        # it already does for malformed env values.
+        logger.warning(
+            "[load_chunk_separators] no usable separators after bounding; "
+            "falling back to DEFAULT_R_SEPARATORS"
+        )
+        result = [s for s in DEFAULT_R_SEPARATORS if s]
+    return tuple(result)
+
+
+def load_chunk_separators() -> list[str]:
+    """Return cached separators for multimodal surrounding-context splitting.
+
+    The returned list always omits the empty-string sentinel — char fallback is
+    signalled separately by the caller.
+    """
+    return list(_cached_surrounding_chunk_separators(os.getenv("CHUNK_R_SEPARATORS")))
 
 
 def load_content_rows_by_blockid(blocks_path: str) -> dict[str, str]:
@@ -792,6 +848,26 @@ _CONTENT_TRUNCATION_MARKER = (
 )
 
 
+def _trim_content_inner(
+    content: str,
+    *,
+    kind: str,
+    budget: int,
+    tokenizer: Tokenizer,
+) -> str:
+    """Kind-aware head trim for ``trim_content_to_budget`` (tables row-aware)."""
+    if kind == "tables":
+        match = TABLE_TAG_RE.match(content.strip())
+        if match:
+            trimmed = _row_trim_table_trailing(content, budget, tokenizer)
+            if trimmed is not None:
+                return trimmed
+            # Budget too small for a valid <table> wrapper; trim body text only
+            # so we never emit a partial opening tag.
+            return _char_trim_trailing(match.group("body"), budget, tokenizer)
+    return _char_trim_trailing(content, budget, tokenizer)
+
+
 def trim_content_to_budget(
     content: str,
     *,
@@ -833,22 +909,28 @@ def trim_content_to_budget(
         original=original_tokens, final=max_tokens
     )
     marker_tokens = _count_tokens(tokenizer, marker_probe)
+    # Marker alone can exceed a tiny budget; omit it and keep head content.
+    if marker_tokens >= max_tokens:
+        return _trim_content_inner(
+            content, kind=kind, budget=max_tokens, tokenizer=tokenizer
+        ), True
     inner_budget = max(0, max_tokens - marker_tokens)
 
-    trimmed_inner: str | None = None
-    if kind == "tables" and TABLE_TAG_RE.match(content.strip()):
-        # _row_trim_table_trailing keeps head rows and internally falls back
-        # to char-level fits while preserving the <table> wrapper.  Only
-        # malformed / unrecognized-format markup returns None.
-        trimmed_inner = _row_trim_table_trailing(content, inner_budget, tokenizer)
-    if trimmed_inner is None:
-        trimmed_inner = _char_trim_trailing(content, inner_budget, tokenizer)
+    trimmed_inner = _trim_content_inner(
+        content, kind=kind, budget=inner_budget, tokenizer=tokenizer
+    )
 
     final_tokens = _count_tokens(tokenizer, trimmed_inner)
     marker = _CONTENT_TRUNCATION_MARKER.format(
         original=original_tokens, final=final_tokens
     )
-    return trimmed_inner + marker, True
+    result = trimmed_inner + marker
+    # Tokenizer non-additivity can still push past the budget; drop marker then.
+    if _count_tokens(tokenizer, result) > max_tokens:
+        return _trim_content_inner(
+            content, kind=kind, budget=max_tokens, tokenizer=tokenizer
+        ), True
+    return result, True
 
 
 def build_surrounding(

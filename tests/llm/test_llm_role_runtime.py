@@ -336,6 +336,7 @@ def test_role_llm_config_logs_once_on_init_with_metadata(
                         "provider_options": {
                             "temperature": 0.1,
                             "token": "nested-token",
+                            "thinking_token_budget": 2000,
                         },
                         "bedrock_aws_options": {
                             "region_name": "us-east-1",
@@ -352,6 +353,8 @@ def test_role_llm_config_logs_once_on_init_with_metadata(
     assert snapshot["host"] == "https://api.example.com/v1"
     assert snapshot["max_async"] == 7
     assert snapshot["timeout"] == 42
+    assert snapshot["metadata"]["provider_options"]["thinking_token_budget"] == 2000
+    assert "token" not in snapshot["metadata"]["provider_options"]
 
     headers = _role_config_headers(caplog)
     assert len(headers) == 1
@@ -885,6 +888,47 @@ async def test_embedding_and_rerank_queue_status_are_observable(tmp_path):
     assert rerank_status["available"] is True
     assert rerank_status["queue_name"] == "Rerank func"
     assert rerank_status["max_async"] == rag.rerank_model_max_async
+
+
+@pytest.mark.asyncio
+async def test_finalize_storages_shuts_down_all_model_queues(tmp_path):
+    """Finalize owns model-queue cleanup even before storage initialization.
+
+    This is the lifecycle used by synchronous wrappers and asyncio.run(): the
+    event loop is destroyed immediately after finalize returns, so no worker
+    or health-check task may remain pending on it.
+    """
+
+    async def rerank_func(*args, **kwargs):
+        return []
+
+    rag = _make_rag(tmp_path, rerank_model_func=rerank_func)
+
+    for wrapped in rag.role_llm_funcs.values():
+        assert await wrapped("warmup") == "base"
+    await rag.embedding_func(["warmup"])
+    assert await rag.rerank_model_func("warmup") == []
+
+    assert all(
+        status["initialized"]
+        for status in (
+            *(await rag.get_llm_queue_status()).values(),
+            await rag.get_embedding_queue_status(),
+            await rag.get_rerank_queue_status(),
+        )
+    )
+
+    await rag.finalize_storages()
+    # Re-entry is supported and must not recreate workers.
+    await rag.finalize_storages()
+
+    statuses = (
+        *(await rag.get_llm_queue_status()).values(),
+        await rag.get_embedding_queue_status(),
+        await rag.get_rerank_queue_status(),
+    )
+    assert all(status["initialized"] is False for status in statuses)
+    assert all(status["worker_count"] == 0 for status in statuses)
 
 
 def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):

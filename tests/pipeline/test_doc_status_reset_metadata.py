@@ -22,9 +22,16 @@ import pytest
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.constants import (
+    KG_PURGE_METADATA_KEY,
+    KG_PURGE_PHASE_ANCHORS_PENDING,
+    KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
+    KG_WRITE_STATE_METADATA_KEY,
+)
 from lightrag.utils_pipeline import (
     doc_status_metadata_has_attempt_fields,
     doc_status_reset_metadata,
+    doc_status_transition_metadata,
 )
 
 pytestmark = pytest.mark.offline
@@ -144,6 +151,87 @@ def test_reset_metadata_handles_empty_or_invalid_metadata():
     )
 
 
+def test_reset_metadata_keeps_kg_recovery_state():
+    """The KG write marker and purge journal must survive a FAILED->PENDING
+    reset (issue #3400 fail-closed purge).
+
+    A reset is exactly the case that must not strip them: the retry re-runs
+    extraction, and if the previous attempt's purge is half-done (anchors
+    already deleted, journal at ``anchors_pending``) the journal is the only
+    thing left that can tell the resumed purge those anchors were removed
+    deliberately. Dropping it turns a resumable purge into a permanent
+    fail-closed refusal — a document that can neither be reprocessed nor
+    deleted.
+    """
+    journal = {
+        "schema_version": 1,
+        "operation_id": "purge-abc",
+        "phase": KG_PURGE_PHASE_ANCHORS_PENDING,
+        "chunk_count": 2,
+    }
+    result = doc_status_reset_metadata(
+        {
+            "metadata": {
+                **_FULL_ATTEMPT_METADATA,
+                KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
+                KG_PURGE_METADATA_KEY: journal,
+            }
+        }
+    )
+
+    assert result == {
+        "process_options": "iF",
+        "source_file": "report.pdf",
+        KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
+        KG_PURGE_METADATA_KEY: journal,
+    }
+
+
+def test_transition_metadata_carries_kg_recovery_state_and_drop_retires_it():
+    """Carry-over keeps both keys across every status transition, and ``drop``
+    is the only way to retire one (passing it in ``extra`` would persist the
+    value; omitting it lets carry-over put it straight back)."""
+    status_doc = {
+        "metadata": {
+            "process_options": "iF",
+            KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
+            KG_PURGE_METADATA_KEY: {"phase": KG_PURGE_PHASE_ANCHORS_PENDING},
+        }
+    }
+
+    carried = doc_status_transition_metadata(status_doc)
+    assert carried[KG_WRITE_STATE_METADATA_KEY] == (
+        KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+    )
+    assert KG_PURGE_METADATA_KEY in carried
+
+    # What the PROCESSED transition does: retire the journal, keep the marker
+    # (it is monotonic history, and the anchors are the proof from here on).
+    retired = doc_status_transition_metadata(status_doc, drop=(KG_PURGE_METADATA_KEY,))
+    assert KG_PURGE_METADATA_KEY not in retired
+    assert retired[KG_WRITE_STATE_METADATA_KEY] == (
+        KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+    )
+    assert retired["process_options"] == "iF"
+
+    # The source metadata must not be mutated in place.
+    assert KG_PURGE_METADATA_KEY in status_doc["metadata"]
+
+
+def test_reset_metadata_drops_degraded_recovery_warnings():
+    """A full reprocess is the repair boundary for prior degraded rollback."""
+    assert (
+        doc_status_reset_metadata(
+            {
+                "metadata": {
+                    "kg_recovery_warnings": [{"code": "degraded_custom_chunk_rollback"}]
+                }
+            }
+        )
+        == {}
+    )
+
+
 def test_has_attempt_fields_trigger():
     assert doc_status_metadata_has_attempt_fields({"metadata": {"parse_end_time": 1}})
     assert doc_status_metadata_has_attempt_fields(
@@ -194,7 +282,9 @@ async def test_interrupted_reset_clears_attempt_metadata_in_storage_and_memory(
             }
         )
 
-        to_process_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSING)
+        to_process_docs = await rag.doc_status.get_docs_by_statuses(
+            [DocStatus.PROCESSING]
+        )
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=to_process_docs,
@@ -271,7 +361,7 @@ async def test_stale_pending_normalized_clean_pending_untouched(tmp_path):
             }
         )
 
-        to_process_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
+        to_process_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=to_process_docs,
@@ -349,7 +439,7 @@ async def test_pending_custom_metadata_semantic_lock(tmp_path):
             }
         )
 
-        to_process_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
+        to_process_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=to_process_docs,
@@ -379,7 +469,7 @@ async def test_reset_and_normalize_with_string_status(tmp_path):
     ``str`` base) cannot silently stop string-status docs from being cleaned.
 
     Builds the ``to_process_docs`` objects directly with string statuses to
-    exercise the string path (``get_docs_by_status`` would return enum-valued
+    exercise the string path (``get_docs_by_statuses`` would return enum-valued
     members from the in-memory store).
     """
     rag = await _build_rag(tmp_path, "reset_string_status")

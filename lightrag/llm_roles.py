@@ -114,6 +114,11 @@ class _RoleLLMMixin:
         "auth",
         "session",
     )
+    # Non-secret keys whose names collide with a secret marker substring
+    # (e.g. "thinking_token_budget" contains "token"). Matched globally at
+    # every nesting level during metadata scrubbing, not only inside
+    # ``provider_options``.
+    _SAFE_OPTION_KEYS = {"thinking_token_budget"}
 
     @staticmethod
     def _normalize_llm_role(role: str) -> str:
@@ -267,6 +272,39 @@ class _RoleLLMMixin:
         while self._retired_llm_queue_cleanup_tasks:
             tasks = list(self._retired_llm_queue_cleanup_tasks)
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _shutdown_model_queues(self) -> None:
+        """Shut down every queue owned by this instance.
+
+        Finalization must call this before tearing down storages: role LLM
+        calls can still use the response cache while their queues drain.
+        Queue shutdown is best-effort, matching storage finalization, but one
+        broken wrapper must not leave the remaining workers attached to the
+        event loop.
+        """
+        await self.wait_for_retired_llm_queues()
+
+        wrappers: list[tuple[str, Callable[..., object] | None]] = [
+            (f"{spec.name} LLM", self._role_llm_states[spec.name].wrapped)
+            for spec in ROLES
+        ]
+        embedding = getattr(self, "embedding_func", None)
+        wrappers.extend(
+            (
+                ("embedding", getattr(embedding, "func", None)),
+                ("rerank", getattr(self, "rerank_model_func", None)),
+            )
+        )
+
+        seen: set[int] = set()
+        for label, wrapped in wrappers:
+            if wrapped is None or id(wrapped) in seen:
+                continue
+            seen.add(id(wrapped))
+            try:
+                await self._shutdown_llm_wrapper(wrapped)
+            except Exception as e:
+                logger.error(f"Failed to shut down {label} queue: {e}")
 
     def _apply_llm_role_config_update(
         self,
@@ -443,6 +481,8 @@ class _RoleLLMMixin:
     @classmethod
     def _is_secret_key(cls, key: str) -> bool:
         lowered = key.lower()
+        if lowered in cls._SAFE_OPTION_KEYS:
+            return False
         return any(marker in lowered for marker in cls._SECRET_MARKERS)
 
     def _scrubbed_llm_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:

@@ -7,6 +7,8 @@ TestVectorStorageBatching to keep behaviour aligned across backends.
 
 import asyncio
 import os
+import uuid
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -107,8 +109,13 @@ def _make_storage(
     storage._client.upsert = MagicMock()
     storage._client.delete = MagicMock()
     # drop() looks up a legacy collection to clear its workspace points;
-    # default to "no legacy collection" so unrelated tests are unaffected.
-    storage._client.collection_exists = MagicMock(return_value=False)
+    # default to "the suffixed collection exists, no legacy collection" so
+    # unrelated tests are unaffected. drop() skips a collection that is not
+    # there -- an initialize() refused by VectorSpaceMismatchError raises
+    # before creating the suffixed one.
+    storage._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == storage.final_namespace
+    )
     storage._client.retrieve = MagicMock(return_value=[])
     storage._client.scroll = MagicMock(return_value=([], None))
 
@@ -202,6 +209,61 @@ async def test_get_vectors_by_ids_lazy_embed_then_reuse_in_flush():
     await s.index_done_callback()
     assert embed.call_count == 1
     s._client.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_falls_back_to_requested_id_when_payload_id_missing():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=qdrant_id,
+            payload={"content": "legacy chunk"},
+            vector=[0.1, 0.2, 0.3],
+        )
+    ]
+
+    assert await s.get_by_ids(["chunk-1"]) == [
+        {"content": "legacy chunk", "created_at": None}
+    ]
+    assert await s.get_vectors_by_ids(["chunk-1"]) == {"chunk-1": [0.1, 0.2, 0.3]}
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_fallback_normalizes_hyphenated_qdrant_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=str(uuid.UUID(qdrant_id)),
+            payload={"content": "legacy chunk"},
+            vector=[0.1, 0.2, 0.3],
+        )
+    ]
+
+    assert await s.get_vectors_by_ids(["chunk-1"]) == {"chunk-1": [0.1, 0.2, 0.3]}
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_fallback_normalizes_hyphenated_qdrant_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=str(uuid.UUID(qdrant_id)),
+            payload={"content": "legacy chunk"},
+        )
+    ]
+
+    assert await s.get_by_ids(["chunk-1"]) == [
+        {"content": "legacy chunk", "created_at": None}
+    ]
 
 
 @pytest.mark.asyncio
@@ -423,7 +485,7 @@ async def test_drop_clears_workspace_points_from_workspace_tagged_legacy():
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
     s._client.collection_exists = MagicMock(
-        side_effect=lambda name: name == legacy_collection
+        side_effect=lambda name: name in (legacy_collection, s.final_namespace)
     )
     # Legacy is workspace-tagged: workspace_id present in the payload schema.
     legacy_info = MagicMock()
@@ -452,7 +514,7 @@ async def test_drop_drops_untagged_legacy_collection():
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
     s._client.collection_exists = MagicMock(
-        side_effect=lambda name: name == legacy_collection
+        side_effect=lambda name: name in (legacy_collection, s.final_namespace)
     )
     # Legacy is untagged: no workspace_id in schema and none in sampled payloads.
     legacy_info = MagicMock()
@@ -484,7 +546,7 @@ async def test_drop_reports_error_when_legacy_tagging_undetermined():
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
     s._client.collection_exists = MagicMock(
-        side_effect=lambda name: name == legacy_collection
+        side_effect=lambda name: name in (legacy_collection, s.final_namespace)
     )
     # Metadata lookup fails -> tagging undetermined.
     s._client.get_collection = MagicMock(side_effect=RuntimeError("qdrant unavailable"))
