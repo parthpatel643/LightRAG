@@ -2,25 +2,9 @@
 LightRAG FastAPI Server
 """
 
-import logging
-import logging.config
-import os
-import re
-import sys
-from contextlib import asynccontextmanager
-from pathlib import Path
-
-import pipmaster as pm
-import uvicorn
-from ascii_colors import ASCIIColors
-from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-import json
-import textwrap
-from typing import Any
-
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
@@ -34,9 +18,43 @@ from fastapi.responses import (
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-
-from lightrag import LightRAG, ROLES, RoleLLMConfig
-from lightrag import __version__ as core_version
+import asyncio
+import json
+import os
+import re
+import logging
+import logging.config
+import sys
+import textwrap
+import time
+import uuid
+import uvicorn
+import pipmaster as pm
+from typing import Any
+from pathlib import Path
+from ascii_colors import ASCIIColors
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+from lightrag.api.utils_api import (
+    get_combined_auth_dependency,
+    get_auth_status_dependency,
+    display_splash_screen,
+    check_env_file,
+    internal_server_error,
+)
+from lightrag.api.admission_middleware import AdmissionMiddleware
+from lightrag.api.body_limit_middleware import BodyLimitMiddleware, resolve_body_limits
+from .config import (
+    global_args,
+    normalize_api_prefix,
+    update_uvicorn_mode_config,
+    get_default_host,
+    resolve_asymmetric_embedding_opt_in,
+    PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
+)
+from lightrag.utils import get_env_value
+from lightrag import LightRAG, ROLES, RoleLLMConfig, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.api.auth import auth_handler
 from lightrag.api.routers.document_routes import (
@@ -44,21 +62,25 @@ from lightrag.api.routers.document_routes import (
     create_document_routes,
 )
 from lightrag.api.routers.document_sequencing_routes import create_sequencing_routes
+from lightrag.parser.docx.smart_heading.nlp import SmartHeadingNLPError
 from lightrag.parser.plugins import load_third_party_parsers
+from lightrag.chunker.plugins import load_and_resolve_chunker
+from lightrag.chunker.registry import log_chunker_selection
 from lightrag.parser.routing import (
     parser_rules_from_env,
     validate_parser_routing_config,
+    validate_smart_heading_dependencies,
 )
 from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.workspace_routes import router as workspace_router
-from lightrag.api.utils_api import (
-    check_env_file,
-    display_splash_screen,
-    get_auth_status_dependency,
-    get_combined_auth_dependency,
+from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
+from lightrag.api.ui_customization import (
+    WEBUI_CHROME_LOCALES,
+    locales_without_chrome_translation,
+    resolve_ui_customization_snapshot,
 )
 from lightrag.base import StoragesStatus
 from lightrag.constants import (
@@ -67,24 +89,20 @@ from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
 )
 from lightrag.exceptions import PipelineNotInitializedError
+from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
+    drain_reserved_background_tasks,
     finalize_share_data,
     get_default_workspace,
     get_namespace_data,
+    get_pipeline_ingress,
     initialize_pipeline_status,
     set_default_workspace,
 )
-from lightrag.utils import EmbeddingFunc, get_env_value, logger, set_verbose_debug
-
-from .config import (
-    PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
-    get_default_host,
-    global_args,
-    resolve_asymmetric_embedding_opt_in,
-    update_uvicorn_mode_config,
-)
-
+from lightrag import pipeline_metrics
+from lightrag.utils_pipeline import describe_doc_status_capabilities
+from lightrag.api.login_rate_limit import LoginRateLimiter
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -420,23 +438,19 @@ def _inject_swagger_theme(html: str, theme: str) -> str:
 # docs/MultiSiteDeployment.md.
 WEBUI_PATH = "/webui"
 
+# Fixed mount path of the query-user entry (the "workspace" UI). Serves the
+# same static build directory as WEBUI_PATH but with workspace.html as its
+# directory index, so the entry identity is decided entirely by the URL.
+# NOTE: this is a WebUI URL, not the knowledge-base `workspace` parameter used
+# for data isolation — the two are unrelated (see the workspace-entry PRD).
+WORKSPACE_PATH = "/workspace"
 
-def _normalize_api_prefix(value: str | None) -> str:
-    """Canonicalize an API prefix before handing it to FastAPI's ``root_path``.
-
-    Strips surrounding whitespace, ensures a leading slash, drops a trailing
-    slash, and treats empty/"/" as "no prefix". Raw CLI/env input like
-    ``"site01"`` or ``"/site01/"`` would otherwise feed an invalid form to
-    FastAPI and to the WebUI prefix injection.
-    """
-    if value is None:
-        return ""
-    value = value.strip()
-    if not value or value == "/":
-        return ""
-    if not value.startswith("/"):
-        value = "/" + value
-    return value.rstrip("/")
+# Entry HTML filenames inside the shared build directory. Each mount serves
+# only its own file as the directory index and returns 404 for the other
+# entry's HTML (otherwise both files would be reachable under both mounts,
+# creating fully working aliases like /webui/workspace.html).
+WEBUI_INDEX_FILENAME = "index.html"
+WORKSPACE_INDEX_FILENAME = "workspace.html"
 
 
 class _RootPathNormalizationMiddleware:
@@ -748,6 +762,60 @@ def create_optimized_embedding_function(
     except ImportError as e:
         logger.warning(f"Could not import provider function for {binding}: {e}")
 
+    # Fail-fast guard: require explicit EMBEDDING_DIM when a non-default
+    # embedding model is configured. Without this, the provider's decorator
+    # dimension silently applies regardless of the actual model selected,
+    # causing vector-store write failures at runtime.
+    # See: https://github.com/HKUDS/LightRAG/issues/3644
+    # Note: lollms is excluded because it ignores the model parameter entirely.
+    _BINDINGS_WITH_DIM_GUARD = frozenset(
+        ["ollama", "openai", "jina", "gemini", "bedrock", "voyageai"]
+    )
+    # `not args.embedding_dim` (rather than `is None`) keeps the guard aligned
+    # with the truthiness-based dimension resolution below: a 0 would otherwise
+    # pass the guard and then silently resolve to the provider default.
+    if (
+        binding in _BINDINGS_WITH_DIM_GUARD
+        and model
+        and not args.embedding_dim
+        and provider_func is not None
+    ):
+        default_model = getattr(provider_func, "model_name", None)
+        if default_model:
+            # The `:latest` suffix is an Ollama/OCI convention; stripping it
+            # is a no-op for other bindings but keeps one unified comparison.
+            configured_model = model.removesuffix(":latest")
+            normalized_default = default_model.removesuffix(":latest")
+            if configured_model != normalized_default:
+                raise ValueError(
+                    "EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
+                    f"custom {binding} model ({model!r}); the provider default "
+                    f"dimension only applies to {default_model!r}"
+                )
+
+    # Azure OpenAI uses deployment names that never match a universal default,
+    # so any configured model requires an explicit EMBEDDING_DIM.
+    # AZURE_EMBEDDING_DEPLOYMENT wins over the configured model at runtime
+    # (see azure_openai_embed: `os.getenv("AZURE_EMBEDDING_DEPLOYMENT") or model`),
+    # so the error message must resolve it in the same order.
+    azure_effective_model = (
+        (os.environ.get("AZURE_EMBEDDING_DEPLOYMENT") or model)
+        if binding == "azure_openai"
+        else None
+    )
+    if (
+        binding == "azure_openai"
+        and azure_effective_model
+        and not args.embedding_dim
+        and provider_func is not None
+    ):
+        raise ValueError(
+            "EMBEDDING_DIM must be set when using Azure OpenAI with a "
+            f"configured deployment ({azure_effective_model!r}); Azure deployment "
+            f"names require an explicit dimension. Note: AZURE_EMBEDDING_DEPLOYMENT "
+            f"takes precedence over EMBEDDING_MODEL as the effective deployment name"
+        )
+
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None
     final_max_token_size = args.embedding_token_limit or provider_max_token_size
@@ -809,6 +877,7 @@ def create_optimized_embedding_function(
                     "texts": texts,
                     "host": host,
                     "api_key": api_key,
+                    "embedding_dim": embedding_dim,
                     "options": ollama_options,
                 }
                 if provider_supports_asymmetric and asymmetric_opt_in:
@@ -1232,9 +1301,264 @@ def check_frontend_build():
         return (True, False)  # Assume assets exist and up-to-date on error
 
 
+def check_workspace_frontend_build() -> bool:
+    """Whether the workspace query entry's HTML (workspace.html) is bundled.
+
+    Checked independently from ``check_frontend_build()``: a stale build
+    directory (new server + old WebUI bundle) legitimately contains only
+    index.html, and that must degrade ONLY the /workspace entry — treating
+    the whole WebUI as "not built" would needlessly take the admin /webui
+    down with it.
+    """
+    workspace_html = Path(__file__).parent / "webui" / WORKSPACE_INDEX_FILENAME
+    if workspace_html.exists():
+        return True
+    ASCIIColors.yellow(
+        "WARNING: workspace.html is missing from the WebUI build directory. "
+        "The /workspace query entry will be unavailable (admin /webui is not "
+        "affected). Rebuild the frontend to enable it."
+    )
+    return False
+
+
+def _build_capability_status(rag) -> dict:
+    """Strict-capability report, or ``{}`` when it cannot be determined.
+
+    /health is a liveness probe first: one unavailable diagnostic must never turn
+    it into a 500.
+    """
+    doc_status = getattr(rag, "doc_status", None)
+    if doc_status is None:
+        return {}
+    try:
+        return describe_doc_status_capabilities(doc_status)
+    except Exception as capability_error:  # pragma: no cover - defensive
+        logger.debug(f"Capability probe unavailable for /health: {capability_error}")
+        return {}
+
+
+def _build_scheduling_status(pipeline_snapshot: dict, ingress_counts: dict) -> dict:
+    """Curated scheduling/observability view for /health (LR2 Phase 6 items 2/4).
+
+    Answers the questions an operator actually has during a manual retry or a
+    scan: which phase the manual channel is in, which request holds the freeze
+    and since when, what the drain is still waiting for, and how full the sticky
+    channel is. The manual owner's ``owner_token`` is omitted on purpose — it
+    authorizes releasing a reservation, so publishing it would turn a status page
+    into a control surface.
+    """
+    owner = pipeline_snapshot.get("manual_owner") or {}
+    freeze_started = pipeline_snapshot.get("manual_freeze_started_at")
+    freeze_seconds = None
+    if isinstance(freeze_started, (int, float)) and freeze_started > 0:
+        # Wall clock, because the freeze may be held by another process; a
+        # negative value (clock stepped back) is reported as 0 rather than as a
+        # nonsensical duration.
+        freeze_seconds = max(0.0, round(time.time() - float(freeze_started), 3))
+    pending_enqueues = int(pipeline_snapshot.get("pending_enqueues", 0) or 0)
+    return {
+        "manual_phase": pipeline_snapshot.get("manual_phase") or "idle",
+        "manual_freeze_requested": bool(
+            pipeline_snapshot.get("manual_freeze_requested", False)
+        ),
+        "manual_resetting": bool(pipeline_snapshot.get("manual_resetting", False)),
+        "manual_freeze_seconds": freeze_seconds,
+        "manual_owner_request_id": (
+            owner.get("request_id") if isinstance(owner, dict) else None
+        ),
+        "manual_owner_pid": owner.get("pid") if isinstance(owner, dict) else None,
+        # What a DRAIN_TO_IDLE is still waiting for: reservations whose rows are
+        # not written yet, plus whether a processing run still holds busy.
+        "drain_pending_enqueues": pending_enqueues,
+        "drain_waiting_on_workers": bool(pipeline_snapshot.get("busy", False)),
+        "manual_retries_queued": ingress_counts.get("manual_retries"),
+        "manual_retries_capacity": ingress_counts.get("manual_retries_capacity"),
+        "document_notifications_queued": ingress_counts.get("documents"),
+        "document_notification_overflows": ingress_counts.get("document_overflows"),
+        "auto_rescan_pending": ingress_counts.get("auto_rescan_pending"),
+    }
+
+
+def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
+    """
+    Create LLM model kwargs based on binding type.
+    Uses lazy import for binding-specific options.
+    """
+    if binding == "lollms":
+        return {
+            "timeout": llm_timeout,
+            # "options" is an Ollama-only payload; lollms_model_if_cache()
+            # never reads it. Pin it to an empty dict instead of deriving it
+            # from OllamaLLMOptions.options_dict(args), which only happens to
+            # return {} because its arguments are registered for the ollama
+            # binding alone.
+            "options": {},
+            "api_key": args.llm_binding_api_key,
+            # lollms_model_if_cache()'s parameter is named base_url, not
+            # host -- unlike ollama's AsyncClient(host=...). Passing "host"
+            # here would silently land in its **kwargs and never be read.
+            "base_url": args.llm_binding_host,
+        }
+    if binding == "ollama":
+        try:
+            from lightrag.llm.binding_options import OllamaLLMOptions
+
+            options = OllamaLLMOptions.options_dict(args)
+        except ImportError as e:
+            raise Exception(f"Failed to import {binding} options: {e}")
+        # Imported lazily (the module installs the ollama package on import)
+        # and only for the binding that actually forwards think= -- lollms
+        # never reaches the ollama client.
+        from lightrag.llm.ollama import ensure_think_supported
+
+        ensure_think_supported(options, context="the base LLM binding")
+        return {
+            "timeout": llm_timeout,
+            "options": options,
+            "api_key": args.llm_binding_api_key,
+            "host": args.llm_binding_host,
+        }
+    return {}
+
+
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Render a request-validation refusal in the shape each endpoint promises.
+
+    Module-level rather than a closure inside ``create_app`` so the real
+    handler can be exercised without standing up the whole application.
+    """
+    # Check if this is a request to /query/data endpoint
+    if request.url.path.endswith("/query/data"):
+        # Extract error details
+        error_details = []
+        for error in exc.errors():
+            field_path = " -> ".join(str(loc) for loc in error["loc"])
+            error_details.append(f"{field_path}: {error['msg']}")
+
+        error_message = "; ".join(error_details)
+
+        # Return in the expected format for /query/data
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "failure",
+                "message": f"Validation error: {error_message}",
+                "data": {},
+                "metadata": {},
+            },
+        )
+
+    # For other endpoints, return the default FastAPI validation error.
+    # `jsonable_encoder` is not optional here: a rejection raised as a
+    # ValueError inside a validator (the RAG query minimum, the non-empty
+    # check, the keyword and history checks, the aggregate text budget)
+    # carries the exception object itself in `ctx.error`, which json.dumps
+    # cannot serialize — without the encoder this handler raises and the
+    # client gets a 500 in place of the 422 the refusal actually is.
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(exc.errors())}
+    )
+
+
 def create_app(args):
-    # Check frontend build first and get status
+    # A server with no configured embedding model cannot protect its vectors.
+    # The marker every vector backend records is what detects a swap to a
+    # DIFFERENT model of the same dimension -- the one change no dimension
+    # check can see -- and with no name to record, every container this server
+    # provisions is unprotected for life.
+    #
+    # Refusing at startup rather than degrading is the same call the rest of
+    # this feature makes: LightRAG supports neither multi-process configuration
+    # propagation nor rolling updates, so an embedding-model change means
+    # stopping the server and rebuilding the indexes with lightrag-rebuild-vdb.
+    # A deployment that cannot tell which model wrote its vectors has no safe
+    # way through that, and finding out at query time means wrong answers, not
+    # an error. Only the SERVER refuses: the library stays usable without a
+    # model name, and lightrag-rebuild-vdb in particular must keep running,
+    # since it is the way out.
+    #
+    # An args object that never carried the field is refused the same way. The
+    # ``default_ui`` tolerance below is for a cosmetic default; a safety guard
+    # with an exemption for "the attribute was never set" is a guard with a
+    # bypass, and the server's own parser always sets this one.
+    if not (getattr(args, "embedding_model", None) or "").strip():
+        raise SystemExit(
+            "EMBEDDING_MODEL is not set. The server refuses to start without it: "
+            "the embedding model's name is what every vector storage records "
+            "alongside its vectors, and it is the only thing that detects a later "
+            "switch to a different model of the same dimension -- which otherwise "
+            "returns confidently wrong results with no error anywhere. Set "
+            "EMBEDDING_MODEL to the model this deployment embeds with (and "
+            "EMBEDDING_DIM when it is not the binding's default). Changing it "
+            "later requires stopping the server and running lightrag-rebuild-vdb; "
+            "rolling an embedding-model change through a live deployment is not "
+            "supported."
+        )
+
+    # Check frontend build first and get status. The two entries are checked
+    # independently: an old build directory may carry only index.html, which
+    # degrades /workspace alone (see check_workspace_frontend_build).
     webui_assets_exist, is_frontend_outdated = check_frontend_build()
+    workspace_assets_exist = check_workspace_frontend_build()
+    # Scope of default_ui is exactly one behavior: the '/' redirect target.
+    # getattr default keeps create_app working for programmatic callers that
+    # build args without this field (tests, embedding).
+    default_ui = getattr(args, "default_ui", "webui")
+
+    # UI customization bundle (workspace-entry PRD §8). Completely orthogonal
+    # to the entry-HTML checks above: a configured-but-broken bundle fails
+    # startup regardless of which entry products exist, and a missing
+    # workspace.html never suppresses bundle validation. bundle_revision is
+    # logged HERE only — it appears in no /health tier.
+    ui_templates_dir = (getattr(args, "ui_templates_dir", "") or "").strip()
+    ui_customization_snapshot = None
+    if ui_templates_dir:
+        # Raises UICustomizationError → server startup fails (fail-fast; a
+        # silent fallback would show LightRAG content while the operator
+        # believes the customer branding is live). Returns None for the one
+        # sanctioned exception: a configured directory that holds no
+        # manifest.json yet, i.e. the unpopulated mount every default Docker
+        # deployment starts with (see resolve_ui_customization_snapshot).
+        ui_customization_snapshot = resolve_ui_customization_snapshot(ui_templates_dir)
+    if ui_customization_snapshot is not None:
+        logger.info(
+            "UI customization: bundle %s %s",
+            ui_customization_snapshot.bundle_revision,
+            sorted(ui_customization_snapshot.locales),
+        )
+        # A bundle may declare any valid BCP 47 locale, but the WebUI chrome
+        # only exists in the languages it ships. Content in another language
+        # renders fine while the buttons and settings around it stay in the
+        # visitor's resolved UI language — nothing the frontend can fix, so
+        # say it here instead of leaving the operator to discover it from a
+        # user's screenshot.
+        untranslated = locales_without_chrome_translation(
+            ui_customization_snapshot.locales
+        )
+        if untranslated:
+            logger.warning(
+                "UI customization: the WebUI ships no interface translation for "
+                "%s — content in %s locale(s) will render beside controls in the "
+                "visitor's resolved UI language (supported: %s)",
+                untranslated,
+                len(untranslated),
+                sorted(WEBUI_CHROME_LOCALES),
+            )
+    elif ui_templates_dir:
+        # Not an error, but not silent either: the only way to tell "I have
+        # not written my bundle yet" from "my mount did not land where I
+        # thought" is the path this names.
+        logger.warning(
+            "UI customization: UI_TEMPLATES_DIR=%s holds no manifest.json — "
+            "serving the built-in LightRAG branding. Put a bundle there and "
+            "restart to activate it; if you expected one, check that the "
+            "directory is the one you populated.",
+            ui_templates_dir,
+        )
+    else:
+        logger.info("UI customization: no bundle configured (UI_TEMPLATES_DIR unset)")
 
     # Create unified API version display with warning symbol if frontend is outdated
     api_version_display = (
@@ -1247,7 +1571,50 @@ def create_app(args):
     # Discover third-party parser engines (``lightrag.parsers`` entry points)
     # BEFORE validating routing rules, so LIGHTRAG_PARSER may reference them.
     load_third_party_parsers()
+    # Same reason as the smart_heading block below: an invalid CUSTOM_CHUNKER
+    # is an operator configuration mistake, and a raw ValueError traceback
+    # buries the one sentence that says how to fix it. Re-raised, never
+    # swallowed — an unselectable chunker must still abort startup (the
+    # deployment would otherwise chunk its C documents the wrong way).
+    try:
+        selected_chunker = load_and_resolve_chunker(getattr(args, "custom_chunker", ""))
+    except ValueError as exc:
+        # markup=False: ASCIIColors interprets "[...]" as rich markup tags.
+        ASCIIColors.red("\n" + "=" * 80, markup=False)
+        ASCIIColors.red("ERROR: invalid CUSTOM_CHUNKER selection", markup=False)
+        ASCIIColors.red("=" * 80, markup=False)
+        ASCIIColors.red(str(exc), markup=False)
+        ASCIIColors.red("\nAuthoring and selection guide:", markup=False)
+        ASCIIColors.cyan("    docs/ThirdPartyChunker.md", markup=False)
+        ASCIIColors.red("=" * 80 + "\n", markup=False)
+        raise
+    log_chunker_selection(selected_chunker)
     validate_parser_routing_config()
+    # Fail fast when DOCX_SMART_HEADING / a LIGHTRAG_PARSER rule enables
+    # smart_heading but the pinned spaCy models are missing — surfacing the
+    # install step at startup instead of failing mid-pipeline. Runs in
+    # create_app so both the uvicorn and gunicorn (preload) paths hit it.
+    # Caught here (instead of letting it propagate as a raw traceback) so the
+    # missing-dependency message reads like the other boxed startup notices.
+    try:
+        validate_smart_heading_dependencies()
+    except SmartHeadingNLPError as exc:
+        # markup=False: ASCIIColors interprets "[...]" as rich markup tags and
+        # silently drops anything it doesn't recognize (e.g. "[api]").
+        ASCIIColors.red("\n" + "=" * 80, markup=False)
+        ASCIIColors.red("ERROR: smart_heading dependencies missing", markup=False)
+        ASCIIColors.red("=" * 80, markup=False)
+        ASCIIColors.red(exc.problem, markup=False)
+        ASCIIColors.red("\nInstall with:", markup=False)
+        ASCIIColors.cyan(
+            "    pip install lightrag-hku[api] && lightrag-download-cache --spacy-install",
+            markup=False,
+        )
+        ASCIIColors.red(
+            "(offline: see requirements-offline-smart-heading.txt)", markup=False
+        )
+        ASCIIColors.red("=" * 80 + "\n", markup=False)
+        sys.exit(1)
 
     # Create configuration cache (this will output configuration logs)
     config_cache = LLMConfigCache(args)
@@ -1313,17 +1680,45 @@ def create_app(args):
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
+            # Admission control needs a doc_status backend that can count
+            # strictly (LR2 §9.1). Probe once here so an unsupported backend
+            # fails at startup instead of turning every upload into a 503.
+            if getattr(rag, "max_pending_documents", 0) > 0:
+                from lightrag.utils_pipeline import count_active_documents
+
+                try:
+                    active_now = await count_active_documents(rag.doc_status)
+                except Exception as admission_probe_error:
+                    raise RuntimeError(
+                        "MAX_PENDING_DOCUMENTS is set but the configured "
+                        f"doc_status backend cannot count strictly: "
+                        f"{admission_probe_error}"
+                    ) from admission_probe_error
+                logger.info(
+                    f"Admission control enabled: capacity "
+                    f"{rag.max_pending_documents}, {active_now} document(s) "
+                    "currently active"
+                )
+
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
             yield
 
         finally:
+            # Cancel and join all reserved background tasks FIRST, so each
+            # child's finally releases its reservation while shared state is
+            # still alive. Resists repeated cancellation; a deferred shutdown
+            # cancellation is re-raised only after storage/shared-state cleanup.
+            shutdown_cancel = await drain_reserved_background_tasks(
+                app.state.background_tasks
+            )
+
             # Clean up database connections
             await rag.finalize_storages()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
-                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                logger.debug("Uvicorn Mode: finalizing shared storage...")
                 finalize_share_data()
             else:
                 # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
@@ -1331,27 +1726,46 @@ def create_app(args):
                     "Gunicorn Mode: postpone shared storage finalization to master process"
                 )
 
+            # Re-raise a shutdown cancellation only after all cleanup is done.
+            if shutdown_cancel is not None:
+                raise shutdown_cancel
+
+    # Single switch for every interactive API documentation surface: /docs,
+    # /docs/oauth2-redirect, /redoc, /openapi.json and the /static/swagger-ui
+    # mount. All five must stay conditioned on this one flag (one flag) — a route audit that special-cases only the APIRoutes would
+    # diverge from the real route table.
+    api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
+
+    # Whether the two query UIs label every answer as AI-generated
+    # (ENABLE_AI_CONTENT_NOTICE). Deployment-level display configuration, so
+    # it rides the same responses as webui_title/webui_description: both
+    # entries read it once at boot from /auth-status (or /login), and the
+    # admin shell keeps it fresh from its /health poll. getattr keeps
+    # create_app working for callers that build args programmatically.
+    ai_content_notice_enabled = bool(getattr(args, "enable_ai_content_notice", False))
+
+    # The WebUI mount path is fixed at "/webui" — see
+    # docs/MultiSiteDeployment.md for the rationale. Computed before
+    # swagger_description below, which embeds it in the ReDoc link.
+    api_prefix = normalize_api_prefix(getattr(args, "api_prefix", None))
+    webui_path = WEBUI_PATH
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
     swagger_description = (
         base_description
         + (" (API-Key Enabled)" if api_key else "")
-        + "\n\n[View ReDoc documentation](/redoc)"
+        + f"\n\n[View ReDoc documentation]({api_prefix}/redoc)"
     )
-
-    # The WebUI mount path is fixed at "/webui" — see
-    # docs/MultiSiteDeployment.md for the rationale.
-    api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
-    webui_path = WEBUI_PATH
 
     app_kwargs = {
         "title": "LightRAG Server API",
         "description": swagger_description,
         "version": __api_version__,
-        "openapi_url": "/openapi.json",
+        "openapi_url": "/openapi.json" if api_docs_enabled else None,
         "docs_url": None,  # custom endpoint for offline Swagger support
-        "redoc_url": "/redoc",
+        "redoc_url": "/redoc" if api_docs_enabled else None,
         "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
@@ -1365,34 +1779,29 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
-    # Add custom validation error handler for /query/data endpoint
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
-        # Check if this is a request to /query/data endpoint
-        if request.url.path.endswith("/query/data"):
-            # Extract error details
-            error_details = []
-            for error in exc.errors():
-                field_path = " -> ".join(str(loc) for loc in error["loc"])
-                error_details.append(f"{field_path}: {error['msg']}")
+    # Custom validation error handler, shaped per endpoint (see the
+    # module-level function for why it is not a closure).
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
-            error_message = "; ".join(error_details)
-
-            # Return in the expected format for /query/data
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "failure",
-                    "message": f"Validation error: {error_message}",
-                    "data": {},
-                    "metadata": {},
-                },
-            )
-        else:
-            # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    # Last-resort handler for any exception that escapes a route without being
+    # converted to an HTTPException. It guarantees raw exception text never
+    # reaches the client (CWE-209): the full detail and traceback are logged
+    # server-side under a correlation id, and the response body carries only a
+    # generic message plus that id. HTTPException (including the sanitized 500s
+    # raised via internal_server_error) is still handled by FastAPI's own
+    # handler and is intentionally not intercepted here.
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        error_id = uuid.uuid4().hex[:12]
+        logger.error(
+            f"Unhandled exception [error_id={error_id}] on "
+            f"{request.method} {request.url.path}",
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error (error_id: {error_id})"},
+        )
 
     def get_cors_origins():
         """Get allowed origins from global_args.
@@ -1415,6 +1824,36 @@ def create_app(args):
     # docstring.
     if api_prefix:
         app.add_middleware(_RootPathNormalizationMiddleware)
+
+    # Pre-body admission control (LR2 §9.3). Installed only when there is a
+    # capacity to enforce; the ingestion routes keep their own reservation, so an
+    # absent middleware costs economy (the body is read before the refusal), not
+    # correctness. ``rag`` is built further down in this function, hence the lazy
+    # getter.
+    #
+    # Added BEFORE the CORS middleware on purpose: the most recently added
+    # middleware runs outermost, so CORS ends up wrapping this one and its 401 /
+    # 429 responses carry the CORS headers a browser needs to read the status
+    # (without them the WebUI would see an opaque network error instead of "at
+    # capacity"). It therefore also sees the un-normalized path, which is why it
+    # strips ``api_prefix`` itself.
+    if args.max_pending_documents > 0:
+        app.add_middleware(
+            AdmissionMiddleware,
+            rag_getter=lambda: rag,
+            api_key=api_key,
+            api_prefix=api_prefix,
+        )
+
+    # Raw request-body ceilings (GHSA-r8jh-295g-vv42). Added AFTER the admission
+    # middleware so it ends up outside it: an oversized body is then refused
+    # before it can take a capacity slot, and the reservation a mid-body 413
+    # would otherwise strand is released by admission's own finally block as the
+    # exception travels back out. Still added before CORS, for the same reason
+    # admission is — a browser has to be able to read the 413.
+    body_limits = resolve_body_limits(args)
+    if body_limits is not None:
+        app.add_middleware(BodyLimitMiddleware, api_prefix=api_prefix, **body_limits)
 
     # Add CORS middleware
     cors_origins = get_cors_origins()
@@ -1621,25 +2060,6 @@ def create_app(args):
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
 
-    def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
-        """
-        Create LLM model kwargs based on binding type.
-        Uses lazy import for binding-specific options.
-        """
-        if binding in ["lollms", "ollama"]:
-            try:
-                from lightrag.llm.binding_options import OllamaLLMOptions
-
-                return {
-                    "host": args.llm_binding_host,
-                    "timeout": llm_timeout,
-                    "options": OllamaLLMOptions.options_dict(args),
-                    "api_key": args.llm_binding_api_key,
-                }
-            except ImportError as e:
-                raise Exception(f"Failed to import {binding} options: {e}")
-        return {}
-
     def resolve_role_llm_settings(
         role: str, override_meta: dict | None = None
     ) -> dict[str, Any]:
@@ -1712,6 +2132,17 @@ def create_app(args):
                 )
             else:
                 role_provider_options = {}
+
+        if role_binding == "ollama":
+            # Validated after the whole resolution above (including the
+            # override_meta short-circuit), so what is checked is exactly what
+            # the role will call with -- inherited global OLLAMA_LLM_THINK
+            # included. Every role is resolved once while create_app builds
+            # role_llm_configs, so an unsupported think= stops the server at
+            # startup rather than at the role's first call.
+            from lightrag.llm.ollama import ensure_think_supported
+
+            ensure_think_supported(role_provider_options, context=f"LLM role '{role}'")
 
         bedrock_aws_options = {}
         if role_binding == "bedrock":
@@ -1830,6 +2261,9 @@ def create_app(args):
                 ) -> str:
                     if history_messages is None:
                         history_messages = []
+                    # Server-configured timeout overrides any caller-passed value,
+                    # matching the OpenAI/Azure/Gemini role wrappers.
+                    kwargs["timeout"] = role_timeout
                     if role_provider_options:
                         kwargs = {**role_provider_options, **kwargs}
                     return await bedrock_complete_if_cache(
@@ -1972,6 +2406,9 @@ def create_app(args):
         # which drops them and emits deprecation warnings when booleans are set.
         if config_cache.bedrock_llm_options:
             kwargs = {**config_cache.bedrock_llm_options, **kwargs}
+        # Server-configured timeout overrides any caller-passed value, matching
+        # the OpenAI wrapper (create_optimized_openai_llm_func).
+        kwargs["timeout"] = llm_timeout
 
         return await bedrock_complete_if_cache(
             args.llm_model,
@@ -2000,7 +2437,13 @@ def create_app(args):
                 f"Reranking is enabled: using custom rerank function from functions.py with {args.rerank_binding} provider"
             )
         else:
-            from lightrag.rerank import ali_rerank, cohere_rerank, jina_rerank
+            from lightrag.rerank import (
+                cohere_rerank,
+                jina_rerank,
+                ali_rerank,
+                DEFAULT_RERANK_MAX_TOKENS_PER_DOC,
+                MIN_PRACTICAL_RERANK_MAX_TOKENS,
+            )
 
             # Map rerank binding to corresponding function
             rerank_functions = {
@@ -2014,6 +2457,39 @@ def create_app(args):
             if not selected_rerank_func:
                 logger.error(f"Unsupported rerank binding: {args.rerank_binding}")
                 raise ValueError(f"Unsupported rerank binding: {args.rerank_binding}")
+
+            # Cohere binding supports optional document chunking (useful for models with
+            # token limits like ColBERT). Parse and validate its config ONCE at startup so a
+            # misconfigured RERANK_MAX_TOKENS_PER_DOC fails fast here instead of surfacing on
+            # the first user query, and so the value is not re-parsed on every rerank call.
+            rerank_enable_chunking = False
+            rerank_max_tokens_per_doc = DEFAULT_RERANK_MAX_TOKENS_PER_DOC
+            if args.rerank_binding == "cohere":
+                rerank_enable_chunking = (
+                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+                )
+                raw_max_tokens = os.getenv(
+                    "RERANK_MAX_TOKENS_PER_DOC", str(DEFAULT_RERANK_MAX_TOKENS_PER_DOC)
+                )
+                try:
+                    rerank_max_tokens_per_doc = int(raw_max_tokens)
+                except ValueError as e:
+                    raise ValueError(
+                        f"RERANK_MAX_TOKENS_PER_DOC must be an integer, got {raw_max_tokens!r}"
+                    ) from e
+                if rerank_max_tokens_per_doc < 1:
+                    raise ValueError(
+                        f"RERANK_MAX_TOKENS_PER_DOC must be >= 1, got {rerank_max_tokens_per_doc}"
+                    )
+                if (
+                    rerank_enable_chunking
+                    and rerank_max_tokens_per_doc < MIN_PRACTICAL_RERANK_MAX_TOKENS
+                ):
+                    logger.warning(
+                        f"RERANK_MAX_TOKENS_PER_DOC={rerank_max_tokens_per_doc} is below the "
+                        f"practical minimum ({MIN_PRACTICAL_RERANK_MAX_TOKENS}); chunking will "
+                        f"split each document into many tiny, low-signal chunks."
+                    )
 
             # Get default values from selected_rerank_func if args values are None
             if args.rerank_model is None or args.rerank_binding_host is None:
@@ -2049,15 +2525,10 @@ def create_app(args):
                     "base_url": args.rerank_binding_host,
                 }
 
-                # Add Cohere-specific parameters if using cohere binding
+                # Add Cohere-specific parameters if using cohere binding (validated at startup)
                 if args.rerank_binding == "cohere":
-                    # Enable chunking if configured (useful for models with token limits like ColBERT)
-                    kwargs["enable_chunking"] = (
-                        os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
-                    )
-                    kwargs["max_tokens_per_doc"] = int(
-                        os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
-                    )
+                    kwargs["enable_chunking"] = rerank_enable_chunking
+                    kwargs["max_tokens_per_doc"] = rerank_max_tokens_per_doc
 
                 # Pass verify_ssl if the selected rerank function supports it
                 if "verify_ssl" in inspect.signature(selected_rerank_func).parameters:
@@ -2130,6 +2601,7 @@ def create_app(args):
         embed_func = custom_embedding_func if custom_embedding_func else embedding_func
 
         rag = LightRAG(
+            **({"chunking_func": selected_chunker} if selected_chunker else {}),
             working_dir=args.working_dir,
             workspace=args.workspace,
             llm_model_func=llm_func,
@@ -2139,7 +2611,10 @@ def create_app(args):
             summary_context_size=args.summary_context_size,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=create_llm_model_kwargs(
+            embedding_chunk_overlap_token_size=int(
+                args.embedding_chunk_overlap_token_size
+            ),
+            llm_model_kwargs=_create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             )
             if not custom_llm_func
@@ -2161,6 +2636,9 @@ def create_app(args):
             rerank_model_max_async=args.rerank_max_async,
             default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
+            pipeline_scheduling_page_size=args.pipeline_scheduling_page_size,
+            pipeline_require_strict_storage_reads=args.pipeline_require_strict_storage_reads,
+            max_pending_documents=args.max_pending_documents,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
@@ -2353,6 +2831,13 @@ def create_app(args):
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    # Public read-only customization surface — registered unconditionally:
+    # without a bundle it answers 200 {"customized": false, ...}.
+    app.include_router(
+        create_ui_customization_routes(
+            ui_customization_snapshot, webui_title, webui_description
+        )
+    )
 
     # Register RAG instance and reload function with workspace routes
     from lightrag.api.routers.workspace_routes import set_rag_instance_and_reload_func
@@ -2369,43 +2854,120 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
-    # Custom Swagger UI endpoint for offline support
-    @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html(request: Request):
-        """Custom Swagger UI HTML with local static files"""
-        response = get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=app.title + " - Swagger UI",
-            oauth2_redirect_url="/docs/oauth2-redirect",
-            swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
-            swagger_css_url="/static/swagger-ui/swagger-ui.css",
-            swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
-            swagger_ui_parameters=app.swagger_ui_parameters,
-        )
-        html = response.body.decode("utf-8")
-        html = _inject_swagger_theme(
-            html, request.query_params.get("theme", "auto").lower()
-        )
-        return HTMLResponse(content=html)
+    if api_docs_enabled:
+        # Custom Swagger UI endpoint for offline support
+        @app.get("/docs", include_in_schema=False)
+        async def custom_swagger_ui_html(request: Request):
+            """Custom Swagger UI HTML with local static files"""
+            root = request.scope.get("root_path", "").rstrip("/")
+            response = get_swagger_ui_html(
+                openapi_url=f"{root}{app.openapi_url}",
+                title=app.title + " - Swagger UI",
+                oauth2_redirect_url=f"{root}/docs/oauth2-redirect",
+                swagger_js_url=f"{root}/static/swagger-ui/swagger-ui-bundle.js",
+                swagger_css_url=f"{root}/static/swagger-ui/swagger-ui.css",
+                swagger_favicon_url=f"{root}/static/swagger-ui/favicon-32x32.png",
+                swagger_ui_parameters=app.swagger_ui_parameters,
+            )
+            html = response.body.decode("utf-8")
+            html = _inject_swagger_theme(
+                html, request.query_params.get("theme", "auto").lower()
+            )
+            return HTMLResponse(content=html)
 
-    @app.get("/docs/oauth2-redirect", include_in_schema=False)
-    async def swagger_ui_redirect():
-        """OAuth2 redirect for Swagger UI"""
-        return get_swagger_ui_oauth2_redirect_html()
+        @app.get("/docs/oauth2-redirect", include_in_schema=False)
+        async def swagger_ui_redirect():
+            """OAuth2 redirect for Swagger UI"""
+            return get_swagger_ui_oauth2_redirect_html()
+
+    def service_info_response(request: Request) -> JSONResponse:
+        """Fixed JSON fallback when neither the WebUI nor /docs can be served.
+
+        HTTP 200 with a root_path-aware health_url, so multi-site deployments
+        behind LIGHTRAG_API_PREFIX get a correct absolute path.
+        """
+        root = request.scope.get("root_path", "")
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "service": "LightRAG Server",
+                "api_version": api_version_display,
+                "message": (
+                    "WebUI assets are not bundled and API docs are disabled "
+                    "(ENABLE_API_DOCS=false)."
+                ),
+                "health_url": f"{root}/health",
+            }
+        )
+
+    def workspace_unavailable_response(request: Request) -> JSONResponse:
+        """Fixed JSON degradation for the /workspace query entry.
+
+        Unlike the /webui fallback, this NEVER redirects to — nor links or
+        points at — the API docs, regardless of ENABLE_API_DOCS: sending a
+        query user to /docs is the same cross-entry leak as sending them to
+        the admin login page. HTTP 200 with a root_path-aware health_url.
+        """
+        root = request.scope.get("root_path", "")
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "service": "LightRAG Server",
+                "api_version": api_version_display,
+                "message": (
+                    "The workspace query entry is not available: "
+                    "workspace.html is not bundled with this server. "
+                    "Rebuild the frontend to enable it."
+                ),
+                "health_url": f"{root}/health",
+            }
+        )
 
     @app.get("/")
-    async def redirect_to_webui(request: Request):
-        """Redirect root path based on WebUI availability.
+    async def redirect_to_default_ui(request: Request):
+        """Redirect root path to the configured default UI entry.
 
         Prepend the ASGI root_path so that, behind a reverse proxy, the
         absolute redirect target keeps the configured prefix instead of
-        bypassing it.
+        bypassing it. The '/' behavior equals the chosen entry's behavior
+        INCLUDING its degradation branch: when the default entry's assets
+        are missing, '/' answers with that entry's own fallback rather than
+        rerouting to the other entry (or, for workspace, to the API docs).
         """
         root = request.scope.get("root_path", "")
+        if default_ui == "workspace":
+            if workspace_assets_exist:
+                return RedirectResponse(url=f"{root}{WORKSPACE_PATH}/")
+            return workspace_unavailable_response(request)
         if webui_assets_exist:
             return RedirectResponse(url=f"{root}{webui_path}/")
-        else:
+        elif api_docs_enabled:
             return RedirectResponse(url=f"{root}/docs")
+        else:
+            return service_info_response(request)
+
+    # The verifier ignores WHITELIST_PATHS: its whole purpose is to report
+    # credential validity, and a whitelist entry covering it (e.g. "/auth/*")
+    # would otherwise turn it into an unconditional 200 while the protected
+    # routes still reject.
+    credential_verify_auth = get_combined_auth_dependency(
+        api_key, respect_whitelist=False
+    )
+
+    @app.get("/auth/verify", dependencies=[Depends(credential_verify_auth)])
+    async def verify_credentials():
+        """Verify that the caller's credentials satisfy the combined auth.
+
+        /health deliberately stays on the default whitelist as an
+        unauthenticated liveness probe, so it can never distinguish valid,
+        invalid and missing credentials. This endpoint ALWAYS runs the
+        combined dependency — WHITELIST_PATHS is deliberately ignored here —
+        so a missing or wrong X-API-Key fails with the standard 403 detail
+        ("API Key required" / "Invalid API Key"), which the WebUI's API-key
+        dialogs key on, while valid credentials get a trivial 200. No data is
+        exposed.
+        """
+        return {"status": "ok"}
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -2426,6 +2988,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
 
         return {
@@ -2435,10 +2998,21 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
+    # Brute-force protection for /login (CWE-307): throttle failed attempts per
+    # client IP + username. Checked before the bcrypt verification, so a locked
+    # key is also rejected without paying the bcrypt cost.
+    # getattr defaults keep create_app working for callers that build args
+    # programmatically (e.g. tests, embedding) without these newer fields.
+    login_rate_limiter = LoginRateLimiter(
+        max_attempts=getattr(args, "login_max_failed_attempts", 5),
+        window_seconds=getattr(args, "login_lockout_window_seconds", 300.0),
+    )
+
     @app.post("/login")
-    async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
@@ -2453,10 +3027,52 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
         username = form_data.username
-        if not auth_handler.verify_password(username, form_data.password):
-            raise HTTPException(status_code=401, detail="Incorrect credentials")
+        # Rate-limit key is client IP + username. X-Forwarded-For is NOT trusted
+        # (spoofable); behind a reverse proxy all clients may share the proxy IP,
+        # so buckets are separated by username to avoid one attacker locking out
+        # unrelated accounts. request.client can be None for some transports.
+        client_ip = request.client.host if request.client else "unknown"
+        rate_limit_key = f"{client_ip}:{username}"
+
+        retry_after = login_rate_limiter.retry_after(rate_limit_key)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Please try again later.",
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+
+        # Reserve this attempt BEFORE the bcrypt await. verify runs on a worker
+        # thread, so without pre-reserving, many concurrent requests would all
+        # pass the check above before any resolved, bypassing the limit (TOCTOU).
+        # retry_after + reserve here are synchronous with no await between them,
+        # so the decision is consistent. The reservation is always released in
+        # the finally; only a confirmed wrong password becomes a real failure.
+        login_rate_limiter.reserve_attempt(rate_limit_key)
+        try:
+            # verify_password runs a CPU-bound bcrypt for every attempt (incl.
+            # unknown usernames, to equalize timing). Run it in a worker thread
+            # so a login flood cannot block the event loop and starve the whole
+            # API (unauthenticated DoS).
+            password_ok = await asyncio.to_thread(
+                auth_handler.verify_password, username, form_data.password
+            )
+            # Record the outcome BEFORE releasing the reservation, so the entry
+            # still carries the failure (release removes a now-idle entry).
+            if not password_ok:
+                # Confirmed failure -> count it (and emit the lockout alert only
+                # here, so a correct password on the Nth attempt never does).
+                login_rate_limiter.commit_failure(rate_limit_key)
+                raise HTTPException(status_code=401, detail="Incorrect credentials")
+            # Success clears the key's earlier failures.
+            login_rate_limiter.reset(rate_limit_key)
+        finally:
+            # Always drop the in-flight reservation (also frees the slot once the
+            # key is fully idle, e.g. after a successful login).
+            login_rate_limiter.release(rate_limit_key)
 
         # Regular user login
         user_token = auth_handler.create_token(
@@ -2470,6 +3086,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     @app.get(
@@ -2491,6 +3108,7 @@ def create_app(args):
                         "example": {
                             "status": "healthy",
                             "webui_available": True,
+                            "api_docs_available": True,
                             "working_directory": "/path/to/working/dir",
                             "input_directory": "/path/to/input/dir",
                             "configuration": {
@@ -2545,7 +3163,6 @@ def create_app(args):
             default_workspace = get_default_workspace()
             if workspace is None:
                 workspace = default_workspace
-
             # Try to get pipeline_status, but if not initialized, initialize it first
             try:
                 pipeline_status = await get_namespace_data(
@@ -2558,14 +3175,16 @@ def create_app(args):
                 pipeline_status = await get_namespace_data(
                     "pipeline_status", workspace=workspace
                 )
-
-            pipeline_busy = bool(pipeline_status.get("busy", False))
-            pipeline_scanning = bool(pipeline_status.get("scanning", False))
+            # One DictProxy RPC in multi-worker mode; keep /health read-only and
+            # avoid one cross-process ``get`` per field.
+            pipeline_snapshot = pipeline_status.copy()
+            pipeline_busy = bool(pipeline_snapshot.get("busy", False))
+            pipeline_scanning = bool(pipeline_snapshot.get("scanning", False))
             pipeline_destructive_busy = bool(
-                pipeline_status.get("destructive_busy", False)
+                pipeline_snapshot.get("destructive_busy", False)
             )
             pipeline_pending_enqueues = int(
-                pipeline_status.get("pending_enqueues", 0) or 0
+                pipeline_snapshot.get("pending_enqueues", 0) or 0
             )
             pipeline_active = (
                 pipeline_busy
@@ -2573,6 +3192,17 @@ def create_app(args):
                 or pipeline_destructive_busy
                 or pipeline_pending_enqueues > 0
             )
+
+            # Ingress channel depths (bounded counters only — never the
+            # messages). Best-effort: a mailbox that is not bootstrapped yet must
+            # not turn a liveness probe into a 500.
+            ingress_counts: dict[str, Any] = {}
+            try:
+                ingress_counts = dict(
+                    (await get_pipeline_ingress(workspace)).counts() or {}
+                )
+            except Exception as ingress_error:
+                logger.debug(f"Ingress counts unavailable for /health: {ingress_error}")
 
             if not auth_configured:
                 auth_mode = "disabled"
@@ -2590,8 +3220,18 @@ def create_app(args):
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_available": webui_assets_exist,
+                # Same liveness tier as webui_available (both are trivially
+                # probeable by requesting the mount path). The two fields are
+                # independent checks over their own entry HTML — /health must
+                # be able to express "admin UI up, query entry missing".
+                "workspace_available": workspace_assets_exist,
+                # Whether /docs, /redoc and /openapi.json are served — same
+                # liveness tier as webui_available: the state is trivially
+                # probeable by requesting /docs, so it leaks nothing.
+                "api_docs_available": api_docs_enabled,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
                 "pipeline_busy": pipeline_busy,
                 "pipeline_active": pipeline_active,
             }
@@ -2599,7 +3239,7 @@ def create_app(args):
             # Sensitive runtime configuration and operational diagnostics
             # (filesystem paths, LLM/embedding provider + model + host, storage
             # backends, queue status, keyed locks, ...) are revealed only to
-            # authenticated callers — see Issue #3294. The skipped queue-status
+            # authenticated callers. The skipped queue-status
             # and keyed-lock-cleanup calls also keep unauthenticated probes cheap.
             if not authenticated:
                 return status_data
@@ -2668,6 +3308,20 @@ def create_app(args):
                     "pipeline_scanning": pipeline_scanning,
                     "pipeline_destructive_busy": pipeline_destructive_busy,
                     "pipeline_pending_enqueues": pipeline_pending_enqueues,
+                    # Curated scheduling view (LR2 Phase 6 items 2 & 4). The raw
+                    # manual_* fields stay hidden from /pipeline_status — they are
+                    # coordination internals — but an operator watching a freeze
+                    # needs to see WHICH request holds it, for how long, and what
+                    # the drain is still waiting for. The owner token is
+                    # deliberately omitted: it is a capability, not a status.
+                    "scheduling": _build_scheduling_status(
+                        pipeline_snapshot, ingress_counts
+                    ),
+                    "capabilities": _build_capability_status(rag),
+                    # Per-worker counters/durations for the paths the bounded
+                    # rework introduced (LR2 Phase 6 item 3); see
+                    # lightrag/pipeline_metrics.py for the boundary.
+                    "scheduling_metrics": pipeline_metrics.snapshot(),
                     "keyed_locks": keyed_lock_info,
                     "llm_queue_status": await rag.get_llm_queue_status(
                         include_base=True
@@ -2679,7 +3333,7 @@ def create_app(args):
             return status_data
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     # Pre-render the runtime-config <script> once. The browser-visible URL
     # prefixes are NOT baked into the bundle anymore — index.html ships with
@@ -2689,23 +3343,75 @@ def create_app(args):
     # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
     # breaking out of the inline script (defense-in-depth — values come from
     # admin config, not user input).
+    #
+    # `webuiTitle` (WEBUI_TITLE) rides along and is applied to `document.title`
+    # in the same snippet: the tag sits in <head> right after the static
+    # <title>, so the tab carries the deployment's own name from the FIRST
+    # paint. Waiting for the SPA to read it from /health would show "LightRAG"
+    # until the bundle boots, and browsers cache that first title for history
+    # entries and bookmarks. `or None` normalizes an unset/empty variable to a
+    # single falsy value, which the client reads as "no custom title".
     _runtime_config_payload = json.dumps(
         {
             "apiPrefix": api_prefix,
             "webuiPrefix": f"{api_prefix}{webui_path}/",
+            "webuiTitle": webui_title or None,
         }
     ).replace("</", "<\\/")
     runtime_config_script = (
-        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};"
+        "if(window.__LIGHTRAG_CONFIG__.webuiTitle)"
+        "{document.title=window.__LIGHTRAG_CONFIG__.webuiTitle;}</script>"
     )
 
     # Custom StaticFiles class for smart caching + runtime config injection
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
-        # Replaced in index.html on every request. Keep in sync with
-        # lightrag_webui/index.html.
+        # Replaced in every entry HTML on each request. Keep in sync with
+        # lightrag_webui/index.html AND lightrag_webui/workspace.html — the
+        # placeholder must exist in both entry files.
         RUNTIME_CONFIG_PLACEHOLDER = b"<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
 
+        def __init__(
+            self,
+            *args,
+            index_file: str = WEBUI_INDEX_FILENAME,
+            blocked_html: tuple[str, ...] = (),
+            **kwargs,
+        ):
+            """``index_file``: directory-index filename for this mount.
+
+            Starlette's StaticFiles hardcodes ``index.html`` under
+            ``html=True`` with no configuration hook, so the workspace mount
+            overrides it here to serve workspace.html at its root.
+
+            ``blocked_html``: the OTHER entry's HTML filename(s); requests
+            for them return 404 on this mount. Both entry files live in one
+            shared directory, so without this each mount would also serve a
+            fully working alias of the other entry (/webui/workspace.html,
+            /workspace/index.html) and the URL would stop indicating the
+            entry. Same-entry explicit filenames (/webui/index.html,
+            /workspace/workspace.html) stay reachable.
+
+            Matched case-INSENSITIVELY: on a case-insensitive filesystem
+            (macOS, Windows) the underlying StaticFiles would happily serve
+            /webui/WORKSPACE.HTML, so an exact-case check would leave the
+            alias open exactly where the OS opens it.
+            """
+            super().__init__(*args, **kwargs)
+            self.index_file = index_file
+            self.blocked_html = {name.lower() for name in blocked_html}
+
         async def get_response(self, path: str, scope):
+            if path.lower() in self.blocked_html:
+                raise HTTPException(status_code=404, detail="Not Found")
+
+            # Rewrite the mount-root request ('' / '.') to this mount's own
+            # index file. The Router's redirect_slashes has already forced a
+            # trailing slash on the mount root, so this rewrite cannot bypass
+            # any redirect.
+            if path in ("", "."):
+                path = self.index_file
+
             response = await super().get_response(path, scope)
 
             # `path` is empty when accessing the mount root (StaticFiles
@@ -2731,9 +3437,11 @@ def create_app(args):
                 )
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
-            elif (
-                "/assets/" in path
-            ):  # Assets (JS, CSS, images, fonts) generated by Vite with hash in filename
+            elif path.startswith("assets/") or "/assets/" in path:
+                # Assets (JS, CSS, images, fonts) generated by Vite with hash
+                # in filename. Inside a Mount, `path` is relative (no leading
+                # slash) — "assets/x.js" — so match the top-level assets dir
+                # explicitly.
                 response.headers["Cache-Control"] = (
                     "public, max-age=31536000, immutable"
                 )
@@ -2775,25 +3483,31 @@ def create_app(args):
 
     # Mount Swagger UI static files for offline support
     swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
-    if swagger_static_dir.exists():
+    if api_docs_enabled and swagger_static_dir.exists():
         app.mount(
             "/static/swagger-ui",
             StaticFiles(directory=swagger_static_dir),
             name="swagger-ui-static",
         )
 
-    # Conditionally mount WebUI only if assets exist
+    # Conditionally mount each UI entry only if its own entry HTML exists.
+    # Both mounts serve the SAME build directory; entry identity is decided
+    # by which file each mount uses as its directory index.
+    static_dir = Path(__file__).parent / "webui"
     if webui_assets_exist:
-        static_dir = Path(__file__).parent / "webui"
         static_dir.mkdir(exist_ok=True)
         app.mount(
             webui_path,
             SmartStaticFiles(
-                directory=static_dir, html=True, check_dir=True
-            ),  # Use SmartStaticFiles
+                directory=static_dir,
+                html=True,
+                check_dir=True,
+                index_file=WEBUI_INDEX_FILENAME,
+                blocked_html=(WORKSPACE_INDEX_FILENAME,),
+            ),
             name="webui",
         )
-        logger.info(f"WebUI assets mounted at {webui_path}")
+        logger.info(f"Admin WebUI mounted at {api_prefix}{webui_path}/")
     else:
         logger.info("WebUI assets not available, WebUI route not mounted")
 
@@ -2801,9 +3515,42 @@ def create_app(args):
         @app.get(webui_path)
         @app.get(f"{webui_path}/")
         async def webui_redirect_to_docs(request: Request):
-            """Redirect WebUI path to /docs when WebUI is not available."""
+            """Redirect WebUI path to /docs when WebUI is not available.
+
+            With docs disabled there is no page to redirect to, so answer
+            with the JSON service info instead of a 404.
+            """
+            if not api_docs_enabled:
+                return service_info_response(request)
             root = request.scope.get("root_path", "")
             return RedirectResponse(url=f"{root}/docs")
+
+    if workspace_assets_exist:
+        app.mount(
+            WORKSPACE_PATH,
+            SmartStaticFiles(
+                directory=static_dir,
+                html=True,
+                check_dir=True,
+                index_file=WORKSPACE_INDEX_FILENAME,
+                blocked_html=(WEBUI_INDEX_FILENAME,),
+            ),
+            name="workspace",
+        )
+        logger.info(f"Workspace query UI mounted at {api_prefix}{WORKSPACE_PATH}/")
+    else:
+        logger.info(
+            "Workspace entry HTML not available, /workspace serves the "
+            "fixed service-info degradation"
+        )
+
+        # Fixed degradation, explicitly registered for both trailing-slash
+        # forms. Never redirects to /docs (or anywhere else) — see
+        # workspace_unavailable_response.
+        @app.get(WORKSPACE_PATH)
+        @app.get(f"{WORKSPACE_PATH}/")
+        async def workspace_unavailable(request: Request):
+            return workspace_unavailable_response(request)
 
     return app
 

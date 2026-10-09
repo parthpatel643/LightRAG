@@ -14,8 +14,8 @@ import {
   TableRow
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
+import EmptyCard from '@/components/ui/EmptyCard'
 import Checkbox from '@/components/ui/Checkbox'
-import Skeleton from '@/components/ui/Skeleton'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import DeleteSequencedDocumentDialog from '@/components/documents/DeleteSequencedDocumentDialog'
@@ -36,10 +36,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   scanNewDocuments,
   getDocumentsPaginatedWithTimeout,
-  DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
   DocumentsRequest,
+  PaginatedDocsResponse,
   PaginationInfo
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -51,19 +51,32 @@ import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon,
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import Input from '@/components/ui/Input'
 import {
-  getStatusBucket,
   getStatusRequestFilters,
-  matchesStatusFilter,
-  type StatusBucket,
   type StatusFilter
 } from '@/features/documentStatusFilters'
+import { computeStatusCountsFingerprint } from '@/features/documentStatusCounts'
+import { hasDocumentWarning } from '@/features/documentRecoveryWarnings'
+import {
+  admitCircuitBreakerRequest,
+  initialCircuitBreakerState,
+  isCircuitBreakerBlocked,
+  recordCircuitBreakerFailure,
+  resetCircuitBreaker,
+  settleCircuitBreakerProbe,
+  type CircuitBreakerState
+} from '@/features/documentRefreshCircuitBreaker'
+import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
+import { createRefreshQueue } from '@/features/documentRefreshQueue'
+import {
+  startDeletionProbe,
+  type DeletionProbeHandle
+} from '@/features/documentDeletionProbe'
+import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 type StatusDisplayConfig = {
   labelKey: string
   className: string
 }
-
-const STATUS_BUCKETS: StatusBucket[] = ['completed', 'parse', 'analyze', 'process', 'failed']
 
 // Utility functions defined outside component for better performance and to avoid dependency issues
 const getCountValue = (counts: Record<string, number>, ...keys: string[]): number => {
@@ -83,20 +96,6 @@ const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
   getAggregateCount(counts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') > 0 ||
   getCountValue(counts, 'PENDING', 'pending') > 0 ||
   getCountValue(counts, 'PREPROCESSED', 'preprocessed') > 0
-
-const buildLegacyDocs = (documents: DocStatusResponse[]): DocsStatusesResponse => {
-  const statuses = STATUS_BUCKETS.reduce<Record<StatusBucket, DocStatusResponse[]>>((acc, status) => {
-    acc[status] = []
-    return acc
-  }, {} as Record<StatusBucket, DocStatusResponse[]>)
-
-  documents.forEach((doc) => {
-    const bucket = getStatusBucket(doc.status)
-    if (bucket) statuses[bucket].push(doc)
-  })
-
-  return { statuses }
-}
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -266,7 +265,7 @@ const DocumentStatusDetailsDialog = ({ doc }: { doc: DocStatusResponse }) => {
           side="top"
           aria-label={openLabel}
         >
-          {doc.error_msg ? (
+          {hasDocumentWarning(doc) ? (
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
           ) : (
             <Info className="h-4 w-4 text-blue-500" />
@@ -367,6 +366,10 @@ type RefreshRequest =
     query: QuerySnapshot;
     customTimeout?: number;
     requestVersion: number;
+    // Issued by the polling timer / activity probe rather than by a user
+    // action. Only these are subject to the circuit breaker: a page change or
+    // a manual refresh is an explicit intent and stays the escape hatch.
+    auto?: boolean;
   }
   | {
     type: 'manual';
@@ -374,26 +377,32 @@ type RefreshRequest =
     requestVersion: number;
   };
 
+/**
+ * Stable id for the document-refresh failure toast, so repeated failures
+ * update one notice in place instead of stacking. Dismissed by the first
+ * successful response.
+ */
+const DOCUMENT_REFRESH_FAILURE_TOAST_ID = 'document-refresh-failed'
+
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
 
-  // Set up mount/unmount status tracking. Pending throttle/probe timers are NOT
+  const pageRestoreGeneration = usePageRestoreGeneration()
+
+  // Set up React mount/unmount status tracking. Pending throttle/probe timers are NOT
   // explicitly cleared on unmount — every timer callback checks isMountedRef
-  // before doing any work, so a stray fire is a no-op.
+  // before doing any work, so a stray fire is a no-op. Do not set this false
+  // from beforeunload: BFCache restores the same mounted React tree.
   useEffect(() => {
     isMountedRef.current = true;
 
-    // Handle page reload/unload
-    const handleBeforeUnload = () => {
-      isMountedRef.current = false;
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
     return () => {
       isMountedRef.current = false;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // The Toaster is mounted above the router, so the outage notice outlives
+      // this component: without this it would still be on screen after a
+      // logout, with nothing left that could ever dismiss it.
+      toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID);
     };
   }, []);
 
@@ -401,9 +410,6 @@ export default function DocumentManager() {
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineActive = useBackendState.use.pipelineActive()
-
-  // Legacy state for backward compatibility
-  const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
@@ -430,7 +436,7 @@ export default function DocumentManager() {
     statusCountsRef.current = statusCounts
   }, [statusCounts])
   const [isRefreshing, setIsRefreshing] = useState(false)
-  
+
   // Search state
   const [searchTerm, setSearchTerm] = useState('')
 
@@ -441,6 +447,10 @@ export default function DocumentManager() {
   // Delete sequenced document dialog state
   const [deleteSequencedDialogOpen, setDeleteSequencedDialogOpen] = useState(false)
   const [documentToDeleteSequenced, setDocumentToDeleteSequenced] = useState<DocStatusResponse | null>(null)
+
+  const [hasLoadedDocuments, setHasLoadedDocuments] = useState(false)
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null)
+  const hasLoadedDocumentsRef = useRef(false)
 
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
@@ -466,11 +476,10 @@ export default function DocumentManager() {
   // Add refs to track previous pipelineActive state and current interval
   const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
-  const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
-  // Throttle gate: all auto-driven /documents/paginated entrances funnel through
-  // refreshDocumentsThrottled() to enforce a minimum 2s wall-clock interval.
+  // Throttle gate: every /documents/paginated entrance that is not a direct
+  // page/filter/sort change funnels through refreshDocumentsThrottled() to
+  // enforce a minimum 2s wall-clock interval.
   const lastPaginatedAtRef = useRef(0);
   const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Activity probe: exponential-backoff burst of /health calls that stops once
@@ -478,21 +487,17 @@ export default function DocumentManager() {
   // reset the schedule to t=0.
   const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
   const probeActiveRef = useRef(false);
+  // Deletion confirmation probe: owns its own timers (see documentDeletionProbe
+  // for why it cannot ride on startPollingInterval). Tracked separately from
+  // the activity probe above so neither one's cleanup can clear the other's
+  // suppression flag.
+  const deletionProbeRef = useRef<DeletionProbeHandle | null>(null);
+  const deletionProbeActiveRef = useRef(false);
 
-  // Add retry mechanism state (read by circuit breaker via setRetryState only).
-  const [, setRetryState] = useState({
-    count: 0,
-    lastError: null as Error | null,
-    isBackingOff: false
-  });
-
-  // Add circuit breaker state
-  const [circuitBreakerState, setCircuitBreakerState] = useState({
-    isOpen: false,
-    failureCount: 0,
-    lastFailureTime: null as number | null,
-    nextRetryTime: null as number | null
-  });
+  // Circuit breaker guarding the automatic /documents/paginated polling.
+  // Transitions live in features/documentRefreshCircuitBreaker (unit-tested);
+  // this ref just holds the current state.
+  const circuitBreakerRef = useRef<CircuitBreakerState>(initialCircuitBreakerState);
 
 
   // Handle checkbox change for individual documents
@@ -522,12 +527,6 @@ export default function DocumentManager() {
     e.stopPropagation() // Prevent row click
     setDocumentToDeleteSequenced(doc)
     setDeleteSequencedDialogOpen(true)
-  }, [])
-
-  // Handle delete sequenced success
-  const handleDeleteSequencedSuccess = useCallback(() => {
-    // Trigger a refresh by updating a state that will cause re-fetch
-    setIsRefreshing(true)
   }, [])
 
   // Handle sort column click
@@ -571,36 +570,6 @@ export default function DocumentManager() {
       return fileName.includes(term) || docId.includes(term) || filePath.includes(term)
     })
   }, [searchTerm])
-
-  // Sort documents based on current sort field and direction
-  const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
-    return [...documents].sort((a, b) => {
-      let valueA, valueB;
-
-      // Special handling for ID field based on showFileName setting
-      if (sortField === 'id' && showFileName) {
-        valueA = getDisplayFileName(a);
-        valueB = getDisplayFileName(b);
-      } else if (sortField === 'id') {
-        valueA = a.id;
-        valueB = b.id;
-      } else {
-        // Date fields
-        valueA = new Date(a[sortField]).getTime();
-        valueB = new Date(b[sortField]).getTime();
-      }
-
-      // Apply sort direction
-      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
-
-      // Compare values
-      if (typeof valueA === 'string' && typeof valueB === 'string') {
-        return sortMultiplier * valueA.localeCompare(valueB);
-      } else {
-        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
-      }
-    });
-  }, [sortField, sortDirection, showFileName]);
 
   // Define a new type that includes status information
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
@@ -646,54 +615,23 @@ export default function DocumentManager() {
     }
   }, [])
 
-  const filteredAndSortedDocs = useMemo(() => {
-    // Use currentPageDocs directly if available (from paginated API)
-    // This preserves the backend's sort order and prevents status grouping
-    if (currentPageDocs && currentPageDocs.length > 0) {
-      const docsWithStatus = currentPageDocs.map(doc => ({
-        ...doc,
-        status: doc.status as DocStatus
-      })) as DocStatusWithStatus[];
-      
-      // Apply search filter
-      return filterDocuments(docsWithStatus);
-    }
-
-    // Fallback to legacy docs structure for backward compatibility
-    if (!docs) return null;
-
-    // Create a flat array of documents with status information
-    const allDocuments: DocStatusWithStatus[] = [];
-
-    Object.entries(docs.statuses).forEach(([status, documents]) => {
-      const fallbackStatus = status as DocStatus
-
-      for (const doc of documents ?? []) {
-        const documentStatus = doc.status ?? fallbackStatus
-
-        if (matchesStatusFilter(documentStatus, statusFilter)) {
-          allDocuments.push({
-            ...doc,
-            status: documentStatus
-          })
-        }
-      }
-    })
-
-    // Apply search filter
-    const filtered = filterDocuments(allDocuments);
-
-    // Sort all documents together if sort field and direction are specified
-    if (sortField && sortDirection) {
-      return sortDocuments(filtered);
-    }
-
-    return filtered;
-  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments, filterDocuments]);
+  // The current page is rendered as received: status filtering, sorting and
+  // pagination are all resolved by the backend query. Only the local search box
+  // narrows the rows of the page that is already loaded.
+  const filteredAndSortedDocs = useMemo(
+    () =>
+      filterDocuments(
+        currentPageDocs.map(doc => ({
+          ...doc,
+          status: doc.status as DocStatus
+        })) as DocStatusWithStatus[]
+      ) as DocStatusWithStatus[],
+    [currentPageDocs, filterDocuments]
+  );
 
   // Calculate current page selection state (after filteredAndSortedDocs is defined)
   const currentPageDocIds = useMemo(() => {
-    return filteredAndSortedDocs?.map(doc => doc.id) || []
+    return filteredAndSortedDocs.map(doc => doc.id)
   }, [filteredAndSortedDocs])
 
   const selectedCurrentPageCount = useMemo(() => {
@@ -737,31 +675,21 @@ export default function DocumentManager() {
     }
   }, [hasCurrentPageSelection, isCurrentPageFullySelected, currentPageDocIds.length, handleSelectCurrentPage, handleDeselectAll, t])
 
-  // Calculate document counts for each status
-  const documentCounts = useMemo(() => {
-    if (!docs) return { all: 0 } as Record<string, number>;
+  // Filter-tab counts. `statusCounts` is the backend's whole-corpus tally, so
+  // these are corpus-wide numbers and not a count of the page on screen.
+  // `getCountValue` already yields 0 for a status the backend did not report,
+  // so no `|| 0` tail is needed — and a `||` tail would be wrong, since a
+  // genuine count of 0 is falsy.
+  const completedCount = getCountValue(statusCounts, 'PROCESSED', 'processed');
+  const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing');
+  const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing');
+  const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing');
+  const failedCount = getCountValue(statusCounts, 'FAILED', 'failed');
 
-    const counts: Record<string, number> = { all: 0 };
-
-    Object.entries(docs.statuses).forEach(([status, documents]) => {
-      counts[status] = documents.length;
-      counts.all += documents.length;
-    });
-
-    return counts;
-  }, [docs]);
-
-  const completedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.completed || 0;
-  const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing') || documentCounts.parse || 0;
-  const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing') || documentCounts.analyze || 0;
-  const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.process || 0;
-  const failedCount = getCountValue(statusCounts, 'FAILED', 'failed') || documentCounts.failed || 0;
-
-  // Store previous status counts
-  // Fingerprint of per-bucket counts. Kept key-agnostic on purpose: `docs.statuses`
-  // may be keyed by raw DocStatus (backend) or by filter bucket (buildLegacyDocs),
-  // so we compare a stable digest of all buckets rather than fixed keys.
-  const prevStatusFingerprint = useRef('')
+  // Previous status-count digest. `null` means "no snapshot observed yet",
+  // which is distinct from a digest that happens to be empty — see the effect
+  // that consumes it for why the distinction matters on the mount pass.
+  const prevStatusFingerprint = useRef<string | null>(null)
 
   // Add pulse style to document
   useEffect(() => {
@@ -797,93 +725,74 @@ export default function DocumentManager() {
     sort_direction: query.sortDirection
   }), [])
 
-  // Utility function to update component state
-  const updateComponentState = useCallback((response: any) => {
-    setPagination(response.pagination);
+  // Utility function to update component state.
+  //
+  // `page` is passed in rather than read off the response: the displayed page
+  // number is what THIS request asked for (or an explicit boundary correction),
+  // never what the response echoed back. Request serialization plus the
+  // requestVersion guard make a stale response unreachable today, so this
+  // changes no behaviour; deriving the page locally means neither a backend
+  // echo bug nor a future relaxation of either layer can surface as a page
+  // number rolling backwards under the user.
+  const updateComponentState = useCallback((response: any, page: number) => {
+    setPagination({ ...response.pagination, page });
     setCurrentPageDocs(response.documents);
     setStatusCounts(response.status_counts);
-
-    setDocs(response.pagination.total_count > 0 ? buildLegacyDocs(response.documents) : null);
   }, []);
 
+  const markDocumentsLoaded = useCallback(() => {
+    hasLoadedDocumentsRef.current = true
+    setHasLoadedDocuments(true)
+    setInitialLoadError(null)
+  }, [])
 
-  // Enhanced error classification
-  const classifyError = useCallback((error: any) => {
-    if (error.name === 'AbortError') {
-      return { type: 'cancelled', shouldRetry: false, shouldShowToast: false };
-    }
 
-    if (error.message === 'Request timeout') {
-      return { type: 'timeout', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.message?.includes('Network Error') || error.code === 'NETWORK_ERROR') {
-      return { type: 'network', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.status >= 500) {
-      return { type: 'server', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.status >= 400 && error.status < 500) {
-      return { type: 'client', shouldRetry: false, shouldShowToast: true };
-    }
-
-    return { type: 'unknown', shouldRetry: true, shouldShowToast: true };
+  // Circuit breaker utility functions. State lives in a ref, not useState: the
+  // breaker is read from timer callbacks only, and a state write would change
+  // startPollingInterval's identity and make the polling useEffect tear down
+  // and recreate the interval, resetting its phase on every failure.
+  // Ask for permission to issue one automatic request. Past the backoff
+  // deadline this admits a single half-open probe and keeps the breaker open
+  // until that probe settles, so the ticks that arrive during its (up to 30s)
+  // lifetime do not slip through behind it.
+  const admitAutomaticRefresh = useCallback(() => {
+    const { state, admitted } = admitCircuitBreakerRequest(
+      circuitBreakerRef.current,
+      Date.now()
+    );
+    circuitBreakerRef.current = state;
+    return admitted;
   }, []);
 
-  // Circuit breaker utility functions
-  const isCircuitBreakerOpen = useCallback(() => {
-    if (!circuitBreakerState.isOpen) return false;
+  // Read-only check for a request that was already queued: it must not take
+  // the half-open slot, so it only gets to run while the breaker is closed.
+  const isAutomaticRefreshBlocked = useCallback(
+    () => isCircuitBreakerBlocked(circuitBreakerRef.current, Date.now()),
+    []
+  );
 
-    const now = Date.now();
-    if (circuitBreakerState.nextRetryTime && now >= circuitBreakerState.nextRetryTime) {
-      // Reset circuit breaker to half-open state
-      setCircuitBreakerState(prev => ({
-        ...prev,
-        isOpen: false,
-        failureCount: Math.max(0, prev.failureCount - 1)
-      }));
-      return false;
-    }
-
-    return true;
-  }, [circuitBreakerState]);
-
-  const recordFailure = useCallback((error: Error) => {
-    const now = Date.now();
-    setCircuitBreakerState(prev => {
-      const newFailureCount = prev.failureCount + 1;
-      const shouldOpen = newFailureCount >= 3; // Open after 3 failures
-
-      return {
-        isOpen: shouldOpen,
-        failureCount: newFailureCount,
-        lastFailureTime: now,
-        nextRetryTime: shouldOpen ? now + (Math.pow(2, newFailureCount) * 1000) : null
-      };
-    });
-
-    setRetryState(prev => ({
-      count: prev.count + 1,
-      lastError: error,
-      isBackingOff: true
-    }));
+  const recordFailure = useCallback(() => {
+    circuitBreakerRef.current = recordCircuitBreakerFailure(
+      circuitBreakerRef.current,
+      Date.now()
+    );
   }, []);
 
+  // Call ONLY when a response actually came back. Recording success on a
+  // fire-and-forget refresh (what the polling tick used to do) clears the
+  // failure counter on every tick and the breaker can never open.
   const recordSuccess = useCallback(() => {
-    setCircuitBreakerState({
-      isOpen: false,
-      failureCount: 0,
-      lastFailureTime: null,
-      nextRetryTime: null
-    });
+    circuitBreakerRef.current = resetCircuitBreaker();
+  }, []);
 
-    setRetryState({
-      count: 0,
-      lastError: null,
-      isBackingOff: false
-    });
+  // Return the half-open probe slot for an outcome that proves nothing about
+  // reachability. Idempotent, so it can be called unconditionally from the one
+  // place every request path passes through.
+  const settleProbe = useCallback(() => {
+    circuitBreakerRef.current = settleCircuitBreakerProbe(
+      circuitBreakerRef.current,
+      Date.now()
+    );
   }, []);
 
   // Handle page size change - update state and save to store
@@ -910,45 +819,49 @@ export default function DocumentManager() {
     try {
       if (!isMountedRef.current) return;
 
+      if (!hasLoadedDocumentsRef.current) {
+        setInitialLoadError(null)
+      }
       setIsRefreshing(true);
 
       const { query, requestVersion } = refreshRequest
       const isStaleRequest = () => requestVersion !== latestRefreshRequestVersionRef.current
 
+      // Single entrance for the paginated fetch so the circuit breaker is fed
+      // by real responses. A 200 proves the backend is reachable even when the
+      // payload is then discarded as stale, so success is recorded before any
+      // staleness check.
+      const fetchPage = async (
+        pageRequest: DocumentsRequest,
+        timeoutMs?: number
+      ): Promise<PaginatedDocsResponse> => {
+        const response = await getDocumentsPaginatedWithTimeout(pageRequest, timeoutMs)
+        recordSuccess()
+        toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID)
+        return response
+      }
+
       if (refreshRequest.type === 'manual') {
         const request = buildDocumentsRequest(query, 1)
-        const response = await getDocumentsPaginatedWithTimeout(request)
+        const response = await fetchPage(request)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
         if (response.pagination.total_count < query.pageSize && query.pageSize !== 10) {
           handlePageSizeChange(10);
         } else {
-          setPagination(response.pagination);
+          // Manual refresh always requests page 1; same rule as
+          // updateComponentState — the page shown is the page asked for.
+          setPagination({ ...response.pagination, page: 1 });
           setCurrentPageDocs(response.documents);
           setStatusCounts(response.status_counts);
-
-          const legacyDocs: DocsStatusesResponse = {
-            statuses: {
-              processed: response.documents.filter(doc => doc.status === 'processed'),
-              preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
-              processing: response.documents.filter(doc => doc.status === 'processing'),
-              pending: response.documents.filter(doc => doc.status === 'pending'),
-              failed: response.documents.filter(doc => doc.status === 'failed')
-            }
-          };
-
-          if (response.pagination.total_count > 0) {
-            setDocs(legacyDocs);
-          } else {
-            setDocs(null);
-          }
+          markDocumentsLoaded()
         }
       } else {
         const { customTimeout } = refreshRequest;
         const pageToFetch = query.page;
         const request = buildDocumentsRequest(query, pageToFetch)
-        const response = await getDocumentsPaginatedWithTimeout(request, customTimeout)
+        const response = await fetchPage(request, customTimeout)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -958,15 +871,16 @@ export default function DocumentManager() {
 
           if (pageToFetch !== lastPage) {
             const lastPageRequest = buildDocumentsRequest(query, lastPage)
-            const lastPageResponse = await getDocumentsPaginatedWithTimeout(
-              lastPageRequest,
-              customTimeout
-            )
+            const lastPageResponse = await fetchPage(lastPageRequest, customTimeout)
 
             if (!isMountedRef.current || isStaleRequest()) return;
 
             setPageByStatus(prev => ({ ...prev, [query.statusFilter]: lastPage }));
-            updateComponentState(lastPageResponse);
+            // Explicit: pageByStatus is only read when the status filter
+            // changes, so this call is the only thing moving pagination.page
+            // to the corrected page.
+            updateComponentState(lastPageResponse, lastPage);
+            markDocumentsLoaded()
             return;
           }
         }
@@ -976,22 +890,77 @@ export default function DocumentManager() {
             ? prev
             : { ...prev, [query.statusFilter]: pageToFetch }
         ));
-        updateComponentState(response);
+        updateComponentState(response, pageToFetch);
+        markDocumentsLoaded()
       }
 
     } catch (err) {
       if (isMountedRef.current) {
-        const errorClassification = classifyError(err);
-
-        if (errorClassification.shouldShowToast) {
-          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
-        }
+        const errorClassification = classifyDocumentRefreshError(err);
 
         if (errorClassification.shouldRetry) {
-          recordFailure(err as Error);
+          // No answer at all, or an answer that is itself a back-off signal
+          // (408/429). shouldRetry outranks provesBackendResponsive by design.
+          recordFailure();
+        } else if (errorClassification.provesBackendResponsive) {
+          // A permanent 4xx: the application parsed and routed the request and
+          // answered. Reachability is proven, so the breaker must be CLEARED
+          // rather than left holding a stale failure count that would let three
+          // non-consecutive failures open it.
+          recordSuccess();
+        }
+        // Anything left — a cancellation — proves nothing and must not reset,
+        // but must not keep holding the probe slot either: the finally settles
+        // it below.
+
+        if (errorClassification.shouldShowToast) {
+          // One notice for an ongoing outage, not one per failed poll. Every
+          // retryable failure means the list is stale and staying stale, so the
+          // notice stands until a response clears it (fetchPage dismisses it on
+          // success). StatusIndicator's red dot covers the plain "backend is
+          // unreachable" case, but not this one: it tracks /health, so a
+          // backend that answers /health while /documents/paginated keeps
+          // failing shows green over a frozen list, and it is not rendered at
+          // all when the user turns health checks off.
+          //
+          // The stable id alone is NOT enough: it merges into a toast that is
+          // still on screen, and the default 4s lifetime always expires before
+          // the next poll (5s at its fastest, 30s once health drops). Every
+          // failure would create a fresh toast, which is the flood this is
+          // meant to remove. Gating persistence on the breaker being OPEN had
+          // the same hole for the failures that precede the threshold.
+          //
+          // A permanent 4xx is not an outage — the backend answered, and the
+          // breaker has just been cleared above — so it keeps the ordinary
+          // auto-dismissing toast.
+          //
+          // Persistence additionally requires that something still polls: the
+          // interval is the only thing that can produce the successful response
+          // that dismisses this. TabsContent uses forceMount, so a request that
+          // was in flight when the user left the tab keeps running and lands
+          // here up to 30s later, after the polling effect stopped the
+          // interval — an Infinity toast raised then could never be cleared.
+          // Showing it is fine, and intended; making it permanent is not.
+          const clearable = pollingIntervalRef.current !== null
+          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }), {
+            id: DOCUMENT_REFRESH_FAILURE_TOAST_ID,
+            duration: errorClassification.shouldRetry && clearable ? Infinity : undefined
+          });
+        }
+        if (!hasLoadedDocumentsRef.current) {
+          setInitialLoadError(errorMessage(err))
         }
       }
     } finally {
+      // The probe slot is held for the lifetime of ONE real request, so every
+      // exit path must return it. recordSuccess / recordFailure already clear
+      // it; this covers the paths that do neither — a cancellation, and the
+      // unmount early return at the top of this function, which precedes every
+      // record call. Idempotent, hence unconditional: the invariant is "every
+      // exit returns the slot", and finally is the only construct that states
+      // it. An else-branch in the catch would cover today's paths and silently
+      // reopen the hole the next time an early return is added.
+      settleProbe();
       if (isMountedRef.current) {
         setIsRefreshing(false);
       }
@@ -999,47 +968,49 @@ export default function DocumentManager() {
   }, [
     t,
     updateComponentState,
-    classifyError,
     recordFailure,
+    recordSuccess,
+    settleProbe,
     handlePageSizeChange,
-    buildDocumentsRequest
+    buildDocumentsRequest,
+    markDocumentsLoaded
   ]);
 
-  const enqueueRefresh = useCallback(async (refreshRequest: RefreshRequest) => {
-    if (activeRefreshPromiseRef.current) {
-      pendingRefreshRequestRef.current = refreshRequest;
-      await activeRefreshPromiseRef.current;
-      return;
-    }
+  // One queue for the component's lifetime: it owns the in-flight/pending
+  // state, so rebuilding it would drop a request mid-flight. The handlers ride
+  // along with each enqueue instead of being captured at construction.
+  const [refreshQueue] = useState(() => createRefreshQueue<RefreshRequest>());
 
-    const refreshLoopPromise = (async () => {
-      let nextRequest: RefreshRequest | null = refreshRequest;
-
-      while (nextRequest) {
-        pendingRefreshRequestRef.current = null;
-        await runRefreshRequest(nextRequest);
-        nextRequest = pendingRefreshRequestRef.current;
-      }
-    })();
-
-    activeRefreshPromiseRef.current = refreshLoopPromise;
-
-    try {
-      await refreshLoopPromise;
-    } finally {
-      if (activeRefreshPromiseRef.current === refreshLoopPromise) {
-        activeRefreshPromiseRef.current = null;
-      }
-      pendingRefreshRequestRef.current = null;
-    }
-  }, [runRefreshRequest]);
+  const enqueueRefresh = useCallback(
+    (refreshRequest: RefreshRequest) =>
+      refreshQueue.enqueue(refreshRequest, {
+        runRequest: runRefreshRequest,
+        // The single admission point for automatic refreshes, evaluated where
+        // the request is actually issued — first request and queued request
+        // alike. Manual refresh and page/filter/sort changes are untagged and
+        // always run: explicit user intent is the escape hatch.
+        admit: (request) =>
+          request.type !== 'intelligent' ||
+          !request.auto ||
+          admitAutomaticRefresh(),
+        // Automatic refreshes rank below everything else in the pending slot.
+        // Admission is evaluated where the request is issued, so an `auto`
+        // request the breaker will refuse there must not be able to discard a
+        // page change or a manual refresh that would have run.
+        priority: (request) =>
+          request.type === 'intelligent' && request.auto ? 0 : 1
+      }),
+    [refreshQueue, runRefreshRequest, admitAutomaticRefresh]
+  );
 
   // Intelligent refresh function: handles all boundary cases
-  const handleIntelligentRefresh = useCallback(async (
-    targetPage?: number,
-    resetToFirst?: boolean,
+  const handleIntelligentRefresh = useCallback(async (options: {
+    targetPage?: number
+    resetToFirst?: boolean
     customTimeout?: number
-  ) => {
+    auto?: boolean
+  } = {}) => {
+    const { targetPage, resetToFirst, customTimeout, auto } = options
     const page = resetToFirst ? 1 : (targetPage || pagination.page)
     const query = buildQuerySnapshot({ page })
     const requestVersion = latestRefreshRequestVersionRef.current
@@ -1048,27 +1019,61 @@ export default function DocumentManager() {
       type: 'intelligent',
       query,
       customTimeout,
-      requestVersion
+      requestVersion,
+      auto
     });
   }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
-  // Throttle gate: any caller wanting to refresh the document list goes through
-  // here. If the wall-clock gap since the last paginated request is >= 2s, fire
-  // immediately; otherwise schedule a single trailing call at the 2s boundary
-  // and drop any further calls into that pending slot (natural coalescing).
-  const refreshDocumentsThrottled = useCallback(() => {
-    const fire = () => {
+  // Throttle gate for AUTOMATIC document-list refreshes: if the wall-clock gap
+  // since the last paginated request is >= 2s, fire immediately; otherwise
+  // schedule a single trailing call at the 2s boundary and collapse any further
+  // automatic calls into it. A user-intent call (`auto: false`) is not
+  // throttled at all — see the comment on that branch.
+  const refreshDocumentsThrottled = useCallback((options: { auto?: boolean } = {}) => {
+    // Defaults to automatic: the timers are the common caller. Callers that
+    // follow a user action (upload, scan, delete) pass auto: false so the
+    // breaker cannot refuse the refresh their action earned.
+    const auto = options.auto ?? true
+    const fire = (isAuto: boolean) => {
       lastPaginatedAtRef.current = Date.now()
-      handleIntelligentRefresh().catch((err) => {
+      handleIntelligentRefresh({ auto: isAuto }).catch((err) => {
         console.error('Throttled document refresh failed:', err)
       })
     }
-    const gap = Date.now() - lastPaginatedAtRef.current
-    if (gap >= 2000) {
-      fire()
+
+    // User intent never waits. It arrives at most once per user action
+    // (delete confirmation, upload, scan, clear), and the manual refresh
+    // button already bypasses this gate entirely by enqueueing directly — so
+    // the 2s floor only ever delayed the paths that are meant to BE the
+    // escape hatch, the same way the circuit breaker already exempts them.
+    //
+    // It was not a theoretical delay: a deletion observed busy even once
+    // flips `pipelineActive`, whose effect fires an automatic refresh, which
+    // resets this window — so the probe's own health check pushed its
+    // confirming refresh out to the 2s boundary. Measured on the rendered
+    // regression test, a 150ms deletion took 2.06s to leave the table
+    // against 0.08s for one that had already finished when the response
+    // arrived. Any pending trailing timer is cancelled rather than left to
+    // fire: this request supersedes it, on the current query.
+    if (!auto) {
+      if (pendingPaginatedTimerRef.current !== null) {
+        clearTimeout(pendingPaginatedTimerRef.current)
+        pendingPaginatedTimerRef.current = null
+      }
+      fire(false)
       return
     }
-    if (pendingPaginatedTimerRef.current !== null) return
+
+    const gap = Date.now() - lastPaginatedAtRef.current
+    if (gap >= 2000) {
+      fire(true)
+      return
+    }
+    // Natural coalescing: everything arriving inside the window collapses
+    // into the single trailing call already scheduled.
+    if (pendingPaginatedTimerRef.current !== null) {
+      return
+    }
     // Snapshot the query identity. If page/filter/sort changes while we wait,
     // the page-change useEffect bumps latestRefreshRequestVersionRef AND fires
     // its own paginated request on the new query. Our trailing closure still
@@ -1081,9 +1086,26 @@ export default function DocumentManager() {
       pendingPaginatedTimerRef.current = null
       if (!isMountedRef.current) return
       if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
-      fire()
+      fire(true)
     }, 2000 - gap)
   }, [handleIntelligentRefresh]);
+
+  // Latest-render view of the throttle gate, for callers that outlive the
+  // render they were created in (the two probes below). Calling a captured
+  // `refreshDocumentsThrottled` from a timer that fires seconds later pairs an
+  // OLD query snapshot (page/filter/sort from that render) with the CURRENT
+  // `latestRefreshRequestVersionRef` — a combination the staleness guard in
+  // runRefreshRequest cannot catch, since it only compares versions. The stale
+  // response then overwrites the view the user navigated to. Reading the gate
+  // through this ref keeps the snapshot and the version from the same render.
+  //
+  // The polling interval does not need this: `startPollingInterval` depends on
+  // `refreshDocumentsThrottled`, so a page/filter/sort change already recreates
+  // the interval with the current closure.
+  const refreshDocumentsThrottledRef = useRef(refreshDocumentsThrottled);
+  useEffect(() => {
+    refreshDocumentsThrottledRef.current = refreshDocumentsThrottled
+  }, [refreshDocumentsThrottled]);
 
   // Activity probe: short exponential-backoff burst of /health checks fired
   // after scan/upload triggers. Stops as soon as pipelineActive flips true so
@@ -1100,6 +1122,11 @@ export default function DocumentManager() {
     const timers: ReturnType<typeof setTimeout>[] = []
     const probeSchedule = [0, 1000, 2000, 4000, 8000, 16000] as const
     const refreshAt = new Set<number>([0, 2000, 4000, 8000, 16000])
+    // The probe follows a user action (scan / upload), so its FIRST refresh
+    // carries that intent and must not be refusable by the breaker. The rest
+    // of the burst is speculative — it polls for work the action may have
+    // started — so tagging all five as intent would let one click bypass the
+    // breaker five times.
     const cleanup = () => {
       timers.forEach((id) => clearTimeout(id))
       if (probeTimersRef.current === timers) {
@@ -1123,7 +1150,7 @@ export default function DocumentManager() {
           return
         }
         if (refreshAt.has(delay)) {
-          refreshDocumentsThrottled()
+          refreshDocumentsThrottledRef.current({ auto: delay !== 0 })
         }
         // Exit conditions (in priority order):
         //  - pipelineActive=true AND the document list has caught up: the 5s
@@ -1148,7 +1175,49 @@ export default function DocumentManager() {
       timers.push(id)
     })
     probeTimersRef.current = timers
-  }, [refreshDocumentsThrottled]);
+  }, []);
+
+  // Deletion confirmation probe: watch for the pipeline going idle after a
+  // `deletion_started`, then refresh once. Deliberately NOT the activity probe
+  // above — that one exits on `!active && index > 0` because idle there means
+  // "the action started no work", while after a delete idle means "the work
+  // finished". Opposite readings of the same observation.
+  const startDeletionConfirmationProbe = useCallback(() => {
+    deletionProbeRef.current?.cancel();
+    deletionProbeActiveRef.current = true;
+    deletionProbeRef.current = startDeletionProbe({
+      observePipelineBusy: async () => {
+        // A FRESH request every tick: the store's cached snapshot may predate
+        // the delete, and would then be idle for the wrong reason.
+        const checkedAt = useBackendState.getState().lastCheckTime
+        let healthy: boolean
+        try {
+          healthy = await useBackendState.getState().check()
+        } catch (err) {
+          console.error('Deletion confirmation probe health check failed:', err)
+          return null
+        }
+        // Superseded mid-flight: `check()` discards its own result and writes
+        // nothing (not even lastCheckTime), so `pipelineBusy` still holds
+        // whatever the last COMPLETED check wrote — possibly the idle snapshot
+        // from before the delete. That is not an observation of anything, and
+        // reading it as idle would end the probe on the very state the bug is
+        // made of.
+        if (useBackendState.getState().lastCheckTime === checkedAt) return null
+        // A failed check leaves `pipelineBusy` at whatever the last successful
+        // one wrote — which is `false` for the check that preceded the delete.
+        // Reporting that as idle would announce an outage as a completed
+        // deletion, so an unhealthy response is "unknown", not "finished".
+        if (!healthy) return null
+        return useBackendState.getState().pipelineBusy
+      },
+      refreshDocuments: () => refreshDocumentsThrottledRef.current({ auto: false }),
+      isMounted: () => isMountedRef.current,
+      onSettled: () => {
+        deletionProbeActiveRef.current = false
+      }
+    });
+  }, []);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
@@ -1207,7 +1276,9 @@ export default function DocumentManager() {
       }
       
       // Clear current state
-      setDocs(null);
+      hasLoadedDocumentsRef.current = false;
+      setHasLoadedDocuments(false);
+      setInitialLoadError(null);
       setCurrentPageDocs([]);
       setSelectedDocIds([]);
       setPagination({
@@ -1231,7 +1302,7 @@ export default function DocumentManager() {
       // Use a small delay to ensure workspace header has propagated
       setTimeout(() => {
         if (isMountedRef.current) {
-          handleIntelligentRefresh(1, true).catch(error => {
+          handleIntelligentRefresh({ resetToFirst: true, auto: false }).catch(error => {
             console.error('[DocumentManager] Failed to refresh after workspace change:', error);
           });
         }
@@ -1254,13 +1325,18 @@ export default function DocumentManager() {
 
     pollingIntervalRef.current = setInterval(() => {
       if (!isMountedRef.current) return;
-      if (isCircuitBreakerOpen()) return;
-      // refreshDocumentsThrottled is fire-and-forget; errors are surfaced via
-      // toast/recordFailure inside runRefreshRequest.
+      // Read-only: the admission itself happens in the refresh queue, at the
+      // point the request is issued. Skipping here just avoids walking the
+      // throttle gate for a request that would be dropped anyway.
+      if (isAutomaticRefreshBlocked()) return;
+      // refreshDocumentsThrottled is fire-and-forget; the breaker is fed from
+      // inside runRefreshRequest (recordSuccess on a real response,
+      // recordFailure in its catch), never from this tick — a tick proves
+      // nothing about the backend and clearing the counter here is what kept
+      // the breaker from ever opening.
       refreshDocumentsThrottled();
-      recordSuccess();
     }, intervalMs);
-  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen, recordSuccess]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, isAutomaticRefreshBlocked]);
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -1282,7 +1358,7 @@ export default function DocumentManager() {
         // scanning_skipped_pipeline_busy: a single check+refresh is enough,
         // no need to start the probe (pipeline is already active).
         useBackendState.getState().check().catch(() => undefined);
-        refreshDocumentsThrottled();
+        refreshDocumentsThrottled({ auto: false });
       }
     } catch (err) {
       if (isMountedRef.current) {
@@ -1290,6 +1366,11 @@ export default function DocumentManager() {
       }
     }
   }, [t, startActivityProbe, refreshDocumentsThrottled])
+
+  // Handle delete sequenced success: refresh the list after a user action
+  const handleDeleteSequencedSuccess = useCallback(() => {
+    refreshDocumentsThrottled({ auto: false })
+  }, [refreshDocumentsThrottled])
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
@@ -1328,44 +1409,68 @@ export default function DocumentManager() {
   // during scan classification / upload enqueue, well before the new doc rows
   // appear in /documents/paginated. Without this, the UI would stall in 30s
   // idle polling for several seconds after the user clicked scan/upload.
+  // A failed health check no longer stops the list: it drops polling to the
+  // idle cadence instead. Latching health=false used to clear the interval
+  // outright, so a single 504 from a busy backend froze the document list until
+  // the next successful /health probe. The circuit breaker (fed by real
+  // responses) is what throttles a backend that is genuinely down.
   useEffect(() => {
-    if (currentTab !== 'documents' || !health) {
+    if (currentTab !== 'documents') {
       clearPollingInterval();
+      // Retiring the notice with the polling that would clear it. Nothing
+      // refreshes the document list while another tab is up, so a standing
+      // outage notice could never be dismissed by a successful response, and
+      // the Toaster renders it globally — it would sit over the graph or
+      // retrieval view indefinitely. An unmount cleanup does not cover this:
+      // TabsContent uses forceMount, so this component stays mounted while
+      // another tab is active. Returning to Documents re-creates the notice on
+      // the next failure, which is the correct behaviour.
+      toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID);
       return
     }
 
     const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-    const pollingInterval = (hasActiveDocuments || pipelineActive) ? 5000 : 30000;
+    const pollingInterval = health
+      ? ((hasActiveDocuments || pipelineActive) ? 5000 : 30000)
+      : 30000;
 
     startPollingInterval(pollingInterval);
 
     return () => {
       clearPollingInterval();
     }
-  }, [health, t, currentTab, statusCounts, pipelineActive, startPollingInterval, clearPollingInterval])
+  }, [health, t, currentTab, statusCounts, pipelineActive, pageRestoreGeneration, startPollingInterval, clearPollingInterval])
 
-  // Monitor docs changes to check status counts and trigger health check if needed
+  // Trigger a health check when the corpus-wide status counts change.
+  //
+  // Driven by `statusCounts` rather than the page's own documents: it is the
+  // backend's tally over all seven statuses, so it also sees `pending` and
+  // `preprocessed` moving — the two statuses that have no filter bucket and
+  // were therefore invisible to the per-page structure this replaced.
   useEffect(() => {
-    if (!docs) return;
+    const fingerprint = computeStatusCountsFingerprint(statusCounts)
 
-    // Build a key-agnostic digest of every status bucket's count. Sorting keeps
-    // it stable regardless of object iteration order or whether buckets are keyed
-    // by raw DocStatus or by filter bucket.
-    const fingerprint = Object.entries(docs.statuses)
-      .map(([key, list]) => `${key}:${list?.length || 0}`)
-      .sort()
-      .join('|')
+    // Always store the snapshot, so a transition suppressed below (probe
+    // running) still leaves the next comparison anchored to what was observed.
+    const previous = prevStatusFingerprint.current
+    prevStatusFingerprint.current = fingerprint
 
-    // Trigger health check if any bucket count changed and component is still
-    // mounted. Skip when the activity probe is running — the probe already drives
-    // /health on its own schedule, and double-firing would burn cache and skew rate.
-    if (fingerprint !== prevStatusFingerprint.current && isMountedRef.current && !probeActiveRef.current) {
+    // A change BETWEEN two observations is the signal. On the mount pass
+    // `statusCounts` is still its `{ all: 0 }` seed, which is not an
+    // observation of anything, so the first fire stays where it was before:
+    // after the first response.
+    if (previous === null || fingerprint === previous) return
+
+    // Skip while either probe is running — a probe already drives /health on
+    // its own schedule, and double-firing would burn cache and skew rate.
+    if (
+      isMountedRef.current &&
+      !probeActiveRef.current &&
+      !deletionProbeActiveRef.current
+    ) {
       useBackendState.getState().check()
     }
-
-    // Always update the snapshot so the first post-probe transition still fires.
-    prevStatusFingerprint.current = fingerprint
-  }, [docs]);
+  }, [statusCounts]);
 
   // Handle page change - only update state
   const handlePageChange = useCallback((newPage: number) => {
@@ -1395,12 +1500,14 @@ export default function DocumentManager() {
   const handleDocumentsDeleted = useCallback(async () => {
     setSelectedDocIds([])
 
-    // Reset health check timer with 1 second delay to avoid race condition
-    useBackendState.getState().resetHealthCheckTimerDelayed(1000)
-
-    // Schedule a health check 2 seconds after successful clear
-    startPollingInterval(2000)
-  }, [startPollingInterval])
+    // The probe supersedes what used to be here — a single immediate refresh
+    // (which raced the background deletion and returned the rows it was
+    // supposed to drop), a delayed health check, and startPollingInterval(2000)
+    // whose interval was destroyed by the polling effect before its first tick.
+    // It issues its own health checks and exactly one confirming refresh, timed
+    // off the pipeline going idle instead of a fixed guess.
+    startDeletionConfirmationProbe()
+  }, [startDeletionConfirmationProbe])
 
   // Handle documents cleared callback with proper interval reset
   const handleDocumentsCleared = useCallback(async () => {
@@ -1484,6 +1591,7 @@ export default function DocumentManager() {
     statusFilter,
     sortField,
     sortDirection,
+    pageRestoreGeneration,
     fetchPaginatedDocuments
   ]);
 
@@ -1580,10 +1688,10 @@ export default function DocumentManager() {
             ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
-            <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
+            <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh({ customTimeout: 120000, auto: false })} />
             <UploadDocumentsDialog
               onUploadBatchAccepted={() => startActivityProbe('upload')}
-              onDocumentsUploaded={async () => { refreshDocumentsThrottled() }}
+              onDocumentsUploaded={async () => { refreshDocumentsThrottled({ auto: false }) }}
             />
             <PipelineStatusDialog
               open={showPipelineStatus}
@@ -1608,7 +1716,7 @@ export default function DocumentManager() {
                       statusFilter === 'all' && 'bg-gray-200 dark:bg-gray-800 font-semibold border-2 border-gray-500 dark:border-gray-400 shadow-md scale-105'
                     )}
                   >
-                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all || documentCounts.all})
+                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all ?? 0})
                   </Button>
                   <Button
                     size="sm"
@@ -1712,152 +1820,60 @@ export default function DocumentManager() {
           </CardHeader>
 
           <CardContent className="min-h-0 flex-1 relative p-0" ref={cardContentRef}>
-            {!docs && (
-              <div className="absolute inset-0 p-4 flex items-center justify-center">
-                <div className="text-center max-w-md space-y-4">
-                  <div className="flex justify-center">
-                    <div className="rounded-full bg-gray-100 dark:bg-gray-800 p-4">
-                      <RefreshCwIcon className="h-8 w-8 text-gray-400" />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      {t('documentPanel.documentManager.emptyTitle')}
-                    </h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      {t('documentPanel.documentManager.emptyDescription')}
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-2 items-center">
-                    <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={scanDocuments}
-                    >
-                      <RefreshCwIcon className="h-4 w-4 mr-2" />
-                      {t('documentPanel.documentManager.scanButton')}
-                    </Button>
-                  </div>
-                </div>
+            {!hasLoadedDocuments && initialLoadError === null && (
+              <div
+                className="absolute inset-0 flex min-h-0 items-center justify-center"
+                role="status"
+                aria-label={t('documentPanel.documentManager.loading')}
+              >
+                <RefreshCwIcon className="text-muted-foreground size-8 animate-spin" />
               </div>
             )}
-            {docs && filteredAndSortedDocs && filteredAndSortedDocs.length === 0 && (
-              <div className="absolute inset-0 p-4 flex items-center justify-center">
-                <div className="text-center max-w-md space-y-4">
-                  <div className="flex justify-center">
-                    <div className="rounded-full bg-blue-100 dark:bg-blue-900/40 p-4">
-                      <Info className="h-8 w-8 text-blue-500" />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      {statusFilter === 'all'
-                        ? t('documentPanel.documentManager.noDocuments', 'No documents found')
-                        : t('documentPanel.documentManager.noDocumentsForStatus', `No ${statusFilter} documents`)}
-                    </h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      {statusFilter === 'all'
-                        ? t('documentPanel.documentManager.noDocumentsHint', 'Upload documents or scan for new files to get started')
-                        : t('documentPanel.documentManager.noDocumentsForStatusHint', 'Try selecting a different status filter or upload new documents')}
-                    </p>
-                  </div>
-                  {statusFilter === 'all' && (
-                    <div className="flex flex-col gap-2 items-center">
-                      <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh(undefined, false, 120000)} />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={scanDocuments}
-                      >
-                        <RefreshCwIcon className="h-4 w-4 mr-2" />
-                        {t('documentPanel.documentManager.scanButton')}
-                      </Button>
-                    </div>
-                  )}
-                  {statusFilter !== 'all' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleStatusFilterChange('all')}
-                    >
-                      {t('documentPanel.documentManager.viewAllDocuments', 'View all documents')}
+            {!hasLoadedDocuments && initialLoadError !== null && (
+              <div className="absolute inset-0 min-h-0 p-0">
+                <EmptyCard
+                  title={t('documentPanel.documentManager.loadErrorTitle')}
+                  description={initialLoadError}
+                  icon={AlertTriangle}
+                  action={(
+                    <Button variant="outline" onClick={handleManualRefresh} disabled={isRefreshing}>
+                      <RotateCcwIcon className={cn('h-4 w-4', isRefreshing && 'animate-spin')} />
+                      {t('documentPanel.documentManager.retry')}
                     </Button>
                   )}
-                </div>
+                />
               </div>
             )}
-            {isRefreshing && !docs && (
-              <div className="absolute inset-0 flex flex-col p-0">
-                <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
-                  <Table className="w-full">
-                    <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
-                      <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
-                        <TableHead className="w-12 text-center">
-                          <CheckSquareIcon className="h-4 w-4 mx-auto text-gray-500" />
-                        </TableHead>
-                        <TableHead>
-                          {showFileName
-                            ? t('documentPanel.documentManager.columns.fileName')
-                            : t('documentPanel.documentManager.columns.id')
-                          }
-                        </TableHead>
-                        <TableHead className="w-20 text-center">
-                          {t('documentPanel.documentManager.columns.sequence', 'Seq')}
-                        </TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
-                        <TableHead className="w-20 text-center">
-                          {t('documentPanel.documentManager.columns.actions', 'Actions')}
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody className="text-sm overflow-auto">
-                      {Array.from({ length: pagination.page_size || 10 }).map((_, index) => (
-                        <TableRow key={`skeleton-${index}`}>
-                          <TableCell className="text-center">
-                            <Skeleton className="h-4 w-4 mx-auto" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-full max-w-[200px]" />
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <Skeleton className="h-8 w-8 mx-auto rounded-full" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-full max-w-[300px]" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-20" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-12" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-12" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-32" />
-                          </TableCell>
-                          <TableCell>
-                            <Skeleton className="h-4 w-32" />
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <Skeleton className="h-4 w-4 mx-auto" />
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+            {hasLoadedDocuments && pagination.total_count === 0 && (
+              <div className="absolute inset-0 min-h-0 p-0">
+                <EmptyCard
+                  title={t('documentPanel.documentManager.emptyTitle')}
+                  description={t('documentPanel.documentManager.emptyDescription')}
+                  action={(
+                    <DocumentSequencer onUploadComplete={() => handleIntelligentRefresh({ customTimeout: 120000, auto: false })} />
+                  )}
+                />
               </div>
             )}
-            {docs && filteredAndSortedDocs && filteredAndSortedDocs.length > 0 && (
-              <div className="absolute inset-0 flex flex-col p-0">
+            {hasLoadedDocuments && pagination.total_count > 0 && filteredAndSortedDocs.length === 0 && (
+              <div className="absolute inset-0 min-h-0 p-0">
+                <EmptyCard
+                  title={t('documentPanel.documentManager.noDocuments', 'No documents found')}
+                  description={t(
+                    'documentPanel.documentManager.noDocumentsHint',
+                    'Upload documents or scan for new files to get started'
+                  )}
+                  icon={Info}
+                  action={searchTerm ? (
+                    <Button variant="outline" size="sm" onClick={() => setSearchTerm('')}>
+                      {t('documentPanel.documentManager.clearSearch', 'Clear search')}
+                    </Button>
+                  ) : undefined}
+                />
+              </div>
+            )}
+            {hasLoadedDocuments && pagination.total_count > 0 && filteredAndSortedDocs.length > 0 && (
+              <div className="absolute inset-0 flex min-h-0 flex-col p-0">
                 <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
                   <TooltipProvider>
                     <Table className="w-full">
@@ -1921,7 +1937,7 @@ export default function DocumentManager() {
                         </TableRow>
                       </TableHeader>
                       <TableBody className="text-sm overflow-auto">
-                        {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
+                        {filteredAndSortedDocs.map((doc) => (
                           <TableRow
                             key={doc.id}
                             onClick={() => handleDocumentClick(doc)}
@@ -1943,7 +1959,7 @@ export default function DocumentManager() {
                                         {getDisplayFileName(doc, 30)}
                                       </div>
                                     </TooltipTrigger>
-                                    <TooltipContent side="top" className="max-w-2xl">
+                                    <TooltipContent side="top" className="max-w-[min(42rem,calc(100vw-2rem))]">
                                       {doc.file_path}
                                     </TooltipContent>
                                   </Tooltip>
@@ -1956,7 +1972,7 @@ export default function DocumentManager() {
                                       {doc.id}
                                     </div>
                                   </TooltipTrigger>
-                                  <TooltipContent side="top" className="max-w-2xl">
+                                  <TooltipContent side="top" className="max-w-[min(42rem,calc(100vw-2rem))]">
                                     {doc.file_path}
                                   </TooltipContent>
                                 </Tooltip>
@@ -1978,7 +1994,7 @@ export default function DocumentManager() {
                                     {doc.content_summary}
                                   </div>
                                 </TooltipTrigger>
-                                <TooltipContent side="top" className="max-w-2xl">
+                                <TooltipContent side="top" className="max-w-[min(42rem,calc(100vw-2rem))]">
                                   {doc.content_summary}
                                 </TooltipContent>
                               </Tooltip>

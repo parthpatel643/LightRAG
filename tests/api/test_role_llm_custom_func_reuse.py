@@ -69,6 +69,7 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("LLM_BINDING_HOST", "https://proxy.example.com/")
     monkeypatch.setenv("LLM_BINDING_API_KEY", "base-key")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
 
 
 @pytest.fixture

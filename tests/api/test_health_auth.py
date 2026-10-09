@@ -52,6 +52,10 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("WHITELIST_PATHS", "/health,/api/*")
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    # Part of the minimal viable server config since create_app began
+    # refusing to start without a named embedding model. The ollama
+    # binding's own default, so no EMBEDDING_DIM is implied.
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
 
     import lightrag.api.config as config
 
@@ -92,7 +96,7 @@ class _FakeOllamaAPI:
         self.router = APIRouter()
 
 
-def _build_client(monkeypatch, *, api_key=None):
+def _build_client(monkeypatch, *, api_key=None, pipeline_status=None):
     """Build a /health-capable TestClient with all backend I/O mocked out."""
     from lightrag.api.config import parse_args, initialize_config
 
@@ -121,7 +125,13 @@ def _build_client(monkeypatch, *, api_key=None):
     )
     monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
     monkeypatch.setattr(
-        lightrag_server, "get_namespace_data", AsyncMock(return_value={"busy": False})
+        lightrag_server,
+        "get_namespace_data",
+        AsyncMock(
+            return_value=(
+                {"busy": False} if pipeline_status is None else pipeline_status
+            )
+        ),
     )
     monkeypatch.setattr(lightrag_server, "get_default_workspace", lambda: "default")
     monkeypatch.setattr(
@@ -172,6 +182,34 @@ def test_open_mode_returns_full_config_to_anonymous(monkeypatch):
 
     assert resp.status_code == 200
     _assert_full_config(resp.json())
+
+
+def test_health_reads_pipeline_status_with_one_snapshot(monkeypatch):
+    class SnapshotOnlyStatus(dict):
+        copy_calls = 0
+
+        def copy(self):
+            self.copy_calls += 1
+            return dict.copy(self)
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("/health must not issue per-field proxy gets")
+
+    status = SnapshotOnlyStatus(
+        {
+            "busy": False,
+            "scanning": False,
+            "destructive_busy": False,
+            "pending_enqueues": 0,
+        }
+    )
+    client = _build_client(monkeypatch, pipeline_status=status)
+    _set_auth_mode(monkeypatch, auth_configured=False)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert status.copy_calls == 1
 
 
 # --------------------------------------------------------------------------- #

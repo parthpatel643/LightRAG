@@ -1,17 +1,19 @@
 import Button from '@/components/ui/Button'
-import { SiteInfo, webuiPrefix } from '@/lib/constants'
+import { entryHomeHref } from '@/lib/pathPrefix'
+import { SiteInfo, backendBaseUrl } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
 import StatusIndicator from '@/components/status/StatusIndicator'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
-import { useAuthStore } from '@/stores/state'
+import { useAuthStore, useBackendState } from '@/stores/state'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, LogOutIcon } from 'lucide-react'
+import { ZapIcon, LogOutIcon, BookOpenIcon } from 'lucide-react'
 import GithubIcon from '@/components/icons/GithubIcon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import TouchDescriptionPopover from '@/components/ui/TouchDescriptionPopover'
 import WorkspaceSwitcher from '@/components/WorkspaceSwitcher'
 import type { WorkspaceConfig } from '@/components/WorkspaceSwitcher'
 import { switchWorkspace } from '@/api/lightrag'
@@ -40,7 +42,6 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
 
 function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
-  const showApiTab = useSettingsStore.use.showApiTab()
   const { t } = useTranslation()
 
   return (
@@ -55,11 +56,6 @@ function TabsNavigation() {
         <NavigationTab value="retrieval" currentTab={currentTab}>
           {t('header.retrieval')}
         </NavigationTab>
-        {showApiTab && (
-          <NavigationTab value="api" currentTab={currentTab}>
-            {t('header.api')}
-          </NavigationTab>
-        )}
       </TabsList>
     </div>
   )
@@ -71,9 +67,16 @@ export default function SiteHeader() {
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentWorkspace = useWorkspaceStore.use.currentWorkspace()
   const setCurrentWorkspace = useWorkspaceStore.use.setCurrentWorkspace()
-  
+
   // Store previous workspace to detect changes
   const [prevWorkspace, setPrevWorkspace] = useState<string | null>(null)
+  const theme = useSettingsStore.use.theme()
+  // Tri-state on purpose — 'unknown' (no successful /health yet) hides the
+  // entry point rather than guessing; see apiDocsCapability in stores/state.ts.
+  const apiDocsCapability = useBackendState.use.apiDocsCapability()
+  // /docs renders Swagger UI itself; the theme query param keeps it visually
+  // consistent with the WebUI ('system' falls back to the OS preference).
+  const apiDocsUrl = `${backendBaseUrl}/docs?theme=${theme === 'system' ? 'auto' : theme}`
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -86,7 +89,7 @@ export default function SiteHeader() {
     : versionDisplay ? `v${versionDisplay}` : '';
 
   const handleLogout = () => {
-    navigationService.navigateToLogin();
+    navigationService.navigateToUnauthenticated();
   }
 
   const handleWorkspaceChange = async (workspace: WorkspaceConfig) => {
@@ -135,29 +138,32 @@ export default function SiteHeader() {
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <div className="min-w-[200px] w-auto flex items-center">
-        <a href={webuiPrefix} className="flex items-center gap-2">
-          <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
-          <span className="font-bold md:inline-block">{SiteInfo.name}</span>
-        </a>
-        {webuiTitle && (
-          <div className="flex items-center">
-            <span className="mx-1 text-xs text-gray-500 dark:text-gray-400">|</span>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="font-medium text-sm cursor-default">
-                    {webuiTitle}
-                  </span>
-                </TooltipTrigger>
-                {webuiDescription && (
-                  <TooltipContent side="bottom">
-                    {webuiDescription}
-                  </TooltipContent>
+        {/* Document-relative brand link: under HashRouter the pathname always
+            names this entry, so this resolves back to THIS entry — never a
+            cross-entry jump, under any proxy prefix or the dev server's
+            file-per-entry layout (see entryHomeHref). */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a href={entryHomeHref(window.location.pathname)} className="flex items-center">
+                <ZapIcon className="mr-2 size-4 text-emerald-400" aria-hidden="true" />
+                <span className="font-bold md:inline-block">{SiteInfo.name}</span>
+                {webuiTitle && (
+                  <>
+                    <span className="mx-1 text-xs text-gray-500 dark:text-gray-400" aria-hidden="true">|</span>
+                    <span className="text-sm font-medium">{webuiTitle}</span>
+                  </>
                 )}
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-        )}
+              </a>
+            </TooltipTrigger>
+            {webuiDescription && (
+              <TooltipContent side="bottom">
+                {webuiDescription}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
+        <TouchDescriptionPopover description={webuiDescription} />
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center gap-4">
@@ -190,6 +196,13 @@ export default function SiteHeader() {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
+          )}
+          {apiDocsCapability === 'available' && (
+            <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.apiDocs')}>
+              <a href={apiDocsUrl} target="_blank" rel="noopener noreferrer">
+                <BookOpenIcon className="size-4" aria-hidden="true" />
+              </a>
+            </Button>
           )}
           <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
             <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">

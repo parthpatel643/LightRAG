@@ -156,9 +156,7 @@ def safe_concurrent_delete(
         ...     return await storage.exists(entity_name)
         >>> async def delete():
         ...     return await storage.delete(entity_name)
-        >>> success, error = await safe_concurrent_delete(
-        ...     "Entity [v1]", check, delete
-        ... )
+        >>> success, error = await safe_concurrent_delete("Entity [v1]", check, delete)
     """
     import asyncio
 

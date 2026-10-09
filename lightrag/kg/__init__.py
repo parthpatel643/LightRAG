@@ -14,6 +14,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
+            "PGTableGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
             "NeptuneGraphStorage",
@@ -24,6 +25,7 @@ STORAGE_IMPLEMENTATIONS = {
     },
     "VECTOR_STORAGE": {
         "implementations": [
+            "NoopVectorDBStorage",
             "NanoVectorDBStorage",
             "MilvusVectorDBStorage",
             "PGVectorStorage",
@@ -43,7 +45,7 @@ STORAGE_IMPLEMENTATIONS = {
             "MongoDocStatusStorage",
             "OpenSearchDocStatusStorage",
         ],
-        "required_methods": ["get_docs_by_status"],
+        "required_methods": ["get_docs_by_statuses"],
     },
 }
 
@@ -80,7 +82,13 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "POSTGRES_PASSWORD",
         "POSTGRES_DATABASE",
     ],
+    "PGTableGraphStorage": [
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+    ],
     # Vector Storage Implementations
+    "NoopVectorDBStorage": [],
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorage": [
         "MILVUS_URI",
@@ -129,6 +137,7 @@ STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",
+    "NoopVectorDBStorage": ".kg.noop_vector_db_impl",
     "JsonDocStatusStorage": ".kg.json_doc_status_impl",
     "Neo4JStorage": ".kg.neo4j_impl",
     "MilvusVectorDBStorage": ".kg.milvus_impl",
@@ -143,6 +152,7 @@ STORAGES = {
     "PGVectorStorage": ".kg.postgres_impl",
     "AGEStorage": ".kg.age_impl",
     "PGGraphStorage": ".kg.postgres_impl",
+    "PGTableGraphStorage": ".kg.pgtable_impl",
     "PGDocStatusStorage": ".kg.postgres_impl",
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",

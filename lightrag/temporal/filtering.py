@@ -61,9 +61,7 @@ async def filter_by_version(
         ValueError: If knowledge_graph_inst is None
 
     Examples:
-        >>> entities, relations = await filter_by_version(
-        ...     entities, relations, graph_storage
-        ... )
+        >>> entities, relations = await filter_by_version(entities, relations, graph_storage)
     """
     # Issue #1: Deprecation warnings
     if reference_date is not None:

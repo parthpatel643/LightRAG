@@ -15,6 +15,7 @@ from lightrag.constants import (
     DEFAULT_CHUNK_TOP_K,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
@@ -22,14 +23,20 @@ from lightrag.constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_MAX_TEXTS_PER_REQUEST,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
+    DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+    DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_RERANK_BINDING,
     DEFAULT_RERANK_TIMEOUT,
+    DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
@@ -188,18 +195,88 @@ def validate_auth_configuration(args: argparse.Namespace) -> None:
         )
 
 
+def validate_scan_batch_configuration(args: argparse.Namespace) -> None:
+    """Reject a non-positive scan enqueue batch size (LR2 §8.2/§11).
+
+    Unlike ``PIPELINE_SCHEDULING_PAGE_SIZE`` — where ``0`` legitimately means
+    "one page holds everything" — there is no unbounded scan batch to fall back
+    to: streaming discovery holds at most this many claimed files before it
+    writes them, so ``0`` or a negative value would mean "never flush" (or flush
+    on every file, depending on how it is read). Fail at startup instead of
+    silently picking one of those readings.
+    """
+    if not hasattr(args, "scan_enqueue_batch_size"):
+        # A programmatic caller may hand ``initialize_config`` a partial
+        # namespace (the documented custom-configuration path); ``parse_args``
+        # always sets this field, so an absent one is not an operator's
+        # misconfiguration. The scan's reader falls back to the bounded default.
+        return
+    batch_size = args.scan_enqueue_batch_size
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size <= 0
+    ):
+        raise ValueError(
+            "SCAN_ENQUEUE_BATCH_SIZE must be a positive integer (it bounds how "
+            f"many discovered files one scan batch holds); got {batch_size!r}"
+        )
+
+
+def validate_admission_configuration(args: argparse.Namespace) -> None:
+    """Reject negative values for the three ingestion ceilings (LR2 §9.1/§11).
+
+    ``0`` legitimately disables each of them, but a negative value would refuse
+    every request — never what an operator meant, and a failure mode that only
+    shows up on the first request.
+    """
+    if not hasattr(args, "max_pending_documents"):
+        # Partial namespace from a programmatic caller — see
+        # validate_scan_batch_configuration.
+        return
+    capacity = args.max_pending_documents
+    if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 0:
+        raise ValueError(
+            "MAX_PENDING_DOCUMENTS must be an integer >= 0 (0 disables "
+            f"admission control); got {capacity!r}"
+        )
+    if hasattr(args, "max_request_body_bytes"):
+        body_limit = args.max_request_body_bytes
+        if (
+            not isinstance(body_limit, int)
+            or isinstance(body_limit, bool)
+            or body_limit < 0
+        ):
+            raise ValueError(
+                "MAX_REQUEST_BODY_BYTES must be an integer >= 0 (0 disables the "
+                f"body limit); got {body_limit!r}"
+            )
+    if hasattr(args, "max_texts_per_request"):
+        texts_limit = args.max_texts_per_request
+        if (
+            not isinstance(texts_limit, int)
+            or isinstance(texts_limit, bool)
+            or texts_limit < 0
+        ):
+            raise ValueError(
+                "MAX_TEXTS_PER_REQUEST must be an integer >= 0 (0 disables the "
+                f"per-request text limit); got {texts_limit!r}"
+            )
+
+
 def _is_set(value: str | None) -> bool:
     return bool((value or "").strip())
 
 
 def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
-    """Reject Bedrock configuration with no explicit supported auth source."""
-    bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+    """Validate explicitly configured Bedrock credentials.
 
-    def has_valid_auth(prefix: str | None = None) -> bool:
-        if _is_set(bearer_token):
-            return True
+    When no explicit credentials or bearer token is provided, boto3 resolves
+    credentials through its default provider chain, including web identity
+    tokens used by Kubernetes IRSA.
+    """
 
+    def has_no_partial_explicit_credentials(prefix: str | None = None) -> bool:
         if prefix:
             role_access_key = getattr(args, f"{prefix}_aws_access_key_id", None)
             role_secret_key = getattr(args, f"{prefix}_aws_secret_access_key", None)
@@ -208,42 +285,46 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
 
         access_key = getattr(args, "aws_access_key_id", None)
         secret_key = getattr(args, "aws_secret_access_key", None)
-        return _is_set(access_key) and _is_set(secret_key)
+        return not (_is_set(access_key) or _is_set(secret_key)) or (
+            _is_set(access_key) and _is_set(secret_key)
+        )
 
     if getattr(args, "llm_binding", None) == "bedrock":
-        if not has_valid_auth():
+        if not has_no_partial_explicit_credentials():
             raise ValueError(
-                "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "Bedrock LLM binding requires both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY when either explicit credential is set."
             )
         if _is_set(getattr(args, "llm_binding_api_key", None)):
             logging.warning(
                 "LLM_BINDING_API_KEY is set but ignored for Bedrock LLM binding. "
-                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+                "Use AWS credentials, the default AWS credential provider chain, or "
+                "process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
     if getattr(args, "embedding_binding", None) == "bedrock":
-        if not has_valid_auth():
+        if not has_no_partial_explicit_credentials():
             raise ValueError(
-                "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "Bedrock embedding binding requires both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY when either explicit credential is set."
             )
         if _is_set(getattr(args, "embedding_binding_api_key", None)):
             logging.warning(
                 "EMBEDDING_BINDING_API_KEY is set but ignored for Bedrock embedding binding. "
-                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+                "Use AWS credentials, the default AWS credential provider chain, or "
+                "process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
     for spec in ROLES:
         role = spec.name
         if getattr(
             args, f"{role}_llm_binding", None
-        ) == "bedrock" and not has_valid_auth(role):
+        ) == "bedrock" and not has_no_partial_explicit_credentials(role):
             raise ValueError(
-                f"Bedrock role '{role}' requires {spec.env_prefix}_AWS_ACCESS_KEY_ID "
-                f"and {spec.env_prefix}_AWS_SECRET_ACCESS_KEY, global "
-                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
-                "AWS_BEARER_TOKEN_BEDROCK."
+                f"Bedrock role '{role}' requires both "
+                f"{spec.env_prefix}_AWS_ACCESS_KEY_ID and "
+                f"{spec.env_prefix}_AWS_SECRET_ACCESS_KEY when either explicit "
+                "credential is set."
             )
 
 
@@ -259,18 +340,45 @@ def get_binding_env_value(env_key: str, default: str) -> str:
     return normalize_binding_name(get_env_value(env_key, default)) or default
 
 
+def normalize_api_prefix(value: str | None) -> str:
+    """Canonicalize an API prefix before handing it to FastAPI's ``root_path``.
+
+    Strips surrounding whitespace, ensures a leading slash, drops a trailing
+    slash, and treats empty/"/" as "no prefix". Raw CLI/env input like
+    ``"site01"`` or ``"/site01/"`` would otherwise feed an invalid form to
+    FastAPI and to the WebUI prefix injection.
+
+    Lives here rather than beside its consumer in ``lightrag_server`` because
+    more than one layer has to answer "is there actually a mount prefix?" --
+    ``create_app`` and the startup security banner -- and they must answer it
+    identically. Reading the raw value instead makes ``LIGHTRAG_API_PREFIX=/``
+    look like a prefixed deployment when it is not.
+    """
+    if value is None:
+        return ""
+    value = value.strip()
+    if not value or value == "/":
+        return ""
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/")
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
-
-    Args:
-        is_uvicorn_mode: Whether running under uvicorn mode
 
     Returns:
         argparse.Namespace: Parsed arguments
     """
 
     parser = argparse.ArgumentParser(description="LightRAG API Server")
+
+    parser.add_argument(
+        "--custom-chunker",
+        default=get_env_value("CUSTOM_CHUNKER", ""),
+        help="Registered third-party chunker name (CUSTOM_CHUNKER); not a Python import path",
+    )
 
     # Server configuration
     parser.add_argument(
@@ -333,7 +441,7 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value(
             "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
         ),
-        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
+        help=f"Recommended length of the LLM summary output (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration
@@ -404,6 +512,22 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=get_env_value("LIGHTRAG_API_PREFIX", ""),
         help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
+    )
+
+    # Root-path default UI entry. Scope is pinned to exactly one behavior: the
+    # redirect target of '/'. It does NOT control whether either UI entry is
+    # mounted, and it is an enum on purpose (a free URL would open a redirect
+    # surface and could not participate in the availability degradation logic).
+    parser.add_argument(
+        "--default-ui",
+        type=str,
+        choices=["webui", "workspace"],
+        default=get_env_value("LIGHTRAG_DEFAULT_UI", "webui"),
+        help=(
+            "UI entry the root path '/' redirects to: 'webui' (admin UI, "
+            "default) or 'workspace' (query-user entry). Controls only the "
+            "'/' redirect target."
+        ),
     )
 
     # Server workers configuration
@@ -504,6 +628,17 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
+    # argparse ``choices`` validates only values explicitly passed on the
+    # command line — an env-provided default bypasses it (same shape as
+    # --rerank-binding). Validate explicitly so a typo like
+    # LIGHTRAG_DEFAULT_UI=workspaces fails at startup instead of silently
+    # falling back to the webui redirect.
+    if args.default_ui not in ("webui", "workspace"):
+        parser.error(
+            "--default-ui / LIGHTRAG_DEFAULT_UI must be 'webui' or "
+            f"'workspace', got {args.default_ui!r}"
+        )
+
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
     args.input_dir = os.path.abspath(args.input_dir)
@@ -525,6 +660,58 @@ def parse_args() -> argparse.Namespace:
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(
         "MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT, int
+    )
+
+    # Bounded scheduling page size (LR2 Phase 2); 0 disables paging.
+    args.pipeline_scheduling_page_size = get_env_value(
+        "PIPELINE_SCHEDULING_PAGE_SIZE", DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE, int
+    )
+
+    # Turn a missing strict doc_status capability into a startup failure instead
+    # of a warning + /health degradation report (LR2 §11).
+    args.pipeline_require_strict_storage_reads = get_env_value(
+        "PIPELINE_REQUIRE_STRICT_STORAGE_READS",
+        DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+        bool,
+    )
+
+    # How many newly claimed files one /documents/scan batch holds before
+    # writing them to doc_status (LR2 §8.2). Always positive — validated below.
+    args.scan_enqueue_batch_size = get_env_value(
+        "SCAN_ENQUEUE_BATCH_SIZE", DEFAULT_SCAN_ENQUEUE_BATCH_SIZE, int
+    )
+
+    # Where /documents/scan puts its disposable candidate spool, which holds the
+    # O(files-in-INPUT_DIR) ordering state that keeps scan memory bounded (LR2
+    # §8.2). Empty → WORKING_DIR/scan_spool. Set this when WORKING_DIR is a
+    # network volume, or when the OS temp dir is a RAM-backed tmpfs (the usual
+    # systemd default) — the point of the spool is to be on real disk.
+    args.scan_spool_dir = get_env_value("SCAN_SPOOL_DIR", "", str)
+
+    # Admission capacity for ordinary ingestion (LR2 §9.1); 0 disables it.
+    args.max_pending_documents = get_env_value(
+        "MAX_PENDING_DOCUMENTS", DEFAULT_MAX_PENDING_DOCUMENTS, int
+    )
+
+    # Raw request-body ceiling (LR2 §9.4); 0 disables. Whether the operator
+    # supplied a value is recorded separately and MUST NOT be inferred by
+    # comparing the value to the default: an explicit MAX_REQUEST_BODY_BYTES
+    # equal to DEFAULT_MAX_REQUEST_BODY_BYTES is indistinguishable that way, and
+    # resolve_body_limits() would then hand the text-ingestion routes the 50 MiB
+    # built-in tier instead of the ceiling the operator asked for. A None default
+    # also folds in an unparseable value: it falls back here, and falling back to
+    # the default value should mean falling back to the default tiering too.
+    _configured_body_limit = get_env_value("MAX_REQUEST_BODY_BYTES", None, int)
+    args.max_request_body_bytes_explicit = _configured_body_limit is not None
+    args.max_request_body_bytes = (
+        DEFAULT_MAX_REQUEST_BODY_BYTES
+        if _configured_body_limit is None
+        else _configured_body_limit
+    )
+
+    # Document fan-out ceiling for one /documents/texts request (LR2 §11); 0 disables.
+    args.max_texts_per_request = get_env_value(
+        "MAX_TEXTS_PER_REQUEST", DEFAULT_MAX_TEXTS_PER_REQUEST, int
     )
 
     # Get MAX_GRAPH_NODES from environment
@@ -559,11 +746,29 @@ def parse_args() -> argparse.Namespace:
     # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
     # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
     args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
+    # Reject non-positive dimensions here rather than downstream: the embedding
+    # factory resolves the effective dimension with a truthiness test
+    # (`args.embedding_dim if args.embedding_dim else provider_default`), so a
+    # configured 0 would silently fall back to the provider default while still
+    # satisfying the `EMBEDDING_DIM is set` startup guard, and a negative value
+    # would propagate into the vector stores unchecked.
+    if args.embedding_dim is not None and args.embedding_dim <= 0:
+        raise SystemExit(
+            f"EMBEDDING_DIM must be a positive integer (got {args.embedding_dim}). "
+            "Leave it unset to inherit the embedding binding's default dimension."
+        )
     args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+    # Embedding hard-fallback overlap — independent of chunk_overlap_size above,
+    # see LightRAG.embedding_chunk_overlap_token_size.
+    args.embedding_chunk_overlap_token_size = get_env_value(
+        "EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE",
+        DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE,
+        int,
+    )
 
     # Inject LLM cache configuration
     # Should not be disabled； LLM cache is required for entity/realtion rebuild after file deletion.
@@ -639,9 +844,13 @@ def parse_args() -> argparse.Namespace:
                     f"but required env vars are missing: {', '.join(missing)}"
                 )
 
-    # VLM multimodal master switch — when off, the pipeline emits a warning
-    # and skips every i/t/e item without touching the VLM. When on, the
-    # effective VLM binding must support image inputs.
+    # VLM multimodal master switch. It gates IMAGE (`i`) analysis only —
+    # table and equation items are analyzed by the EXTRACT role and ignore
+    # it. When off, a document carrying `i` does not skip its images: the
+    # first one that survives _analyze_drawing's pre-filters raises and the
+    # document lands in FAILED. When on, the effective VLM binding must
+    # accept image inputs; lollms is the only binding this server offers
+    # whose complete_if_cache rejects image_inputs outright.
     args.vlm_process_enable = get_env_value("VLM_PROCESS_ENABLE", False, bool)
     if args.vlm_process_enable:
         effective_vlm_binding = (
@@ -661,6 +870,29 @@ def parse_args() -> argparse.Namespace:
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
+    # Single authoritative switch for the interactive API documentation
+    # surfaces (/docs, /docs/oauth2-redirect, /redoc, /openapi.json and the
+    # /static/swagger-ui mount). When False all five return 404 (one flag). Any route audit must condition the same set on this flag.
+    args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
+
+    # AI-generated content notice shown under every answer in the two query
+    # UIs (the admin /webui retrieval panel and the /workspace query entry).
+    # Deployments that must label machine-generated output (a regulatory
+    # requirement in several jurisdictions) turn it on here; the default keeps
+    # the existing chat appearance untouched. The flag is deployment-level
+    # display configuration like WEBUI_TITLE, so it travels to the frontend on
+    # the same responses (/auth-status, /login, /health) and never in the
+    # answer text itself.
+    args.enable_ai_content_notice = get_env_value(
+        "ENABLE_AI_CONTENT_NOTICE", False, bool
+    )
+
+    # Optional external UI customization bundle (workspace-entry PRD §8).
+    # Empty/unset means "no customization" — the normal state, not an error;
+    # a set value must point at a bundle that validates completely or the
+    # server refuses to start (see lightrag/api/ui_customization.py).
+    args.ui_templates_dir = get_env_value("UI_TEMPLATES_DIR", "", str)
+
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
     args.token_secret = get_env_value("TOKEN_SECRET", None)
@@ -671,6 +903,14 @@ def parse_args() -> argparse.Namespace:
     # Token auto-renewal configuration (sliding window expiration)
     args.token_auto_renew = get_env_value("TOKEN_AUTO_RENEW", True, bool)
     args.token_renew_threshold = get_env_value("TOKEN_RENEW_THRESHOLD", 0.5, float)
+
+    # Login brute-force protection: max failed /login attempts per client IP +
+    # username within the window before further attempts are rejected with HTTP
+    # 429. Set LOGIN_MAX_FAILED_ATTEMPTS=0 to disable (CWE-307).
+    args.login_max_failed_attempts = get_env_value("LOGIN_MAX_FAILED_ATTEMPTS", 5, int)
+    args.login_lockout_window_seconds = get_env_value(
+        "LOGIN_LOCKOUT_WINDOW_SECONDS", 300, float
+    )
 
     # Rerank model configuration
     args.rerank_model = get_env_value("RERANK_MODEL", None)
@@ -824,6 +1064,8 @@ def initialize_config(args=None, force=False):
     resolved_args = args if args is not None else parse_args()
     validate_auth_configuration(resolved_args)
     validate_bedrock_auth_configuration(resolved_args)
+    validate_scan_batch_configuration(resolved_args)
+    validate_admission_configuration(resolved_args)
     _global_args = resolved_args
     _initialized = True
     return _global_args

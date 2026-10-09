@@ -11,6 +11,7 @@ import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import { hasEdgeSafe, addUndirectedEdgeSafe } from '@/utils/graphEdgeSafety'
 
 // Every node gets this border (the node-border program reads `borderColor`).
 const NODE_BORDER_COLOR = '#FFFFFF'
@@ -92,8 +93,10 @@ const createTypeColorResolver = () => {
   let mapUpdated = false
 
   return {
-    colorFor(entityType: string | undefined): string {
-      const key = entityType ?? ''
+    colorFor(entityType: unknown): string {
+      // entity_type is untrusted graph data and may be a non-string; keep the
+      // cache key a string and let resolveNodeColor handle the raw value.
+      const key = typeof entityType === 'string' ? entityType : ''
       let color = cache.get(key)
       if (color === undefined) {
         const resolved = resolveNodeColor(entityType, typeColorMap)
@@ -128,32 +131,6 @@ const parseEdgeWeight = (properties: Record<string, unknown> | undefined): numbe
 // — fall back to the node id so the rest of the graph still renders.
 const safeNodeLabel = (labels: unknown, fallbackId: string): string =>
   Array.isArray(labels) ? labels.join(', ') : fallbackId
-
-// Add an undirected edge, working around a graphology 0.26.0 bug: the non-multi
-// duplicate check does a bare `adjacency[target]` object lookup, so a TARGET
-// node named like an Object.prototype property ('constructor', 'toString',
-// '__proto__', 'hasOwnProperty', ...) makes addEdge throw "already exists" even
-// though hasEdge correctly returns false. The broken check only runs on the
-// source side, and on an undirected graph the flipped edge is the same edge —
-// so adding it reversed recovers it. Returns the dynamic edge id, or null if
-// both orientations fail (e.g. both endpoints are prototype-named). Callers are
-// expected to have pre-checked hasEdge, so a real duplicate is never masked.
-const addUndirectedEdgeSafe = (
-  graph: UndirectedGraph,
-  source: string,
-  target: string,
-  attributes: Record<string, unknown>
-): string | null => {
-  try {
-    return graph.addEdge(source, target, attributes)
-  } catch {
-    try {
-      return graph.addEdge(target, source, attributes)
-    } catch {
-      return null
-    }
-  }
-}
 
 export type NodeType = {
   x: number
@@ -289,7 +266,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     if (graph.hasNode(rawNode.id)) continue
 
     const { x, y } = hashNodeIdToPosition(rawNode.id)
-    rawNode.color = typeColors.colorFor(rawNode.properties?.entity_type as string | undefined)
+    rawNode.color = typeColors.colorFor(rawNode.properties?.entity_type)
 
     graph.addNode(rawNode.id, {
       label: safeNodeLabel(rawNode.labels, rawNode.id),
@@ -321,7 +298,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     if (
       !graph.hasNode(rawEdge.source) ||
       !graph.hasNode(rawEdge.target) ||
-      graph.hasEdge(rawEdge.source, rawEdge.target)
+      hasEdgeSafe(graph, rawEdge.source, rawEdge.target)
     ) {
       continue
     }
@@ -741,7 +718,7 @@ const useLightrangeGraph = () => {
         const processedNodes: RawNodeType[] = []
         for (const node of extendedGraph.nodes) {
           const { x, y } = hashNodeIdToPosition(node.id)
-          const color = typeColors.colorFor(node.properties?.entity_type as string | undefined)
+          const color = typeColors.colorFor(node.properties?.entity_type)
 
           // Create a properly typed RawNodeType
           processedNodes.push({
@@ -1026,8 +1003,8 @@ const useLightrangeGraph = () => {
         for (const edgeId of edgesToAdd) {
           const newEdge = processedEdgeById.get(edgeId)!
 
-          // Skip if edge already exists
-          if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
+          // Skip if edge already exists (prototype-safe: see hasEdgeSafe)
+          if (hasEdgeSafe(sigmaGraph, newEdge.source, newEdge.target)) {
             continue
           }
 
