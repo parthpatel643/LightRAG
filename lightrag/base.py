@@ -48,6 +48,22 @@ from .utils import EmbeddingFunc, get_env_value, logger
 load_dotenv(dotenv_path=".env", override=False)
 
 
+async def _bounded_gather(awaitables: Sequence[Any]) -> list[Any]:
+    """``asyncio.gather`` with at most ``GRAPH_BATCH_CONCURRENCY`` (default 16) in flight.
+
+    The default graph batch methods fan out one call per id, and retrieval
+    hands them the whole incident-edge set of the top entities. Launching all
+    of those at once exhausts the connection pool of a networked backend.
+    """
+    limit = max(1, get_env_value("GRAPH_BATCH_CONCURRENCY", 16, int))
+    semaphore = asyncio.Semaphore(limit)
+
+    async def run(awaitable: Any) -> Any:
+        async with semaphore:
+            return await awaitable
+
+    return list(await asyncio.gather(*(run(item) for item in awaitables)))
+
 class OllamaServerInfos:
     def __init__(self, name=None, tag=None):
         self._lightrag_name = name or os.getenv(
@@ -910,7 +926,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             return node_id, node
             
         # Use gather to parallelize node fetching
-        results = await asyncio.gather(*[get_single_node(node_id) for node_id in node_ids])
+        results = await _bounded_gather([get_single_node(node_id) for node_id in node_ids])
         
         # Filter out None results and build result dictionary
         return {node_id: node for node_id, node in results if node is not None}
@@ -933,7 +949,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             return node_id, degree
             
         # Use gather to parallelize degree fetching
-        results = await asyncio.gather(*[get_single_degree(node_id) for node_id in node_ids])
+        results = await _bounded_gather([get_single_degree(node_id) for node_id in node_ids])
         
         # Build result dictionary
         return {node_id: degree for node_id, degree in results}
@@ -961,7 +977,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             return (src_id, tgt_id), degree
             
         # Use gather to parallelize edge degree fetching
-        results = await asyncio.gather(*[get_single_edge_degree(pair) for pair in edge_pairs])
+        results = await _bounded_gather([get_single_edge_degree(pair) for pair in edge_pairs])
         
         # Build result dictionary
         return {edge_pair: degree for edge_pair, degree in results}
@@ -982,7 +998,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             return (src_id, tgt_id), edge
             
         # Use gather to parallelize edge fetching
-        results = await asyncio.gather(*[get_single_edge(pair) for pair in pairs])
+        results = await _bounded_gather([get_single_edge(pair) for pair in pairs])
         
         # Filter out None results and build result dictionary
         return {edge_pair: edge for edge_pair, edge in results if edge is not None}
@@ -1001,7 +1017,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             return node_id, edges if edges is not None else []
             
         # Use gather to parallelize node edges fetching
-        results = await asyncio.gather(*[get_single_node_edges(node_id) for node_id in node_ids])
+        results = await _bounded_gather([get_single_node_edges(node_id) for node_id in node_ids])
         
         # Build result dictionary
         return {node_id: edges for node_id, edges in results}

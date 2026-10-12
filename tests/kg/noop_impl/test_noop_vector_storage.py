@@ -190,9 +190,11 @@ async def test_graph_only_normal_ingestion_rebuilds_into_nano_vector_storage(
     assert await graph_only_rag.full_docs.get_by_id(doc_id) is not None
     assert len(chunk_ids) == 1
     assert await graph_only_rag.text_chunks.get_by_id(chunk_ids[0]) is not None
-    assert await graph_only_rag.chunk_entity_relation_graph.has_node("Alice")
-    assert await graph_only_rag.chunk_entity_relation_graph.has_node("Bob")
-    assert await graph_only_rag.chunk_entity_relation_graph.has_edge("Alice", "Bob")
+    # Every ingested document is versioned in this fork: extracted names carry [vN].
+    alice, bob = "Alice [v1]", "Bob [v1]"
+    assert await graph_only_rag.chunk_entity_relation_graph.has_node(alice)
+    assert await graph_only_rag.chunk_entity_relation_graph.has_node(bob)
+    assert await graph_only_rag.chunk_entity_relation_graph.has_edge(alice, bob)
     assert failing_embedding.call_count == 0
     await graph_only_rag.finalize_storages()
 
@@ -225,10 +227,10 @@ async def test_graph_only_normal_ingestion_rebuilds_into_nano_vector_storage(
     )
 
     entity_ids = [
-        compute_mdhash_id("Alice", prefix="ent-"),
-        compute_mdhash_id("Bob", prefix="ent-"),
+        compute_mdhash_id(alice, prefix="ent-"),
+        compute_mdhash_id(bob, prefix="ent-"),
     ]
-    relationship_id = compute_mdhash_id("AliceBob", prefix="rel-")
+    relationship_id = compute_mdhash_id(alice + bob, prefix="rel-")
     reopened_docs = await indexed_rag.doc_status.get_docs_by_statuses(
         [DocStatus.PROCESSED]
     )

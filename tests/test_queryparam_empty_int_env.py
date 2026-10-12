@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from lightrag.constants import DEFAULT_CHUNK_TOP_K
 from tests._env_import_probe import import_defaults_with_blank_env
 
 
@@ -18,7 +19,7 @@ from tests._env_import_probe import import_defaults_with_blank_env
     "env_key,expected",
     [
         ("TOP_K", "40"),
-        ("CHUNK_TOP_K", "20"),
+        ("CHUNK_TOP_K", str(DEFAULT_CHUNK_TOP_K)),
         ("MAX_ENTITY_TOKENS", "6000"),
         ("MAX_RELATION_TOKENS", "8000"),
         ("MAX_TOTAL_TOKENS", "30000"),

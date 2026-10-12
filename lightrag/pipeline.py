@@ -741,6 +741,53 @@ class _PipelineMixin:
             token=token,
         )
 
+    async def _assign_sequence_indices(
+        self, contents: dict[str, dict[str, Any]], new_docs: dict[str, Any]
+    ) -> None:
+        """Number the documents about to be stored (temporal versioning).
+
+        Runs inside the ``enqueue_serialize`` critical section, after dedupe,
+        so the ``max + 1`` read and the row write cannot interleave with
+        another enqueue, in this process or another one. Documents arriving
+        with an explicit index keep it; the rest are numbered in input order.
+        """
+        from lightrag.temporal.sequence_index import (
+            allocate_sequence_indices,
+            collect_sequence_dates,
+        )
+
+        ordered_ids = [doc_id for doc_id in contents if doc_id in new_docs]
+        pending = [
+            doc_id
+            for doc_id in ordered_ids
+            if (contents[doc_id].get("metadata") or {}).get("sequence_index") is None
+        ]
+        explicit = {
+            doc_id: contents[doc_id]["metadata"]["sequence_index"]
+            for doc_id in ordered_ids
+            if doc_id not in pending
+        }
+        if explicit:
+            taken = await collect_sequence_dates(self.doc_status)
+            clashes = sorted(
+                {index for index in explicit.values() if index in taken}
+            )
+            if clashes:
+                logger.warning(
+                    f"Explicit sequence indices {clashes} are already used by "
+                    "stored documents; their entities will share [vN] names"
+                )
+        if pending:
+            allocated = await allocate_sequence_indices(self.doc_status, len(pending))
+            logger.info(f"Auto-assigning sequence indices: {allocated}")
+            for doc_id, index in zip(pending, allocated):
+                contents[doc_id]["metadata"]["sequence_index"] = index
+
+        for doc_id in ordered_ids:
+            stamped = contents[doc_id]["metadata"]
+            row_metadata = new_docs[doc_id].setdefault("metadata", {})
+            row_metadata["sequence_index"] = stamped["sequence_index"]
+
     # ============================================================
     # Public document ingestion API (entry points)
     # ============================================================
@@ -947,40 +994,41 @@ class _PipelineMixin:
         if isinstance(metadata, dict):
             metadata = [metadata]
 
-        # Temporal versioning: auto-assign or preserve sequence_index metadata.
-        # If every document's metadata already carries a sequence_index (e.g.
-        # from the batch_upload_sequenced endpoint), those values are
-        # preserved; otherwise sequence_index is auto-assigned via an atomic
-        # batch allocation to avoid gaps on partial failure (Issue #16 fix).
-        has_provided_sequence_indices = (
-            metadata is not None
-            and len(metadata) == len(input)
-            and all(isinstance(m, dict) and "sequence_index" in m for m in metadata)
-        )
-        if has_provided_sequence_indices:
-            provided_indices = [m.get("sequence_index") for m in metadata]
-            logger.info(f"Preserving provided sequence indices: {provided_indices}")
-            resolved_metadata: list[dict[str, Any]] = [
-                {
-                    "sequence_index": m.get("sequence_index"),
-                    "effective_date": m.get("effective_date", "unknown"),
-                    "doc_type": m.get("doc_type", "unknown"),
-                }
-                for m in metadata
-            ]
-        else:
-            sequence_indices = await self._sequence_manager.get_next_batch_sequence_indices(
-                len(input)
+        # Temporal versioning metadata, resolved per document. A document whose
+        # metadata carries a positive ``sequence_index`` keeps it (e.g. from the
+        # batch_upload_sequenced endpoint); every other document gets ``None``
+        # here and is numbered later, inside the enqueue critical section and
+        # after dedupe, so a refused or duplicate upload never consumes an
+        # index. ``effective_date`` / ``doc_type`` are honoured either way.
+        def _provided_sequence_index(value: Any) -> int | None:
+            if isinstance(value, bool):
+                return None
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed > 0 else None
+
+        resolved_metadata: list[dict[str, Any]] = []
+        for position in range(len(input)):
+            provided = (
+                metadata[position]
+                if metadata is not None
+                and position < len(metadata)
+                and isinstance(metadata[position], dict)
+                else {}
             )
-            logger.info(f"Auto-assigning sequence indices: {sequence_indices}")
-            resolved_metadata = [
+            resolved_metadata.append(
                 {
-                    "sequence_index": idx,
-                    "effective_date": "unknown",
-                    "doc_type": "unknown",
+                    "sequence_index": _provided_sequence_index(
+                        provided.get("sequence_index")
+                    ),
+                    "effective_date": provided.get("effective_date")
+                    or provided.get("date")  # ContractSequencer's legacy key
+                    or "unknown",
+                    "doc_type": provided.get("doc_type") or "unknown",
                 }
-                for idx in sequence_indices
-            ]
+            )
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -1568,6 +1616,9 @@ class _PipelineMixin:
                 logger.warning("No new unique documents were found.")
                 return
 
+            # Temporal versioning: number the surviving documents now, under
+            # the enqueue lock and after dedupe, in input order.
+            await self._assign_sequence_indices(contents, new_docs)
             # Ingress handle for the publishes below: a document notification
             # per newly-stored doc (routed mid-batch by the feeder or at the
             # batch boundary) and an auto-rescan flag on a partial doc_status

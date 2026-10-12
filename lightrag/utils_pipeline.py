@@ -402,12 +402,6 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "analyzing_start_time",
     "analyzing_end_time",
     "analyzing_stage_skipped",
-    # Temporal versioning metadata (set at enqueue time by
-    # LightRAG.apipeline_enqueue_documents); must survive every
-    # PENDING -> ... -> PROCESSED/FAILED status transition.
-    "sequence_index",
-    "effective_date",
-    "doc_type",
     # Custom-chunk patch journal: the durable recovery anchor for an
     # in-flight/failed ainsert_custom_chunks operation. Must survive every
     # status transition until the operation commits or is rolled back.
@@ -429,6 +423,13 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     # and since a repair deliberately keeps the row's content and status, that
     # row is a normal document the pipeline will happily transition.
     *DUPLICATE_DEMOTION_METADATA_KEYS,
+    # Temporal versioning metadata (set at enqueue time by
+    # LightRAG.apipeline_enqueue_documents); must survive every
+    # PENDING -> ... -> PROCESSED/FAILED status transition. Not stage fields,
+    # so they sit in the tail and do not disturb the dialog's timeline.
+    "sequence_index",
+    "effective_date",
+    "doc_type",
 )
 
 

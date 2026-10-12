@@ -61,6 +61,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 import json_repair
@@ -370,20 +371,60 @@ def format_price_context(rows: list[dict]) -> str:
     return f"<price_line_items>\n{lines}\n</price_line_items>"
 
 
+_PRICING_HINT_RE = re.compile(
+    r"\b(price|prices|pricing|priced|cost|costs|costing|rate|rates|fee|fees|"
+    r"charge|charges|charged|billing|billed|invoice|invoiced|surcharge|tariff|"
+    r"how much|per\s+(?:hour|turn|visit|flight|aircraft|month|unit)|usd|eur|gbp)\b"
+    r"|[$€£]",
+    re.IGNORECASE,
+)
+_PRICE_CACHE_MAX = 256
+_price_cache: dict[tuple, tuple[float, str]] = {}
+
+
+def _might_be_pricing_query(query: str) -> bool:
+    """Cheap lexical gate in front of the LLM intent classifier.
+
+    A query that mentions no money word cannot be a pricing question, so the
+    classifier LLM call (and its latency, on every query in every mode) is
+    skipped. Disable with ``PRICING_INTENT_PREFILTER=false``.
+    """
+    if not get_env_value("PRICING_INTENT_PREFILTER", True, bool):
+        return True
+    return bool(_PRICING_HINT_RE.search(query))
+
+
 async def get_price_context(query: str, global_config: dict) -> str:
     """Orchestrate classify -> fetch -> format for a single query.
 
-    Returns "" early (fetch/format never called) when `query` is not a
-    pricing question. Wrapped in a top-level try/except so this feature can
-    never break the main query path.
+    Returns "" early (classifier/fetch never called) when `query` is not a
+    pricing question. Results are cached briefly per (workspace, keywords)
+    (``PRICE_CACHE_TTL_SECONDS``, default 60, 0 disables). Wrapped in a
+    top-level try/except so this feature can never break the main query path.
     """
     try:
+        if not _might_be_pricing_query(query):
+            return ""
+
         is_pricing_query = await classify_pricing_intent(query, global_config)
         if not is_pricing_query:
             return ""
 
-        rows = await fetch_price_line_items(query, workspace=global_config.get("workspace"))
-        return format_price_context(rows)
+        workspace = global_config.get("workspace")
+        ttl = get_env_value("PRICE_CACHE_TTL_SECONDS", 60, int)
+        cache_key = (workspace, tuple(_extract_keywords(query)))
+        now = time.monotonic()
+        cached = _price_cache.get(cache_key) if ttl > 0 else None
+        if cached is not None and now - cached[0] < ttl:
+            return cached[1]
+
+        rows = await fetch_price_line_items(query, workspace=workspace)
+        context = format_price_context(rows)
+        if ttl > 0 and rows:
+            if len(_price_cache) >= _PRICE_CACHE_MAX:
+                _price_cache.pop(next(iter(_price_cache)))
+            _price_cache[cache_key] = (now, context)
+        return context
     except Exception as e:
         logger.warning(f"[price_line_items] get_price_context failed: {e}")
         return ""

@@ -51,7 +51,7 @@ class TransactionManager:
     def __init__(self):
         """Initialize transaction manager."""
         self._operations: list[tuple[str, Callable, tuple, dict]] = []
-        self._rollback_operations: list[tuple[str, Callable, tuple, dict]] = []
+        self._rollbacks: dict[int, tuple[str, Callable, tuple, dict]] = {}
         self._committed = False
         self._results: dict[str, Any] = {}
 
@@ -94,9 +94,14 @@ class TransactionManager:
         self._operations.append((name, operation, args, kwargs))
 
         if rollback:
-            # Insert at beginning for reverse order execution
-            self._rollback_operations.insert(
-                0, (f"rollback_{name}", rollback, rollback_args, rollback_kwargs)
+            # Keyed by the operation's position, so a rollback is only ever
+            # matched to the operation that registered it (operations without
+            # a rollback must not shift the others).
+            self._rollbacks[len(self._operations) - 1] = (
+                f"rollback_{name}",
+                rollback,
+                rollback_args,
+                rollback_kwargs,
             )
 
         logger.debug(
@@ -163,24 +168,25 @@ class TransactionManager:
 
     async def _rollback(self, executed_count: int) -> None:
         """
-        Rollback executed operations in reverse order.
+        Roll back the operations that completed, newest first.
 
         Args:
             executed_count: Number of operations that were executed
         """
-        if not self._rollback_operations:
+        executed_indices = [
+            index for index in range(executed_count - 1, -1, -1) if index in self._rollbacks
+        ]
+        if not executed_indices:
             logger.warning("Transaction: No rollback operations defined")
             return
 
-        rollback_count = min(executed_count, len(self._rollback_operations))
+        rollback_count = len(executed_indices)
         logger.info(f"Transaction: Rolling back {rollback_count} operations")
 
         rollback_errors = []
 
-        # Execute rollback operations in reverse order (LIFO)
-        for i, (name, rollback_op, args, kwargs) in enumerate(
-            self._rollback_operations[:rollback_count]
-        ):
+        for i, index in enumerate(executed_indices):
+            name, rollback_op, args, kwargs = self._rollbacks[index]
             try:
                 logger.debug(
                     f"Transaction: Executing rollback '{name}' ({i + 1}/{rollback_count})"

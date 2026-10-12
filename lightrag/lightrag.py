@@ -146,7 +146,6 @@ from lightrag.operate import (
     naive_query,
     rebuild_knowledge_from_chunks,
 )
-from lightrag.temporal import SequenceIndexManager
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     KG_RECOVERY_WARNINGS_METADATA_KEY,
@@ -1944,9 +1943,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             global_config=global_config,
             embedding_func=None,
         )
-
-        # Initialize sequence index manager for temporal versioning (Issue #6 fix)
-        self._sequence_manager = SequenceIndexManager(self.doc_status)
 
     def _init_llm_function(self) -> None:
         """Initialize LLM function with rate limiting and caching configuration."""
@@ -5182,6 +5178,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         await self._query_done()
         return final_data
 
+    async def _get_temporal_sequence_dates(self) -> dict[int, str]:
+        """``{sequence_index: effective_date}`` for agentic queries (30 s cache).
+
+        A failed scan degrades to an empty map (version probing then falls back
+        to a fixed ceiling and ``reference_date`` is ignored) rather than
+        failing the query; the failure is logged.
+        """
+        from lightrag.temporal.sequence_index import collect_sequence_dates
+
+        cached = getattr(self, "_temporal_dates_cache", None)
+        if cached is not None and time.monotonic() - cached[0] < 30.0:
+            return cached[1]
+        try:
+            dates = await collect_sequence_dates(self.doc_status)
+        except Exception as exc:
+            logger.warning(
+                f"Could not read document sequence info for agentic query: {exc}"
+            )
+            return {}
+        self._temporal_dates_cache = (time.monotonic(), dates)
+        return dates
+
     async def aquery_llm(
         self,
         query: str,
@@ -5212,6 +5230,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = self._build_global_config()
+        if param.mode == "agentic":
+            global_config["temporal_sequence_info"] = {
+                "dates": await self._get_temporal_sequence_dates()
+            }
         price_context = await get_price_context(query.strip(), global_config)
 
         try:

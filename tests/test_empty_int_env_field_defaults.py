@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import pytest
 
+from lightrag.constants import DEFAULT_EMBEDDING_BATCH_NUM
 from tests._env_import_probe import import_defaults_with_blank_env
 
 
 @pytest.mark.offline
 @pytest.mark.parametrize("env_value", ["", "  ", "\t"])
 def test_empty_embedding_batch_num_env_falls_back_on_import(env_value: str) -> None:
-    assert import_defaults_with_blank_env(env_value)["EMBEDDING_BATCH_NUM"] == "10"
+    assert import_defaults_with_blank_env(env_value)["EMBEDDING_BATCH_NUM"] == str(
+        DEFAULT_EMBEDDING_BATCH_NUM
+    )
 
 
 @pytest.mark.offline

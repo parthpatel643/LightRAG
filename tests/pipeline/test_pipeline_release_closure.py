@@ -424,6 +424,10 @@ def test_carry_over_keys_grouped_by_stage():
         "is_duplicate",
         "duplicate_kind",
         "original_doc_id",
+        # Temporal versioning metadata (fork): non-stage tail.
+        "sequence_index",
+        "effective_date",
+        "doc_type",
     )
 
 

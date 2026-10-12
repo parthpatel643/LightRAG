@@ -124,8 +124,8 @@ sequenceDiagram
     API->>Graph: Get metadata (sequence_index)
     Graph-->>API: Entity details
     API->>Filter: Apply temporal filter
-    Note over Filter: Group by name<br/>MAX(sequence_index)
-    Filter-->>API: Latest versions only
+    Note over Filter: Resolve reference_date to a cutoff sequence<br/>newest version ≤ cutoff per base name
+    Filter-->>API: Versions in force
     API->>LLM: Generate answer
     LLM-->>API: Response with sources
     API-->>User: Answer + metadata
@@ -138,16 +138,21 @@ sequenceDiagram
 - Find top-k similar chunks
 - Retrieve candidate entities with all versions
 
-**Step 2: Metadata Retrieval** (50-100ms)
-- Load sequence_index for each entity
-- Load effective_date from content tags
-- Prepare temporal context
+**Step 2: Sequence Context**
+- `doc_status` supplies `{sequence_index: effective_date}` (cached 30 s)
+- `reference_date` (YYYY-MM-DD) is resolved to the highest sequence in force on
+  that date; a document without a date inherits the date of the nearest
+  preceding dated document. No `reference_date` means "newest"
 
-**Step 3: Temporal Filtering** (10-50ms)
-- Group entities by canonical name
-- Select maximum sequence_index per group
-- Keep only latest versions
-- Preserve <EFFECTIVE_DATE> tags for LLM interpretation
+**Step 3: Temporal Filtering** (one batched graph read per 500 names)
+- Group entities by base name (the name without ` [vN]`)
+- Probe only the sequence indices that exist, up to the cutoff
+- Keep the newest version in force per base name; storage errors propagate
+  instead of hiding newer versions
+- Vector-path chunks follow `AGENTIC_VECTOR_CHUNK_POLICY`:
+  `latest` (default) keeps the newest sequence present among the hits;
+  `as_of` keeps every chunk at or below the cutoff, newest first (use when later
+  documents are partial amendments)
 
 **Step 4: Context Assembly** (0-10ms)
 - Combine filtered entities
@@ -170,17 +175,30 @@ sequenceDiagram
 
 #### Sequence Management
 
+Sequence indices live in `doc_status.metadata` and are assigned by
+`apipeline_enqueue_documents` **after dedupe, under the workspace
+`enqueue_serialize` lock**, as `max(existing) + 1` in input order. A refused or
+duplicate upload never consumes an index, and no counter/lock row is written.
+Pass `metadata={"sequence_index": N, "effective_date": "YYYY-MM-DD",
+"doc_type": "amendment"}` to choose them explicitly (`date` is accepted as an
+alias of `effective_date`).
+
 ```python
-from lightrag.temporal import SequenceIndexManager
+from lightrag.temporal.sequence_index import (
+    allocate_sequence_indices, collect_sequence_dates, resolve_cutoff_sequence,
+)
 
-manager = SequenceIndexManager(doc_status_storage)
-
-# Single allocation (thread-safe)
-seq_idx = await manager.get_next_sequence_index()
-
-# Batch allocation (atomic, 2000x faster)
-indices = await manager.get_next_batch_sequence_indices(1000)
+dates = await collect_sequence_dates(rag.doc_status)      # {index: effective_date}
+cutoff = resolve_cutoff_sequence(dates, "2024-06-30")     # highest index in force
 ```
+
+`SequenceIndexManager` is **deprecated** and unused by the pipeline (its lock is
+not a real compare-and-swap).
+
+**Changing an index later.** `PATCH /documents/{id}/sequence` may edit the
+date/type of any document, but the sequence index of a processed document is
+part of the graph (`[vN]` entity names) and is refused with 409; use
+`/documents/{id}/replace` or delete and re-upload.
 
 #### Transaction Support
 

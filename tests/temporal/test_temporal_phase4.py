@@ -380,8 +380,8 @@ class TestAdditionalEdgeCases:
     def test_validate_entity_batch_all_valid(self):
         """Test validating batch of all valid entities."""
         entities = [
-            {"name": "Entity [v1]"},
-            {"name": "Entity [v2]"},
+            {"entity_name": "Entity [v1]"},
+            {"entity_name": "Entity [v2]"},
         ]
         valid, errors = validate_entity_batch(entities)
         assert len(valid) == 2
@@ -390,9 +390,9 @@ class TestAdditionalEdgeCases:
     def test_validate_entity_batch_mixed(self):
         """Test validating batch with mixed valid/invalid entities."""
         entities = [
-            {"name": "Entity [v1]"},
-            {"name": "Entity [vABC]"},  # Invalid version
-            {"name": "Entity [v2]"},
+            {"entity_name": "Entity [v1]"},
+            {"entity_name": "Entity [vABC]"},  # Invalid version
+            {"entity_name": "Entity [v2]"},
         ]
         valid, errors = validate_entity_batch(entities)
         assert len(valid) == 2

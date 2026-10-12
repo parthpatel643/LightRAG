@@ -88,6 +88,7 @@ def fake_custom_llm_func(monkeypatch):
     module.embedding_func = MagicMock(name="custom_embedding_func")
     module.rerank_model_func = MagicMock(name="custom_rerank_func")
     monkeypatch.setitem(sys.modules, "lightrag.functions", module)
+    monkeypatch.setenv("LIGHTRAG_USE_CUSTOM_FUNCTIONS", "true")
     return sentinel_llm_func
 
 

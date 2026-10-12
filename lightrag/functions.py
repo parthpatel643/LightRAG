@@ -17,9 +17,17 @@ kong_client = KongClient(
 extra_body = {"extra_body": {"trace_data": {"session_id": str(uuid4())}}}
 
 
+def _verify_ssl(env_name: str) -> bool:
+    """TLS verification is on unless explicitly disabled for an internal proxy
+    with a self-signed certificate (``<env_name>=false``)."""
+    return os.getenv(env_name, "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def new_httpx_client():
-    # Create a new client per call; adjust options as needed.
-    return httpx.AsyncClient(http2=True, verify=False)
+    # One client per call on purpose: the OpenAI wrapper closes the client it
+    # was given when the call finishes, so a shared instance would be closed
+    # after its first use.
+    return httpx.AsyncClient(http2=True, verify=_verify_ssl("PROXY_VERIFY_SSL"))
 
 
 # Define LLM model function
@@ -64,6 +72,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
 
 def rerank_model_func(*args, **kwargs):
+    kwargs.setdefault("verify_ssl", _verify_ssl("RERANK_VERIFY_SSL"))
     return cohere_rerank(
         *args,
         model=os.getenv("RERANK_MODEL"),

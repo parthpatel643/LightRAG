@@ -9,10 +9,17 @@ This module tests the core extraction logic from lightrag/operate.py including:
 
 import pytest
 
-from lightrag.operate import (
-    _handle_single_entity_extraction,
-    _handle_single_relationship_extraction,
-)
+from lightrag import operate as _operate
+
+
+# The extraction handlers are synchronous; these thin wrappers keep the
+# ``await handler(...)`` call style used throughout this module.
+async def _handle_single_entity_extraction(*args, **kwargs):
+    return _operate._handle_single_entity_extraction(*args, **kwargs)
+
+
+async def _handle_single_relationship_extraction(*args, **kwargs):
+    return _operate._handle_single_relationship_extraction(*args, **kwargs)
 
 
 class TestEntityExtraction:

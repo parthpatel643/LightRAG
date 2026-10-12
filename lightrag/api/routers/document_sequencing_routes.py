@@ -6,30 +6,26 @@ This enables temporal RAG queries by maintaining document version history.
 """
 
 import json
-import sys
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from lightrag.api.routers.document_routes import (
+    pipeline_index_file,
+    sanitize_filename,
+)
 from lightrag.api.utils_api import get_combined_auth_dependency
-from lightrag.utils import logger
+from lightrag.api.config import global_args
+from lightrag.temporal.data_prep import ContractSequencer
+from lightrag.utils import generate_track_id, logger
 
-# Add project root to path to import data_prep
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-try:
-    from lightrag.temporal.data_prep import ContractSequencer
-except ImportError:
-    # If data_prep is not available, create a minimal stub
-    class ContractSequencer:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def prepare_documents(self, *args, **kwargs):
-            return []
+_DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+_UNSEQUENCEABLE_STATUSES = {"processed", "processing", "parsing", "analyzing"}
 
 
 class DocumentSequenceUpdate(BaseModel):
@@ -41,7 +37,7 @@ class DocumentSequenceUpdate(BaseModel):
         None, description="Document type (base, amendment, etc.)"
     )
     effective_date: Optional[str] = Field(
-        None, description="Effective date (YYYY-MM-DD)"
+        None, pattern=_DATE_PATTERN, description="Effective date (YYYY-MM-DD)"
     )
 
 
@@ -84,6 +80,49 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
     router = APIRouter(prefix="/documents", tags=["documents", "sequencing"])
     combined_auth = get_combined_auth_dependency(api_key)
 
+    async def _apply_sequence_update(update: DocumentSequenceUpdate) -> None:
+        """Validate and persist one sequence/date/type update (raises HTTPException)."""
+        doc = await rag.doc_status.get_by_id(update.document_id)
+        if doc is None:
+            raise HTTPException(
+                status_code=404, detail=f"Document not found: {update.document_id}"
+            )
+        metadata = dict(doc.get("metadata") or {})
+        status = getattr(doc.get("status"), "value", doc.get("status"))
+        status = str(status or "").lower()
+        current_index = metadata.get("sequence_index")
+
+        if update.sequence_index != current_index:
+            # The index is baked into the graph ([vN] entity names) and into
+            # every chunk at processing time; rewriting it on the status row
+            # alone would leave the graph disagreeing with doc_status.
+            if status in _UNSEQUENCEABLE_STATUSES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Document {update.document_id} is {status}; its sequence "
+                        "index is part of the knowledge graph and cannot be changed "
+                        "in place. Use /documents/{id}/replace or delete and "
+                        "re-upload it."
+                    ),
+                )
+            from lightrag.temporal.sequence_index import collect_sequence_dates
+
+            if update.sequence_index in await collect_sequence_dates(rag.doc_status):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Sequence index {update.sequence_index} is already in use",
+                )
+            metadata["sequence_index"] = update.sequence_index
+        if update.doc_type:
+            metadata["doc_type"] = update.doc_type
+        if update.effective_date:
+            metadata["effective_date"] = update.effective_date
+            metadata.pop("date", None)
+
+        await rag.doc_status.update_doc_status_fields(
+            update.document_id, {"metadata": metadata}
+        )
     @router.patch("/{document_id}/sequence")
     async def update_document_sequence(
         document_id: str,
@@ -101,28 +140,7 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                     status_code=500, detail="RAG instance not available"
                 )
 
-            # Get document status storage
-            doc_storage = rag.doc_status_storage
-
-            # Check if document exists
-            doc_status = await doc_storage.get_doc_status(document_id)
-            if doc_status is None:
-                raise HTTPException(
-                    status_code=404, detail=f"Document not found: {document_id}"
-                )
-
-            # Update metadata with sequence information
-            metadata = doc_status.get("metadata", {})
-            metadata["sequence_index"] = update.sequence_index
-
-            if update.doc_type:
-                metadata["doc_type"] = update.doc_type
-
-            if update.effective_date:
-                metadata["date"] = update.effective_date
-
-            # Update document status
-            await doc_storage.update_doc_status(document_id, metadata=metadata)
+            await _apply_sequence_update(update)
 
             logger.info(
                 f"Updated sequence for document {document_id}: index={update.sequence_index}"
@@ -158,35 +176,15 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                     status_code=500, detail="RAG instance not available"
                 )
 
-            doc_storage = rag.doc_status_storage
             updated_count = 0
             errors = []
 
             for update in updates.updates:
                 try:
-                    # Get document status
-                    doc_status = await doc_storage.get_doc_status(update.document_id)
-                    if doc_status is None:
-                        errors.append(f"Document not found: {update.document_id}")
-                        continue
-
-                    # Update metadata
-                    metadata = doc_status.get("metadata", {})
-                    metadata["sequence_index"] = update.sequence_index
-
-                    if update.doc_type:
-                        metadata["doc_type"] = update.doc_type
-
-                    if update.effective_date:
-                        metadata["date"] = update.effective_date
-
-                    # Update document status
-                    await doc_storage.update_doc_status(
-                        update.document_id, metadata=metadata
-                    )
-
+                    await _apply_sequence_update(update)
                     updated_count += 1
-
+                except HTTPException as e:
+                    errors.append(f"{update.document_id}: {e.detail}")
                 except Exception as e:
                     errors.append(f"Failed to update {update.document_id}: {str(e)}")
 
@@ -258,43 +256,52 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                 )
 
             # Create temporary directory for uploaded files
-            import tempfile
-
             temp_dir = Path(tempfile.mkdtemp(prefix="lightrag_batch_upload_"))
 
             try:
-                # Get INPUT_DIR from environment or use default
-                import os
-
-                input_dir_str = os.getenv("INPUT_DIR", "./inputs")
-                input_dir = Path(input_dir_str).resolve()  # Get absolute path
+                input_dir = Path(
+                    getattr(global_args, "input_dir", None)
+                    or os.getenv("INPUT_DIR", "./inputs")
+                ).resolve()
                 input_dir.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Using INPUT_DIR: {input_dir} (from env: {input_dir_str})")
+                max_upload = getattr(global_args, "max_upload_size", None)
 
                 # Save uploaded files to both temp dir (for processing) and INPUT_DIR (for persistence)
                 file_paths = []
+                created_files: list[Path] = []
                 filename_to_path = {}
                 for file in files:
-                    if not file.filename:
-                        raise HTTPException(
-                            status_code=400, detail="File must have a filename"
-                        )
-                    # Save to temp directory for processing
-                    temp_file_path = temp_dir / file.filename
+                    # Same rules as /documents/upload: a single literal
+                    # basename, rejected (never rewritten) when unsafe.
+                    safe_name = sanitize_filename(file.filename or "", input_dir)
                     content = await file.read()
-                    temp_file_path.write_bytes(content)
+                    if max_upload and max_upload > 0 and len(content) > max_upload:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File too large: {safe_name} exceeds {max_upload} bytes",
+                        )
+                    (temp_dir / safe_name).write_bytes(content)
 
-                    # Also save to INPUT_DIR for persistence
-                    input_file_path = input_dir / file.filename
-                    input_file_path.write_bytes(content)
+                    # Also save to INPUT_DIR for persistence; exclusive create so
+                    # an existing document's file is never overwritten.
+                    input_file_path = input_dir / safe_name
+                    try:
+                        with open(input_file_path, "xb") as out_file:
+                            out_file.write(content)
+                    except FileExistsError:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"File '{safe_name}' already exists in the input directory",
+                        )
                     logger.info(f"Saved uploaded file to INPUT_DIR: {input_file_path}")
+                    created_files.append(input_file_path)
 
                     # Use INPUT_DIR path for RAG (so it references the persistent file)
                     file_paths.append(input_file_path)
-                    filename_to_path[file.filename] = str(input_file_path)
+                    filename_to_path[safe_name] = str(input_file_path)
 
                 # Validate that all files in order exist
-                uploaded_filenames = {f.filename for f in files}
+                uploaded_filenames = set(filename_to_path)
                 for filename in file_order:
                     if filename not in uploaded_filenames:
                         raise HTTPException(
@@ -382,8 +389,6 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                         logger.error(error_msg, exc_info=True)
 
                 # Clean up temporary directory
-                import shutil
-
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
                 if errors:
@@ -398,10 +403,11 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                 }
 
             except Exception:
-                # Clean up on error
-                import shutil
-
+                # Clean up on error, including files persisted before the
+                # failure (nothing has been ingested from them yet).
                 shutil.rmtree(temp_dir, ignore_errors=True)
+                for created in created_files:
+                    created.unlink(missing_ok=True)
                 raise
 
         except HTTPException:
@@ -410,10 +416,6 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
             logger.error(
                 f"Failed to batch upload sequenced documents: {e}", exc_info=True
             )
-            import traceback
-
-            traceback_str = traceback.format_exc()
-            logger.error(f"Full traceback:\n{traceback_str}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to batch upload sequenced documents: {str(e)}",
@@ -432,26 +434,32 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                     status_code=500, detail="RAG instance not available"
                 )
 
-            doc_storage = rag.doc_status_storage
-
-            # Get all documents
-            all_docs = await doc_storage.get_all_doc_statuses()
-
-            # Filter and sort by sequence index
             sequenced_docs = []
-            for doc_id, doc_status in all_docs.items():
-                metadata = doc_status.get("metadata", {})
-                if "sequence_index" in metadata:
+            page = 1
+            while True:
+                docs, total = await rag.doc_status.get_docs_paginated(
+                    page=page, page_size=200, sort_field="created_at", sort_direction="asc"
+                )
+                for doc_id, doc in docs:
+                    metadata = doc.metadata or {}
+                    if metadata.get("is_duplicate") or "sequence_index" not in metadata:
+                        continue
+                    status = getattr(doc.status, "value", doc.status)
                     sequenced_docs.append(
                         {
                             "document_id": doc_id,
-                            "file_path": doc_status.get("file_path", ""),
+                            "file_path": doc.file_path or "",
                             "sequence_index": metadata["sequence_index"],
                             "doc_type": metadata.get("doc_type", "unknown"),
-                            "effective_date": metadata.get("date", "unknown"),
-                            "status": doc_status.get("status", "unknown"),
+                            "effective_date": metadata.get("effective_date")
+                            or metadata.get("date")
+                            or "unknown",
+                            "status": status or "unknown",
                         }
                     )
+                if not docs or page * 200 >= total:
+                    break
+                page += 1
 
             # Sort by sequence index
             sequenced_docs.sort(key=lambda x: x["sequence_index"])
@@ -501,32 +509,48 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                     status_code=500, detail="RAG instance not available"
                 )
 
-            doc_storage = rag.doc_status_storage
-
             # Check if document exists
-            doc_status = await doc_storage.get_doc_status(document_id)
+            doc_status = await rag.doc_status.get_by_id(document_id)
             if doc_status is None:
                 raise HTTPException(
                     status_code=404, detail=f"Document not found: {document_id}"
                 )
 
             # Get sequence information before deletion
-            metadata = doc_status.get("metadata", {})
+            metadata = doc_status.get("metadata") or {}
             sequence_index = metadata.get("sequence_index")
-            effective_date = metadata.get("date")
+            effective_date = metadata.get("effective_date") or metadata.get("date")
             doc_type = metadata.get("doc_type")
+            stored_path = doc_status.get("file_path")
 
             logger.info(
                 f"Deleting sequenced document {document_id} "
                 f"(seq={sequence_index}, date={effective_date}, type={doc_type})"
             )
 
-            # Delete the document using RAG's delete method
-            deletion_result = await rag.adelete_by_ids(
-                [document_id],
-                delete_file=delete_file,
-                delete_llm_cache=delete_llm_cache,
+            deletion_result = await rag.adelete_by_doc_id(
+                document_id, delete_llm_cache=delete_llm_cache
             )
+            if deletion_result.status == "not_allowed":
+                raise HTTPException(
+                    status_code=deletion_result.status_code or 409,
+                    detail=deletion_result.message,
+                )
+            if deletion_result.status != "success":
+                raise HTTPException(
+                    status_code=deletion_result.status_code
+                    if deletion_result.status_code >= 400
+                    else 500,
+                    detail=deletion_result.message,
+                )
+
+            file_deleted = False
+            if delete_file and stored_path:
+                input_dir = Path(getattr(global_args, "input_dir", "./inputs")).resolve()
+                candidate = input_dir / Path(stored_path).name
+                if candidate.parent == input_dir and candidate.is_file():
+                    candidate.unlink()
+                    file_deleted = True
 
             logger.info(
                 f"Successfully deleted sequenced document {document_id}. "
@@ -535,18 +559,13 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
 
             return {
                 "status": "success",
-                "message": f"Deleted document {document_id}",
+                "message": deletion_result.message or f"Deleted document {document_id}",
                 "document_id": document_id,
                 "sequence_index": sequence_index,
                 "effective_date": effective_date,
                 "doc_type": doc_type,
-                "deleted_file": delete_file,
+                "deleted_file": file_deleted,
                 "deleted_cache": delete_llm_cache,
-                "deletion_details": {
-                    "chunks_deleted": deletion_result.get("chunks_deleted", 0),
-                    "entities_deleted": deletion_result.get("entities_deleted", 0),
-                    "relations_deleted": deletion_result.get("relations_deleted", 0),
-                },
             }
 
         except HTTPException:
@@ -591,23 +610,35 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
                     status_code=500, detail="RAG instance not available"
                 )
 
-            if not file.filename:
-                raise HTTPException(status_code=400, detail="File must have a filename")
+            input_dir = Path(
+                getattr(global_args, "input_dir", None) or os.getenv("INPUT_DIR", "./inputs")
+            ).resolve()
+            input_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = sanitize_filename(file.filename or "", input_dir)
 
-            doc_storage = rag.doc_status_storage
+            content = await file.read()
+            max_upload = getattr(global_args, "max_upload_size", None)
+            if max_upload and max_upload > 0 and len(content) > max_upload:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large: {safe_name} exceeds {max_upload} bytes",
+                )
 
             # Get original document metadata
-            doc_status = await doc_storage.get_doc_status(document_id)
+            doc_status = await rag.doc_status.get_by_id(document_id)
             if doc_status is None:
                 raise HTTPException(
                     status_code=404, detail=f"Document not found: {document_id}"
                 )
 
             # Extract sequence metadata to preserve
-            original_metadata = doc_status.get("metadata", {})
+            original_metadata = doc_status.get("metadata") or {}
             sequence_index = original_metadata.get("sequence_index")
-            effective_date = original_metadata.get("date")
+            effective_date = original_metadata.get(
+                "effective_date"
+            ) or original_metadata.get("date")
             doc_type = original_metadata.get("doc_type", "unknown")
+            old_stored_path = doc_status.get("file_path")
 
             if sequence_index is None:
                 raise HTTPException(
@@ -618,58 +649,62 @@ def create_sequencing_routes(rag: Any, api_key: Optional[str] = None):
             logger.info(
                 f"Replacing sequenced document {document_id} "
                 f"(seq={sequence_index}, date={effective_date}, type={doc_type}) "
-                f"with new file: {file.filename}"
+                f"with new file: {safe_name}"
             )
 
-            # Delete old document (keep file deletion false to avoid issues)
-            await rag.adelete_by_ids(
-                [document_id], delete_file=True, delete_llm_cache=False
+            # The new bytes are already in memory, so the old document is only
+            # removed once nothing about the request can still be rejected.
+            deletion_result = await rag.adelete_by_doc_id(
+                document_id, delete_llm_cache=False
             )
-
+            if deletion_result.status != "success":
+                raise HTTPException(
+                    status_code=deletion_result.status_code
+                    if deletion_result.status_code >= 400
+                    else 409,
+                    detail=deletion_result.message,
+                )
             logger.info(f"Deleted old document {document_id}")
 
-            # Read new file content
-            content = await file.read()
+            if old_stored_path:
+                old_file = input_dir / Path(old_stored_path).name
+                if old_file.parent == input_dir and old_file.is_file():
+                    old_file.unlink()
 
-            # Get INPUT_DIR from environment or use default
-            import os
-
-            input_dir_str = os.getenv("INPUT_DIR", "./inputs")
-            input_dir = Path(input_dir_str).resolve()
-            input_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save new file to INPUT_DIR
-            new_file_path = input_dir / file.filename
-            new_file_path.write_bytes(content)
-
+            new_file_path = input_dir / safe_name
+            try:
+                with open(new_file_path, "xb") as out_file:
+                    out_file.write(content)
+            except FileExistsError:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"File '{safe_name}' already exists in the input directory",
+                )
             logger.info(f"Saved replacement file to: {new_file_path}")
 
-            # Prepare metadata for new document (preserve sequence info)
-            new_metadata = {
-                "sequence_index": sequence_index,
-                "date": effective_date,
-                "doc_type": doc_type,
-                "replaced_document_id": document_id,  # Track replacement history
-                "source": file.filename,
-            }
-
-            # Insert new document with preserved metadata
-            await rag.ainsert(
-                input=content.decode("utf-8", errors="ignore"),
-                file_paths=str(new_file_path),
-                metadata=new_metadata,
+            # Index through the standard file pipeline (real parsing for
+            # PDF/DOCX, dedupe, admission) with the preserved sequence info.
+            await pipeline_index_file(
+                rag,
+                new_file_path,
+                generate_track_id("replace"),
+                metadata={
+                    "sequence_index": sequence_index,
+                    "effective_date": effective_date or "unknown",
+                    "doc_type": doc_type,
+                },
             )
 
             logger.info(
-                f"Successfully replaced document {document_id} with {file.filename} "
+                f"Successfully replaced document {document_id} with {safe_name} "
                 f"(preserved seq={sequence_index}, date={effective_date})"
             )
 
             return {
                 "status": "success",
-                "message": f"Replaced document {document_id} with {file.filename}",
+                "message": f"Replaced document {document_id} with {safe_name}",
                 "original_document_id": document_id,
-                "new_file": file.filename,
+                "new_file": safe_name,
                 "preserved_metadata": {
                     "sequence_index": sequence_index,
                     "effective_date": effective_date,

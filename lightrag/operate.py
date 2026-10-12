@@ -7,10 +7,11 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import re
 import time
 import json_repair
-from typing import Any, AsyncIterator, overload, Literal, Callable, Awaitable
+from typing import Any, AsyncIterator, Iterable, overload, Literal, Callable, Awaitable
 from collections import Counter, defaultdict
 from dotenv import load_dotenv
 
@@ -107,6 +108,7 @@ from lightrag.kg.shared_storage import (
     get_storage_keyed_lock,
 )
 from lightrag.profiling import _phase
+from lightrag.temporal.sequence_index import resolve_cutoff_sequence
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 
 # use the .env that is inside the current folder
@@ -119,6 +121,95 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False
 
 # Version linking utilities
 VERSION_PATTERN = re.compile(r"^(.*?)\s*\[v(\d+)\]$")
+_VERSION_SUFFIX_RE = re.compile(r"\s*\[v\d+\]\s*$")
+_PROBE_BATCH_SIZE = 500
+# Probe ceiling used only when the workspace's highest sequence index is
+# unknown (it is normally supplied through ``global_config``).
+_FALLBACK_MAX_VERSION = 200
+
+
+async def _probe_versions(
+    knowledge_graph_inst: BaseGraphStorage,
+    base_names: list[str],
+    versions: Iterable[int],
+) -> dict[str, list[tuple[int, str, dict]]]:
+    """Find which ``"<base> [vN]"`` nodes exist, using batched reads.
+
+    Returns ``{base_name: [(version, entity_name, node_data), ...]}`` sorted
+    newest first. Storage errors propagate: swallowing them would silently turn
+    "the database failed" into "there is no newer version".
+    """
+    version_list = list(versions)
+    candidates = [
+        (base, version, f"{base} [v{version}]")
+        for base in base_names
+        for version in version_list
+    ]
+    found: dict[str, list[tuple[int, str, dict]]] = {base: [] for base in base_names}
+    for start in range(0, len(candidates), _PROBE_BATCH_SIZE):
+        window = candidates[start : start + _PROBE_BATCH_SIZE]
+        nodes = await knowledge_graph_inst.get_nodes_batch([name for _, _, name in window])
+        for base, version, name in window:
+            node = nodes.get(name)
+            if node:
+                found[base].append((version, name, node))
+    for entries in found.values():
+        entries.sort(key=lambda item: item[0], reverse=True)
+    return found
+
+
+def _versioning_instruction(
+    sequence_index: int, doc_type: str, effective_date: str
+) -> str:
+    """Prompt addendum asking the LLM to tag entities with ``[vN]``."""
+    if sequence_index <= 0:
+        return ""
+    return f"""
+
+**CRITICAL VERSIONING INSTRUCTION:**
+This document has sequence_index={sequence_index} (doc_type={doc_type}, effective_date={effective_date}).
+You MUST append ' [v{sequence_index}]' to EVERY entity name you extract to create versioned entities.
+For example:
+- If you extract "Parking Fee", output it as "Parking Fee [v{sequence_index}]"
+- If you extract "Company A", output it as "Company A [v{sequence_index}]"
+- Apply this suffix to ALL entity names without exception.
+"""
+
+
+def _enforce_version_suffix(
+    maybe_nodes: dict, maybe_edges: dict, sequence_index: int
+) -> tuple[dict, dict]:
+    """Make the ``[vN]`` tag deterministic instead of trusting the LLM.
+
+    The prompt asks for the suffix, but a model may omit it, tag only some
+    names, or tag a relation endpoint differently from the entity it names. A
+    stray name then becomes an unversioned orphan node. Every entity name and
+    relation endpoint is rewritten to carry exactly this document's suffix.
+    """
+    if sequence_index <= 0:
+        return maybe_nodes, maybe_edges
+    suffix = f" [v{sequence_index}]"
+
+    def tag(name: str) -> str:
+        base = _VERSION_SUFFIX_RE.sub("", name).strip()
+        return f"{base}{suffix}" if base else name
+
+    new_nodes: dict = defaultdict(list)
+    for name, records in maybe_nodes.items():
+        tagged = tag(name)
+        for record in records:
+            new_nodes[tagged].append({**record, "entity_name": tagged})
+
+    new_edges: dict = defaultdict(list)
+    for (src, tgt), records in maybe_edges.items():
+        tagged_src, tagged_tgt = tag(src), tag(tgt)
+        if tagged_src == tagged_tgt:
+            continue
+        for record in records:
+            new_edges[(tagged_src, tagged_tgt)].append(
+                {**record, "src_id": tagged_src, "tgt_id": tagged_tgt}
+            )
+    return new_nodes, new_edges
 
 
 def _extract_version_info(entity_name: str) -> tuple[str, int | None]:
@@ -167,17 +258,17 @@ async def _create_version_link_edges(
         # First version has no predecessor
         return False
 
-    # Try to find previous version
-    previous_version = current_version - 1
-    previous_entity_name = f"{base_name} [v{previous_version}]"
-
-    # Check if previous version exists in graph
-    previous_node = await knowledge_graph_inst.get_node(previous_entity_name)
-    if not previous_node:
-        logger.debug(
-            f"Previous version '{previous_entity_name}' not found in graph for '{entity_name}'"
-        )
+    # Link to the NEAREST EARLIER version that exists. Sequence indices are
+    # global to the workspace, so an entity that only appears in documents 3
+    # and 7 has no [v6]; requiring exactly N-1 left such entities unlinked.
+    earlier = await _probe_versions(
+        knowledge_graph_inst, [base_name], range(1, current_version)
+    )
+    candidates = earlier.get(base_name, [])
+    if not candidates:
+        logger.debug(f"No earlier version of '{base_name}' found for '{entity_name}'")
         return False
+    previous_version, previous_entity_name, _previous_node = candidates[0]
 
     # Create SUPERSEDES edge: new version supersedes previous version
     edge_data = dict(
@@ -213,51 +304,29 @@ async def _create_version_link_edges(
 async def get_version_history(
     entity_base_name: str,
     knowledge_graph_inst: BaseGraphStorage,
-    max_versions: int = 20,
+    max_versions: int = 500,
 ) -> list[dict]:
-    """Get version history chain for an entity by searching for all versions.
+    """Get the version history of an entity, newest first.
 
-    Returns ordered list of versions from newest to oldest by probing for
-    all versions [v1] through [vN] and collecting those that exist.
+    Probes ``[v1]`` .. ``[v{max_versions}]`` with batched node reads (one
+    round trip per ``_PROBE_BATCH_SIZE`` names, not one per version).
 
     Args:
         entity_base_name: Base entity name without version suffix (e.g., "Parking Fee")
         knowledge_graph_inst: Knowledge graph storage instance
-        max_versions: Maximum version number to probe (prevents infinite loops)
+        max_versions: Highest version number to probe
 
     Returns:
-        List of dicts with keys:
-        - entity_name: Full entity name with version suffix (e.g., "Parking Fee [v2]")
-        - version: Version number (e.g., 2)
-        - node_data: Full node data from graph
-
-        Sorted from newest (highest version) to oldest (lowest version).
-        Returns empty list if entity not found.
-
-    Example:
-        >>> history = await get_version_history("Parking Fee", kg)
-        >>> history
-        [
-            {'version': 3, 'entity_name': 'Parking Fee [v3]', 'node_data': {...}},
-            {'version': 2, 'entity_name': 'Parking Fee [v2]', 'node_data': {...}},
-            {'version': 1, 'entity_name': 'Parking Fee [v1]', 'node_data': {...}},
-        ]
+        List of dicts with keys ``entity_name``, ``version`` and ``node_data``,
+        sorted from newest to oldest; empty when no version exists.
     """
-    version_chain = []
-
-    # Search for all versions
-    for v in range(max_versions, 0, -1):
-        versioned_name = f"{entity_base_name} [v{v}]"
-        node_data = await knowledge_graph_inst.get_node(versioned_name)
-        if node_data:
-            version_chain.append(
-                {
-                    "entity_name": versioned_name,
-                    "version": v,
-                    "node_data": node_data,
-                }
-            )
-
+    found = await _probe_versions(
+        knowledge_graph_inst, [entity_base_name], range(1, max_versions + 1)
+    )
+    version_chain = [
+        {"entity_name": name, "version": version, "node_data": node}
+        for version, name, node in found.get(entity_base_name, [])
+    ]
     if not version_chain:
         logger.debug(f"No versions found for entity '{entity_base_name}'")
 
@@ -4441,6 +4510,19 @@ async def extract_entities(
         and extract_tokenizer is not None
         and max_extract_input_tokens > 0
     )
+    # Per-chunk system prompts of versioned documents carry an extra
+    # instruction block that the chunk-invariant prompts below do not include;
+    # reserve its (bounded) size so the gleaning guard does not under-count.
+    versioning_token_margin = (
+        len(
+            extract_tokenizer.encode(
+                _versioning_instruction(99999, "unknown", "0000-00-00")
+            )
+        )
+        + 64
+        if gleaning_precheck
+        else 0
+    )
     if use_json_extraction:
         entity_extraction_system_prompt = PROMPTS[
             "entity_extraction_json_system_prompt"
@@ -4451,6 +4533,7 @@ async def extract_entities(
         gleaning_invariant_tokens = (
             len(extract_tokenizer.encode(entity_extraction_system_prompt))
             + len(extract_tokenizer.encode(json_continue_extraction_user_prompt))
+            + versioning_token_margin
             if gleaning_precheck
             else 0
         )
@@ -4460,6 +4543,7 @@ async def extract_entities(
         ].format(**context_base)
         gleaning_invariant_tokens = (
             len(extract_tokenizer.encode(entity_extraction_system_prompt))
+            + versioning_token_margin
             if gleaning_precheck
             else 0
         )
@@ -4556,19 +4640,9 @@ async def extract_entities(
                 )
 
         # Format system prompt with versioning instruction
-        versioning_instruction = ""
-        if sequence_index > 0:
-            versioning_instruction = f"""
-
-**CRITICAL VERSIONING INSTRUCTION:**
-This document has sequence_index={sequence_index} (doc_type={doc_type}, effective_date={effective_date}).
-You MUST append ' [v{sequence_index}]' to EVERY entity name you extract to create versioned entities.
-For example:
-- If you extract "Parking Fee", output it as "Parking Fee [v{sequence_index}]"
-- If you extract "Company A", output it as "Company A [v{sequence_index}]"
-- Apply this suffix to ALL entity names without exception.
-"""
-
+        versioning_instruction = _versioning_instruction(
+            sequence_index, doc_type, effective_date
+        )
         chunk_system_prompt = entity_extraction_system_prompt + versioning_instruction
 
         if use_json_extraction:
@@ -4817,6 +4891,11 @@ For example:
                 )
             maybe_nodes, maybe_edges = validated
 
+        # Versioned documents: enforce the [vN] tag rather than trusting the LLM.
+        maybe_nodes, maybe_edges = _enforce_version_suffix(
+            maybe_nodes, maybe_edges, sequence_index
+        )
+
         # Inject multimodal entity + associations for drawing/table/equation
         # chunks. Placed inside the chunk's
         # concurrency slot (rather than the centralized post-pass that used
@@ -5058,29 +5137,37 @@ For example:
 async def filter_by_version(
     entities: list[dict],
     relations: list[dict],
-    reference_date: str,
+    reference_date: str | None,
     text_chunks_db: BaseKVStorage,
     knowledge_graph_inst: BaseGraphStorage = None,
+    *,
+    known_sequences: list[int] | None = None,
+    cutoff_sequence: int | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """
-    Filter entities and relations by version based on sequence_index ONLY.
+    Keep, per base entity name, only the newest version in force.
 
     Args:
-        entities: List of entity dictionaries with 'entity_name' field (from vector search)
-        relations: List of relation dictionaries with 'src_id' and 'tgt_id' fields
-        reference_date: DEPRECATED - kept for API compatibility but not used
-        text_chunks_db: DEPRECATED - kept for API compatibility but not used
-        knowledge_graph_inst: Graph storage to query all entity versions
+        entities: Retrieved entity dicts with an ``entity_name`` field.
+        relations: Retrieved relation dicts with ``src_id`` / ``tgt_id``.
+        reference_date: Informational only; the as-of date has already been
+            resolved into ``cutoff_sequence`` by the caller.
+        text_chunks_db: Unused, kept for API compatibility.
+        knowledge_graph_inst: Graph storage used to look every version up.
+        known_sequences: Sequence indices that exist in the workspace. When
+            given, only those versions are probed (one batched read per
+            ``_PROBE_BATCH_SIZE`` names); otherwise ``1.._FALLBACK_MAX_VERSION``.
+        cutoff_sequence: Highest sequence in force (``reference_date`` as-of
+            query). ``None`` means no upper bound; ``0`` means nothing
+            versioned is in force yet.
 
     Returns:
         Tuple of (filtered_entities, filtered_relations)
     """
-    import re
-
     if not entities:
         return [], []
 
-    version_pattern = re.compile(r"^(.*?)\s*\[v(\d+)\]$")
+    version_pattern = VERSION_PATTERN
 
     # Step 1: Extract unique base names from retrieved entities
     base_names = set()
@@ -5105,46 +5192,38 @@ async def filter_by_version(
     valid_entity_names = set()
 
     if knowledge_graph_inst:
-        # Query all versions from storage and pick the highest per base_name
-        for base_name in base_names:
-            version_candidates = []
+        if known_sequences:
+            versions = [
+                v
+                for v in sorted(set(known_sequences))
+                if cutoff_sequence is None or v <= cutoff_sequence
+            ]
+        else:
+            upper = (
+                _FALLBACK_MAX_VERSION
+                if cutoff_sequence is None
+                else min(cutoff_sequence, _FALLBACK_MAX_VERSION)
+            )
+            versions = list(range(1, upper + 1))
 
-            # Probe a reasonable range of versions; storage usually small discrete set
-            for v in range(1, 21):  # v1..v20 safety window
-                candidate_name = f"{base_name} [v{v}]"
-                try:
-                    node_data = await knowledge_graph_inst.get_node(candidate_name)
-                    if node_data:
-                        version_candidates.append(
-                            {
-                                "entity_name": candidate_name,
-                                "version": v,
-                                "data": node_data,
-                            }
-                        )
-                except Exception:
-                    pass
+        ordered_bases = sorted(base_names)
+        by_base = await _probe_versions(knowledge_graph_inst, ordered_bases, versions)
+        # Unversioned nodes of the same base name are the fallback (version 0).
+        unversioned = await knowledge_graph_inst.get_nodes_batch(ordered_bases)
 
-            # Also check unversioned base name as fallback
-            try:
-                node_data = await knowledge_graph_inst.get_node(base_name)
-                if node_data:
-                    version_candidates.append(
-                        {"entity_name": base_name, "version": 0, "data": node_data}
-                    )
-            except Exception:
-                pass
-
-            if version_candidates:
-                version_candidates.sort(key=lambda x: x["version"], reverse=True)
-                selected = version_candidates[0]
-                filtered_entities.append(
-                    {"entity_name": selected["entity_name"], **selected["data"]}
-                )
-                valid_entity_names.add(selected["entity_name"])
-                logger.debug(
-                    f"[Temporal Filter] Selected {selected['entity_name']} (v{selected['version']}) - latest per base"
-                )
+        for base_name in ordered_bases:
+            candidates = by_base.get(base_name, [])
+            if candidates:
+                version, name, node = candidates[0]  # newest in force
+            elif unversioned.get(base_name):
+                version, name, node = 0, base_name, unversioned[base_name]
+            else:
+                continue
+            filtered_entities.append({"entity_name": name, **node})
+            valid_entity_names.add(name)
+            logger.debug(
+                f"[Temporal Filter] Selected {name} (v{version}) - latest in force per base"
+            )
     else:
         # Fallback: use only retrieved entities (old behavior)
         logger.warning(
@@ -5164,6 +5243,9 @@ async def filter_by_version(
             else:
                 base_name = entity_name
                 version_num = 0
+
+            if cutoff_sequence is not None and version_num > cutoff_sequence:
+                continue
 
             if base_name not in entity_groups:
                 entity_groups[base_name] = []
@@ -5342,6 +5424,7 @@ async def kg_query(
         # The token budget must be computed against the template this function
         # will actually render below, not the default one.
         system_prompt=system_prompt,
+        global_config=global_config,
     )
 
     if context_result is None:
@@ -5389,7 +5472,16 @@ async def kg_query(
     except Exception:
         _ref_date = None
     _date_preface = make_date_preface(_ref_date)
-    _preface = "\n\n".join(p for p in (price_context, _date_preface) if p)
+    _version_note = (
+        "Sources tagged [vN] are successive versions of the same documents. When "
+        "they conflict, the highest N is the one in force; do not cite a lower N "
+        "for a fact a higher N changes."
+        if query_param.mode == "agentic"
+        else ""
+    )
+    _preface = "\n\n".join(
+        p for p in (price_context, _date_preface, _version_note) if p
+    )
     if _preface:
         sys_prompt = f"{_preface}\n\n{sys_prompt}"
 
@@ -5473,6 +5565,9 @@ async def kg_query(
         related_chunk_number,
         kg_chunk_pick_method,
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        # Injected prices are part of the prompt, so they are part of the key:
+        # a changed price table must not be answered from a stale entry.
+        *(("\n<price_context>\n", price_context) if price_context else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -6563,6 +6658,8 @@ async def _apply_temporal_merged_chunk_filter(
     vector_path_chunk_ids: set,
     max_sequence: int,
     text_chunks_db: BaseKVStorage,
+    *,
+    vector_sequence_ceiling: int | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """
     Stage 3.5 of the temporal query pipeline: filter the fully merged chunk
@@ -6641,7 +6738,11 @@ async def _apply_temporal_merged_chunk_filter(
                 # Vector-search path: no KG-aware supersession arbitration
                 # happened for this chunk, so it must pass the global
                 # max_sequence gate.
-                if chunk_seq == max_sequence:
+                if (
+                    chunk_seq <= vector_sequence_ceiling
+                    if vector_sequence_ceiling is not None
+                    else chunk_seq == max_sequence
+                ):
                     filtered_merged_chunks.append(chunk)
                     stats["vector_path_kept"] += 1
             else:
@@ -6924,6 +7025,7 @@ async def _build_query_context(
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    global_config: dict[str, Any] | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -6957,10 +7059,23 @@ async def _build_query_context(
             if not search_result["chunk_tracking"]:
                 return None
 
-    # Stage 1.5: Apply temporal filtering if in agentic mode (sequence-first, no date required)
+    # Stage 1.5: Apply temporal filtering if in agentic mode.
+    # ``reference_date`` is an as-of date: it is resolved into the highest
+    # sequence index in force on that date (the dates come from doc_status,
+    # supplied through global_config by LightRAG.aquery_llm), and nothing newer
+    # is considered. Without it the newest version of everything is used.
+    max_sequence = 0
+    vector_sequence_ceiling: int | None = None
     if query_param.mode == "agentic":
+        temporal_info = (global_config or {}).get("temporal_sequence_info") or {}
+        sequence_dates: dict[int, str] = temporal_info.get("dates") or {}
+        cutoff_sequence = resolve_cutoff_sequence(
+            sequence_dates, query_param.reference_date
+        )
         logger.info(
-            f"Applying temporal filter (sequence-first). reference_date ignored={bool(query_param.reference_date)}"
+            "Applying temporal filter "
+            f"(reference_date={query_param.reference_date or 'none'}, "
+            f"cutoff_sequence={cutoff_sequence}, known_sequences={len(sequence_dates)})"
         )
         filtered_entities, filtered_relations = await filter_by_version(
             search_result["final_entities"],
@@ -6968,6 +7083,8 @@ async def _build_query_context(
             query_param.reference_date,
             text_chunks_db,
             knowledge_graph_inst,  # Pass graph storage for global version lookup
+            known_sequences=sorted(sequence_dates) or None,
+            cutoff_sequence=cutoff_sequence,
         )
         search_result["final_entities"] = filtered_entities
         search_result["final_relations"] = filtered_relations
@@ -6977,7 +7094,6 @@ async def _build_query_context(
         # re module already imported
 
         version_pattern = re.compile(r"\[v(\d+)\]$")
-        max_sequence = 0
         for entity in filtered_entities:
             entity_name = entity.get("entity_name", "")
             match = version_pattern.search(entity_name)
@@ -7004,7 +7120,10 @@ async def _build_query_context(
         # contain chunks from the latest sequence.
         if max_sequence == 0 and chunk_data_map:
             chunk_sequences = [
-                d.get("sequence_index", 0) for d in chunk_data_map.values()
+                d.get("sequence_index", 0)
+                for d in chunk_data_map.values()
+                if cutoff_sequence is None
+                or d.get("sequence_index", 0) <= cutoff_sequence
             ]
             if chunk_sequences:
                 max_sequence = max(chunk_sequences)
@@ -7013,22 +7132,60 @@ async def _build_query_context(
                     f"(entities had no version info)"
                 )
 
-        if max_sequence > 0:
-            # Filter vector chunks to keep ONLY those from max sequence
-            # Strict filtering: no fallback to ensure temporal accuracy
+        # AGENTIC_VECTOR_CHUNK_POLICY:
+        #   latest (default) - vector chunks must come from the newest sequence
+        #       in play, falling back to the newest sequence that actually
+        #       appears among the hits instead of emptying the list.
+        #   as_of - every chunk at or below the cutoff is kept (newest first).
+        #       Use when later documents are partial amendments whose
+        #       unamended terms live only in older documents.
+        chunk_policy = os.getenv("AGENTIC_VECTOR_CHUNK_POLICY", "latest").lower()
+        if chunk_policy == "as_of":
+            ceiling = cutoff_sequence if cutoff_sequence is not None else 10**9
+            vector_sequence_ceiling = ceiling
             original_count = len(search_result.get("vector_chunks", []))
-
-            if chunk_data_map:
-                filtered_vector_chunks = [
-                    chunk
-                    for chunk in search_result.get("vector_chunks", [])
-                    if (chunk_id := chunk.get("chunk_id") or chunk.get("id"))
-                    and (chunk_data := chunk_data_map.get(chunk_id))
-                    and chunk_data.get("sequence_index", 0) == max_sequence
-                ]
-            else:
-                filtered_vector_chunks = []
-
+            kept = [
+                chunk
+                for chunk in search_result.get("vector_chunks", [])
+                if (chunk_id := chunk.get("chunk_id") or chunk.get("id"))
+                and (chunk_data := chunk_data_map.get(chunk_id))
+                and chunk_data.get("sequence_index", 0) <= ceiling
+            ]
+            kept.sort(
+                key=lambda c: chunk_data_map[c.get("chunk_id") or c.get("id")].get(
+                    "sequence_index", 0
+                ),
+                reverse=True,
+            )
+            search_result["vector_chunks"] = kept
+            logger.info(
+                f"Temporal filter (as_of): Vector chunks {original_count} -> {len(kept)}"
+            )
+        elif max_sequence > 0:
+            available = {
+                d.get("sequence_index", 0)
+                for d in chunk_data_map.values()
+                if d.get("sequence_index", 0) <= max_sequence
+            }
+            target_sequence = (
+                max_sequence
+                if max_sequence in available or not available
+                else max(available)
+            )
+            if target_sequence != max_sequence:
+                logger.info(
+                    f"Temporal filter: no vector chunk at sequence {max_sequence}; "
+                    f"using newest available sequence {target_sequence}"
+                )
+            max_sequence = target_sequence
+            original_count = len(search_result.get("vector_chunks", []))
+            filtered_vector_chunks = [
+                chunk
+                for chunk in search_result.get("vector_chunks", [])
+                if (chunk_id := chunk.get("chunk_id") or chunk.get("id"))
+                and (chunk_data := chunk_data_map.get(chunk_id))
+                and chunk_data.get("sequence_index", 0) == max_sequence
+            ]
             search_result["vector_chunks"] = filtered_vector_chunks
             logger.info(
                 f"Temporal filter: Vector chunks {original_count} -> {len(filtered_vector_chunks)} "
@@ -7089,7 +7246,9 @@ async def _build_query_context(
     # chunks stay gated by the global max_sequence; entity/relation-path
     # chunks bypass it, trusting filter_by_version()'s per-base-name
     # arbitration instead.
-    if query_param.mode == "agentic" and max_sequence > 0:
+    if query_param.mode == "agentic" and (
+        max_sequence > 0 or vector_sequence_ceiling is not None
+    ):
         original_merged_count = len(merged_chunks)
 
         # Vector-path chunk ids: already reduced to max_sequence by Stage 1
@@ -7107,6 +7266,7 @@ async def _build_query_context(
             vector_path_chunk_ids,
             max_sequence,
             text_chunks_db,
+            vector_sequence_ceiling=vector_sequence_ceiling,
         )
 
         logger.info(
@@ -8047,6 +8207,7 @@ async def naive_query(
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        *(("\n<price_context>\n", price_context) if price_context else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )

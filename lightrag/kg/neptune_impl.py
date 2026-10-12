@@ -120,7 +120,13 @@ def _gremlin_escape(value: str) -> str:
     Handles backslashes and single quotes to prevent Gremlin injection and
     ensure correct query parsing.
     """
-    return value.replace("\\", "\\\\").replace("'", "\\'")
+    return (
+        value.replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
 
 
 @dataclass
@@ -313,7 +319,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
     async def has_node(self, node_id: str) -> bool:
         """Check if a node exists in the graph."""
         workspace = self._get_workspace_label()
-        query = f"g.V().has('entity_id', '{node_id}').has('workspace', '{workspace}').hasNext()"
+        query = f"g.V().has('entity_id', '{_gremlin_escape(node_id)}').has('workspace', '{workspace}').hasNext()"
         result = await self._submit_query(query)
         return result[0] if result else False
 
@@ -467,7 +473,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
         for key, value in node_data.items():
             if key not in ["entity_id", "workspace"]:
                 value_escaped = _gremlin_escape(str(value))
-                props.append(f"property('{key}', '{value_escaped}')")
+                props.append(f"property('{_gremlin_escape(str(key))}', '{value_escaped}')")
 
         props_str = ".".join(props)
 
@@ -507,7 +513,7 @@ class NeptuneGraphStorage(BaseGraphStorage):
         for key, value in edge_data.items():
             if key != "workspace":
                 value_escaped = _gremlin_escape(str(value))
-                props.append(f"property('{key}', '{value_escaped}')")
+                props.append(f"property('{_gremlin_escape(str(key))}', '{value_escaped}')")
 
         props_str = ".".join(props) if props else ""
 

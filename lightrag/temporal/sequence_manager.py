@@ -1,10 +1,12 @@
 """
-Sequence Index Manager - Thread-safe sequence allocation with distributed locking.
+Sequence Index Manager (DEPRECATED, unused by the ingestion pipeline).
 
-This module provides atomic sequence index generation to prevent race conditions
-in concurrent document insertion scenarios.
-
-Fixes Issue #6: Race Condition in Sequence Index Generation
+The pipeline now derives the next sequence index from ``doc_status`` metadata
+under the ``enqueue_serialize`` lock (see :mod:`lightrag.temporal.sequence_index`).
+This class stores a counter and a lock row *inside* doc_status, which is not a
+real compare-and-swap (read / upsert / sleep / read can leave two holders in
+different processes) and writes rows that lack the doc-status schema, so it is
+kept only for backward compatibility. Do not use it for new code.
 """
 
 import asyncio

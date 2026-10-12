@@ -21,6 +21,7 @@ from lightrag.utils import logger
 
 # Version format validation
 VERSION_PATTERN = re.compile(r"^(.*?)\s*\[v(\d+)\]$")
+_MALFORMED_VERSION_SUFFIX = re.compile(r"\[v[^\]]*\]\s*$", re.IGNORECASE)
 VALID_VERSION_RANGE = range(1, 10000)  # Support up to v9999
 
 
@@ -82,6 +83,11 @@ def validate_version_format(
             logger.warning(f"Invalid version number format in entity: {entity_name}")
             return False, None, None
     else:
+        # A trailing "[v...]" that is not "[v<digits>]" is a malformed version
+        # tag, not an unversioned name.
+        if _MALFORMED_VERSION_SUFFIX.search(entity_name):
+            logger.warning(f"Malformed version suffix in entity: {entity_name}")
+            return False, None, None
         # Unversioned entity - valid
         return True, entity_name, None
 

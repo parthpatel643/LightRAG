@@ -386,3 +386,7 @@ def _configured_embedding_model(monkeypatch):
 
     if not (os.environ.get("EMBEDDING_MODEL") or "").strip():
         monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    # The fork's lightrag/functions.py would otherwise replace the configured
+    # provider bindings in every create_app() test. Tests that exercise it
+    # (see tests/api/test_role_llm_custom_func_reuse.py) opt back in.
+    monkeypatch.setenv("LIGHTRAG_USE_CUSTOM_FUNCTIONS", "false")

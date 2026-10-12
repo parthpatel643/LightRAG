@@ -19,6 +19,7 @@ Environment variables:
                 OPENSEARCH_USE_SSL, OPENSEARCH_VERIFY_CERTS
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -125,43 +126,114 @@ class NeptuneOpenSearchGraphStorage(NeptuneGraphStorage):
 
     # ------------------------------------------------------------------
     # Dual-write: keep the OpenSearch nodes index in sync with Neptune
+    #
+    # Neptune is the source of truth. A failed mirror write is retried a few
+    # times, then parked in ``_pending_mirror`` (last write per node wins) and
+    # replayed at every ``index_done_callback``; ``reconcile_search_index()``
+    # rebuilds the index from Neptune outright.
     # ------------------------------------------------------------------
+
+    _MIRROR_ATTEMPTS = 3
+    _MIRROR_BACKOFF_SECONDS = 0.2
+    _PENDING_WARN_THRESHOLD = 1000
+
+    def _pending(self) -> dict[str, dict[str, Any] | None]:
+        pending = getattr(self, "_pending_mirror", None)
+        if pending is None:
+            pending = {}
+            self._pending_mirror = pending
+        return pending
+
+    def mirror_backlog(self) -> int:
+        """Number of node mirror operations not yet applied to OpenSearch."""
+        return len(self._pending())
+
+    async def _mirror_apply(self, node_id: str, doc: dict[str, Any] | None) -> None:
+        """Apply one mirror operation (``doc is None`` means delete)."""
+        if doc is None:
+            await self._os_client.delete(
+                index=self._os_nodes_index,
+                id=node_id,
+                params={"ignore": [404]},
+            )
+        else:
+            await self._os_client.index(
+                index=self._os_nodes_index, id=node_id, body=doc
+            )
+
+    async def _mirror(self, node_id: str, doc: dict[str, Any] | None) -> None:
+        """Mirror with bounded retries; on failure park it for a later replay."""
+        if self._os_client is None or not self._os_nodes_index:
+            return
+        last_error: Exception | None = None
+        for attempt in range(self._MIRROR_ATTEMPTS):
+            try:
+                await self._mirror_apply(node_id, doc)
+                self._pending().pop(node_id, None)
+                return
+            except Exception as e:
+                last_error = e
+                if attempt + 1 < self._MIRROR_ATTEMPTS:
+                    await asyncio.sleep(self._MIRROR_BACKOFF_SECONDS * (2**attempt))
+        pending = self._pending()
+        pending[node_id] = doc
+        logger.warning(
+            f"OpenSearch mirror of node {node_id} failed after "
+            f"{self._MIRROR_ATTEMPTS} attempts ({last_error}); queued for replay "
+            f"({len(pending)} pending)"
+        )
+        if len(pending) >= self._PENDING_WARN_THRESHOLD:
+            logger.error(
+                f"{len(pending)} OpenSearch mirror operations are pending; "
+                "search_labels/full_text_search results are stale. Check the "
+                "OpenSearch cluster or run reconcile_search_index()."
+            )
+
+    async def _replay_pending(self) -> None:
+        pending = self._pending()
+        if not pending or self._os_client is None:
+            return
+        for node_id, doc in list(pending.items()):
+            try:
+                await self._mirror_apply(node_id, doc)
+            except Exception as e:
+                logger.warning(
+                    f"Replay of OpenSearch mirror for {node_id} failed: {e}; "
+                    f"{len(pending)} still pending"
+                )
+                return  # the cluster is still unhealthy; try again next flush
+            pending.pop(node_id, None)
+        logger.info("Replayed all pending OpenSearch mirror operations")
+
+    async def reconcile_search_index(self) -> int:
+        """Rebuild the OpenSearch nodes index from Neptune. Returns nodes indexed."""
+        if self._os_client is None or not self._os_nodes_index:
+            return 0
+        nodes = await self.get_all_nodes()
+        count = 0
+        for node in nodes:
+            node_id = node.get("entity_id") or node.get("id")
+            if not node_id:
+                continue
+            doc = {"entity_id": node_id}
+            doc.update({k: v for k, v in node.items() if k not in ("_id", "id")})
+            await self._mirror_apply(node_id, doc)
+            self._pending().pop(node_id, None)
+            count += 1
+        return count
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]):
         """Insert or update a node in both Neptune and the OpenSearch search index."""
         await super().upsert_node(node_id, node_data)
 
-        if self._os_client is not None and self._os_nodes_index:
-            try:
-                doc = {"entity_id": node_id}
-                doc.update(
-                    {k: v for k, v in node_data.items() if k != "_id"}
-                )
-                await self._os_client.index(
-                    index=self._os_nodes_index,
-                    id=node_id,
-                    body=doc,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to mirror node {node_id} to OpenSearch: {e}"
-                )
+        doc = {"entity_id": node_id}
+        doc.update({k: v for k, v in node_data.items() if k != "_id"})
+        await self._mirror(node_id, doc)
 
     async def delete_node(self, node_id: str):
         """Delete a node from both Neptune and the OpenSearch search index."""
         await super().delete_node(node_id)
-
-        if self._os_client is not None and self._os_nodes_index:
-            try:
-                await self._os_client.delete(
-                    index=self._os_nodes_index,
-                    id=node_id,
-                    params={"ignore": [404]},
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to delete node {node_id} from OpenSearch: {e}"
-                )
+        await self._mirror(node_id, None)
 
     async def remove_nodes(self, nodes: list[str]):
         """Batch delete nodes from both Neptune and the OpenSearch search index."""
@@ -180,10 +252,15 @@ class NeptuneOpenSearchGraphStorage(NeptuneGraphStorage):
                     },
                     params={"ignore": [404]},
                 )
+                for node_id in nodes:
+                    self._pending().pop(node_id, None)
             except Exception as e:
                 logger.warning(
-                    f"Failed to batch-delete {len(nodes)} nodes from OpenSearch: {e}"
+                    f"Failed to batch-delete {len(nodes)} nodes from OpenSearch "
+                    f"({e}); queued for replay"
                 )
+                for node_id in nodes:
+                    self._pending()[node_id] = None
 
     async def drop(self) -> dict[str, str]:
         """Delete all data from both Neptune workspace and OpenSearch nodes index."""
@@ -204,6 +281,8 @@ class NeptuneOpenSearchGraphStorage(NeptuneGraphStorage):
     async def index_done_callback(self):
         """Refresh the OpenSearch nodes index after indexing completion."""
         await super().index_done_callback()
+
+        await self._replay_pending()
 
         if self._os_client is not None and self._os_nodes_index:
             try:

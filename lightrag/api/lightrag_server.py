@@ -75,7 +75,7 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.query_routes import create_query_routes
-from lightrag.api.routers.workspace_routes import router as workspace_router
+from lightrag.api.routers.workspace_routes import create_workspace_routes
 from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
 from lightrag.api.ui_customization import (
     WEBUI_CHROME_LOCALES,
@@ -2374,11 +2374,15 @@ def create_app(args):
     llm_timeout = args.llm_timeout
     embedding_timeout = args.embedding_timeout
 
-    # Try to import custom functions from functions.py if it exists
+    # Try to import custom functions from functions.py if it exists.
+    # LIGHTRAG_USE_CUSTOM_FUNCTIONS=false skips it, so a configured provider
+    # binding is honoured as-is (and tests can exercise the generic wiring).
     custom_llm_func = None
     custom_embedding_func = None
     custom_rerank_func = None
     try:
+        if not get_env_value("LIGHTRAG_USE_CUSTOM_FUNCTIONS", True, bool):
+            raise ImportError("custom functions disabled by environment")
         from lightrag.functions import embedding_func as custom_embedding_func
         from lightrag.functions import llm_model_func as custom_llm_func
         from lightrag.functions import rerank_model_func as custom_rerank_func
@@ -2507,12 +2511,24 @@ def create_app(args):
                     if default_base_url != inspect.Parameter.empty:
                         args.rerank_binding_host = default_base_url
 
+            # TLS verification for the rerank endpoint. On by default; set
+            # RERANK_VERIFY_SSL=false only for an internal proxy with a
+            # self-signed certificate. A per-call value overrides it.
+            rerank_verify_ssl_default = get_env_value(
+                "RERANK_VERIFY_SSL", True, bool
+            )
+            if not rerank_verify_ssl_default:
+                logger.warning(
+                    "RERANK_VERIFY_SSL=false: TLS certificate verification is "
+                    "disabled for rerank requests"
+                )
+
             async def server_rerank_func(
                 query: str,
                 documents: list,
                 top_n: int = None,
                 extra_body: dict = None,
-                verify_ssl: bool = False,
+                verify_ssl: bool | None = None,
             ):
                 """Server rerank function with configuration from environment variables"""
                 # Prepare kwargs for rerank function
@@ -2532,7 +2548,9 @@ def create_app(args):
 
                 # Pass verify_ssl if the selected rerank function supports it
                 if "verify_ssl" in inspect.signature(selected_rerank_func).parameters:
-                    kwargs["verify_ssl"] = verify_ssl
+                    kwargs["verify_ssl"] = (
+                        rerank_verify_ssl_default if verify_ssl is None else verify_ssl
+                    )
 
                 return await selected_rerank_func(**kwargs, extra_body=extra_body)
 
@@ -2716,98 +2734,21 @@ def create_app(args):
                 f"[reload_rag_for_workspace] Updated RAG instance - workspace: {rag.workspace}, working_dir: {rag.working_dir}"
             )
 
-            # CRITICAL: Update workspace attribute on ALL storage instances.
-            # Storage objects were created with the original workspace and use self.workspace
-            # for data isolation. Without updating these, storages continue to access old workspace data.
-            storage_instances = [
-                rag.full_docs,
-                rag.text_chunks,
-                rag.full_entities,
-                rag.full_relations,
-                rag.entity_chunks,
-                rag.relation_chunks,
-                rag.entities_vdb,
-                rag.relationships_vdb,
-                rag.chunks_vdb,
-                rag.chunk_entity_relation_graph,
-                rag.llm_response_cache,
-                rag.doc_status,
-            ]
-            for storage in storage_instances:
-                if storage:
-                    logger.info(
-                        f"[reload_rag_for_workspace] Processing storage: {type(storage).__name__}, namespace: {storage.namespace}"
-                    )
-                    storage.workspace = workspace
-                    workspace_dir = os.path.join(working_dir, workspace)
-
-                    # CRITICAL: Update file paths for all storage backends
-                    # File paths are set in __post_init__() and won't automatically
-                    # update when workspace changes. We need to rebuild the paths.
-
-                    # JSON KV Storage (full_docs, text_chunks, entities, relations, etc.)
-                    if hasattr(storage, "_file_name"):
-                        storage._file_name = os.path.join(
-                            workspace_dir, f"kv_store_{storage.namespace}.json"
-                        )
-
-                    # NetworkX Graph Storage
-                    if hasattr(storage, "_graphml_xml_file"):
-                        old_file = storage._graphml_xml_file
-                        storage._graphml_xml_file = os.path.join(
-                            workspace_dir, f"graph_{storage.namespace}.graphml"
-                        )
-                        logger.info(
-                            f"[reload_rag_for_workspace] Updating graph file: {old_file} -> {storage._graphml_xml_file}"
-                        )
-                        # Reload the graph from the new workspace file
-                        from lightrag.kg.networkx_impl import NetworkXStorage
-
-                        preloaded_graph = NetworkXStorage.load_nx_graph(
-                            storage._graphml_xml_file
-                        )
-                        if preloaded_graph is not None:
-                            storage._graph = preloaded_graph
-                            logger.info(
-                                f"[{workspace}] Reloaded graph from {storage._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes"
-                            )
-                        else:
-                            import networkx as nx
-
-                            storage._graph = nx.Graph()
-                            logger.info(
-                                f"[{workspace}] Created new empty graph for workspace"
-                            )
-
-                    # NanoVectorDB Storage
-                    if hasattr(storage, "_client_file_name"):
-                        storage._client_file_name = os.path.join(
-                            workspace_dir, f"vdb_{storage.namespace}.json"
-                        )
-                        # Recreate the NanoVectorDB client with new file path
-                        from nano_vectordb import NanoVectorDB
-
-                        storage._client = NanoVectorDB(
-                            storage.embedding_func.embedding_dim,
-                            storage_file=storage._client_file_name,
-                        )
-                        logger.info(
-                            f"[{workspace}] Recreated vector DB client for {storage.namespace} with file {storage._client_file_name}"
-                        )
+            # Rebuild every storage instance for the new workspace through the
+            # same constructor path as LightRAG.__post_init__, so each backend
+            # derives its own paths / collections / prefixes. (Patching the
+            # `workspace` attribute and a few known file paths by hand only ever
+            # covered the file-based backends.)
+            rag._init_storage_instances()
             logger.info(
-                "[reload_rag_for_workspace] Updated workspace on all storage instances"
+                "[reload_rag_for_workspace] Rebuilt storage instances for the new workspace"
             )
-
             # CRITICAL: Reset storage status back to CREATED so initialize_storages() will run.
             # Without this, initialize_storages() sees status==FINALIZED and skips initialization,
             # leaving the RAG instance pointing to stale workspace data.
             rag._storages_status = StoragesStatus.CREATED
             logger.info("[reload_rag_for_workspace] Reset storage status to CREATED")
 
-            print(
-                f"[RELOAD-DEBUG] Starting reinitialization for workspace: {workspace}",
-                flush=True,
-            )
             logger.info(
                 f"[reload_rag_for_workspace] Reinitializing RAG storages for workspace: {workspace} at {working_dir}"
             )
@@ -2824,6 +2765,36 @@ def create_app(args):
                 f"[reload_rag_for_workspace] Failed to reload RAG for workspace {workspace}: {e}"
             )
             raise
+
+    # The one LightRAG instance serves a single workspace at a time (the
+    # workspace switch rewires it for every client). A request that names a
+    # different workspace in the LIGHTRAG-WORKSPACE header would otherwise be
+    # answered from the wrong data without any sign of it, so it is refused.
+    # LIGHTRAG_ENFORCE_WORKSPACE_HEADER=false restores the old log-only behaviour.
+    if get_env_value("LIGHTRAG_ENFORCE_WORKSPACE_HEADER", True, bool):
+        _guarded_segments = {"documents", "query", "graph", "graphs", "api"}
+
+        @app.middleware("http")
+        async def workspace_header_guard(request: Request, call_next):
+            header = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+            if header:
+                segments = [s for s in request.url.path.split("/") if s][:2]
+                if _guarded_segments.intersection(segments):
+                    requested = re.sub(r"[^a-zA-Z0-9_]", "_", header)
+                    active = rag.workspace or ""
+                    # "default" is the UI's name for the unnamed workspace.
+                    if requested != active and not (requested == "default" and not active):
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "detail": (
+                                    f"Workspace mismatch: the server is serving "
+                                    f"'{active or 'default'}', the request asked for "
+                                    f"'{requested}'. Switch workspaces first."
+                                )
+                            },
+                        )
+            return await call_next(request)
 
     # Add routes
     # root_path is set on the app for reverse proxy support;
@@ -2845,7 +2816,7 @@ def create_app(args):
     set_rag_instance_and_reload_func(rag, reload_rag_for_workspace)
 
     # Add workspace management routes
-    app.include_router(workspace_router)
+    app.include_router(create_workspace_routes(api_key))
 
     # Add document sequencing routes
     app.include_router(create_sequencing_routes(rag, api_key))

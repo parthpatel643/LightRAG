@@ -84,6 +84,10 @@ class OfflineRetrievalCheckTests(unittest.TestCase):
         self.assertEqual(summary["average_recall_at_k"], 0.0)
         self.assertEqual(summary["no_hit_queries"], 1)
 
+    @unittest.skipUnless(
+        any(Path("lightrag/evaluation/sample_documents").glob("*.md")),
+        "sample documents were removed from this fork",
+    )
     def test_sample_oracle_has_full_recall_at_two(self):
         results = audit_samples(
             load_cases(Path("lightrag/evaluation/sample_dataset.json")),
