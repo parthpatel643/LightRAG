@@ -60,6 +60,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from lightrag.functions import llm_model_func
+from lightrag.llm._error_utils import is_content_filter_error
 from lightrag.utils import logger
 
 # Load environment variables
@@ -114,6 +115,24 @@ GROUND_TRUTH: {ground_truth}
 ANSWER: {answer}
 
 Provide your evaluation as a JSON object with "score" (0-5) and "reasoning"."""
+
+
+def _judge_temperature_kwargs() -> Dict[str, float]:
+    """Judge sampling temperature from EVAL_JUDGE_TEMPERATURE (default 0).
+
+    ``default`` / ``none`` / empty omits the parameter, for reasoning models
+    (e.g. GPT-5.6-Luna) that reject anything but their default temperature.
+    """
+    raw = os.getenv("EVAL_JUDGE_TEMPERATURE", "0").strip().lower()
+    if raw in ("", "default", "none"):
+        return {}
+    return {"temperature": float(raw)}
+
+
+def _is_content_filter_error(error: BaseException) -> bool:
+    """True when the provider refused the prompt under its content policy
+    (e.g. Azure flagging "escort" in a wheelchair-escort rate question)."""
+    return is_content_filter_error(error)
 
 
 class SemanticEquivalenceEvaluator:
@@ -347,12 +366,30 @@ class SemanticEquivalenceEvaluator:
             # temperature=0 for deterministic scoring: this is a judge/grading
             # task, not creative generation, and non-zero sampling was causing
             # +/-25pp swings across identical reruns.
-            response = await llm_model_func(
-                prompt=user_prompt,
-                system_prompt=SEMANTIC_EQUIVALENCE_SYSTEM_PROMPT,
-                history_messages=[],
-                temperature=0,
-            )
+            judge_model = None
+            try:
+                response = await llm_model_func(
+                    prompt=user_prompt,
+                    system_prompt=SEMANTIC_EQUIVALENCE_SYSTEM_PROMPT,
+                    history_messages=[],
+                    **_judge_temperature_kwargs(),
+                )
+            except Exception as judge_error:
+                # A provider content-policy refusal says nothing about the
+                # answer; re-judge with the configured fallback model instead
+                # of scoring it 0.
+                judge_model = os.getenv("EVAL_JUDGE_FALLBACK_MODEL", "").strip()
+                if not (judge_model and _is_content_filter_error(judge_error)):
+                    raise
+                logger.warning(
+                    f"Judge prompt content-filtered; re-judging with {judge_model}"
+                )
+                response = await llm_model_func(
+                    prompt=user_prompt,
+                    system_prompt=SEMANTIC_EQUIVALENCE_SYSTEM_PROMPT,
+                    history_messages=[],
+                    llm_model=judge_model,
+                )
 
             # Parse JSON response
             try:
@@ -385,6 +422,7 @@ class SemanticEquivalenceEvaluator:
                 "raw_score": raw_score,
                 "reasoning": reasoning,
                 "passed": normalized_score >= self.pass_threshold,
+                **({"judge_model": judge_model} if judge_model else {}),
             }
 
         except Exception as e:

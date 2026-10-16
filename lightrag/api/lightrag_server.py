@@ -82,7 +82,6 @@ from lightrag.api.ui_customization import (
     locales_without_chrome_translation,
     resolve_ui_customization_snapshot,
 )
-from lightrag.base import StoragesStatus
 from lightrag.constants import (
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
@@ -2736,18 +2735,13 @@ def create_app(args):
 
             # Rebuild every storage instance for the new workspace through the
             # same constructor path as LightRAG.__post_init__, so each backend
-            # derives its own paths / collections / prefixes. (Patching the
-            # `workspace` attribute and a few known file paths by hand only ever
-            # covered the file-based backends.)
-            rag._init_storage_instances()
+            # derives its own paths / collections / prefixes, and replace the
+            # model queues finalize_storages() shut down. Resets storage status
+            # to CREATED so initialize_storages() runs again.
+            rag._reset_for_workspace()
             logger.info(
-                "[reload_rag_for_workspace] Rebuilt storage instances for the new workspace"
+                "[reload_rag_for_workspace] Rebuilt storage instances and model queues for the new workspace"
             )
-            # CRITICAL: Reset storage status back to CREATED so initialize_storages() will run.
-            # Without this, initialize_storages() sees status==FINALIZED and skips initialization,
-            # leaving the RAG instance pointing to stale workspace data.
-            rag._storages_status = StoragesStatus.CREATED
-            logger.info("[reload_rag_for_workspace] Reset storage status to CREATED")
 
             logger.info(
                 f"[reload_rag_for_workspace] Reinitializing RAG storages for workspace: {workspace} at {working_dir}"

@@ -402,9 +402,9 @@ You are a Senior Airline Procurement Specialist. Provide answers based *strictly
 # ==============================================================================
 
 PROMPTS["kg_query_context"] = """<context_metadata>
-**Versioning:** This graph contains versioned data ([v1]...[v4]).
-**Priority:** Data with higher version numbers (e.g., [v4]) supersedes lower numbers.
-**Sequence:** Document chunk `sequence_index` corresponds to the version number.
+**Versioning:** This graph contains versioned data ([v1], [v2], ...).
+**Priority:** Data with a higher version number (e.g., [v4]) supersedes lower numbers (e.g., [v3]).
+**Sequence:** Each document chunk's `reference_id` maps to a `<reference_list>` entry tagged with its document version [vN].
 </context_metadata>
 
 <knowledge_graph_entities>
@@ -507,8 +507,11 @@ You are a Senior Airline Procurement Lead. You provide executive-level briefings
 </role>
 
 <temporal_logic>
-1.  **Source of Truth:** Base all answers on the "Latest Signed Text" (highest sequence number/reference ID).
-2.  **Status Check:**
+1.  **Source of Truth:** Amendments, rate revisions and adjustment letters change only what they state; every other term of earlier versions stays in force. For each fact, use the highest version tag [vN] in the `<reference_list>` that addresses it (the list is ordered newest first, so reference [1] is the latest document), and use every relevant chunk that cites that document. Only say information is not in the contract after checking every version in `<materials>`, including tables and rate schedules.
+2.  **Rate Adjustments:** A dated rate change (amendment, rate revision, CPI/RPI or other index letter, or a contract clause that adjusts rates from a stated date) supersedes earlier rates from its effective date. If that date is on or before today's reference date, present the adjusted figure as the current rate and give the prior rate only as context. Apply a stated percentage once from its effective date; if the text does not say whether it recurs in later years, give that figure and note that any later adjustment is not stated. If the contract indexes or escalates charges (e.g. to a consumer price index), check whether the item falls under that clause; if so, state that its rate is subject to the indexation (name the clause and any applied percentage). If an adjustment letter lists only some items, give an unlisted item's latest listed amount and note that the letter does not state its adjusted amount; do not compute one, because earlier index steps may also apply.
+3.  **Tables:** A column or row heading (e.g., "Hourly Bill Rate", "Per SSR", "Per Turnaround") gives the unit and meaning of every value under it, and a "Table caption" line says what the table covers. Words such as "current", "existing" or "new" in a heading are relative to the document's own date: once the effective date of a "new" column has passed, that column holds the current rate and the "current" column holds the prior rate. A row label in the first column can also give a row's unit. What the carrier pays is the price or bill rate in the pricing schedule (e.g. "Price/event", "Bill Rate"); wage, payroll-tax, benefit and staffing build-up tables show the vendor's cost, not the price.
+4.  **Dates:** Read dates in the format the document uses; European contracts write DD/MM/YYYY (e.g., 01/12/2021 is 1 December 2021).
+5.  **Status Check:**
     * If `<EFFECTIVE_DATE>` is in the future -> Explicitly warn the user: "The contract will be effective from [Date]."
     * If `<EFFECTIVE_DATE>` is past/none -> State the status clearly (e.g., "Effective date is [Date]" or "This agreement is currently active").
 </temporal_logic>
@@ -551,17 +554,17 @@ For any pricing/rate/unit-cost question:
 <output_structure>
 1.  **Executive Summary:** A cohesive paragraph (2-4 sentences) stating the current status, rate, or rule. Clearly lead with the effective date (e.g., "Effective date is January 1, 2025 [1]...").
 2.  **Detailed Breakdown:**
-    * *If Quantitative:* A clear Markdown table (Service | Rate | Unit | Notes).
+    * *If Quantitative:* A clear Markdown table (Service | Rate | Unit | Notes). Include the other figures the source lists with the rate (e.g. frequency per day, daily and annual cost) and its conditions on when it applies or is included.
     * *If Qualitative:* Bullet points highlighting obligations, constraints, or risks.
 3.  **Operational Notes:** (Optional) Any specific constraints, penalties, or future effective dates the stakeholder needs to know.
 4.  **References:** Strict list of sources.
 </output_structure>
 
 <instructions>
-1.  Analyze the user's query: {user_prompt}
+1.  Analyze the user's query (the user message). Additional instructions, if any: {user_prompt}
 2.  Review `<materials>` to find the latest valid data points.
-3.  **Language Constraint:** Respond in the **same language as the user's query** (even if the materials are in English).
-4.  Draft the response using the `<style_guide>` and `<output_structure>`.
+3.  **Language Constraint:** Respond in the **same language as the user's query in the user message**, never in the language of the materials.
+4.  Draft the response using the `<style_guide>` and `<output_structure>`, even when the answer is a single figure: give the Executive Summary and, for a rate, the Detailed Breakdown with its conditions and any adjustment that applies to it.
 5.  Append the `### References` section using the strict format below.
 </instructions>
 

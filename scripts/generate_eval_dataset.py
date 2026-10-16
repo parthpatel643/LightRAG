@@ -60,8 +60,9 @@ DEFAULT_MAX_CHARS = 120_000
 # fallback in _read_doc_content() when inputs/{workspace}/ doesn't contain
 # the file (that dir may exist but be empty, or not exist at all).
 WORKSPACE_INPUT_DIR_OVERRIDES = {
-    "muc_ground_handling_atw_cw70430": "muc_passenger_handling_atw_cw70430",
     "rdu_cabin_cleaning_5911": "rdu_passenger_cleaning_5911",
+    # Amendment 14 is ingested as one document per dated exhibit.
+    "tpa_cabin_cleaning_cawl19069": "tpa_cabin_cleaning_cawl19069/split",
 }
 
 # ---------------------------------------------------------------------------
@@ -99,7 +100,6 @@ async def _call_llm(prompt: str, system_prompt: str) -> str:
         region_name="us-east-1",
         user_secret_manager_name="bos-line-stations-proxy-service-api-key",
     )
-    http_client = httpx.AsyncClient(http2=True, verify=False)
 
     return await openai_complete_if_cache(
         os.getenv("LLM_MODEL"),
@@ -109,7 +109,10 @@ async def _call_llm(prompt: str, system_prompt: str) -> str:
         base_url=os.getenv("LLM_BINDING_HOST"),
         extra_headers={"Authorization": f"Bearer {kong_client.generate_token()}"},
         extra_body=_make_extra_body(),
-        openai_client_configs={"http_client": http_client},
+        # Factory, not an instance: each retry attempt needs an unclosed client.
+        openai_client_configs={
+            "http_client": lambda: httpx.AsyncClient(http2=True, verify=False)
+        },
     )
 
 

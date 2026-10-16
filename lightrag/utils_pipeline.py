@@ -636,6 +636,13 @@ _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     # without these keys that reset handed the canonical source back to it,
     # putting the key straight back into conflict.
     *DUPLICATE_DEMOTION_METADATA_KEYS,
+    # Temporal versioning (this fork): the version a document was enqueued
+    # with is a directive, not a per-attempt result. A retried or interrupted
+    # document must come back as the same version, or it loses its place in
+    # the sequence/date mapping that agentic queries rely on.
+    "sequence_index",
+    "effective_date",
+    "doc_type",
 )
 
 

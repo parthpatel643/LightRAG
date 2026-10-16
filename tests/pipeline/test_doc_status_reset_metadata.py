@@ -218,6 +218,27 @@ def test_transition_metadata_carries_kg_recovery_state_and_drop_retires_it():
     assert KG_PURGE_METADATA_KEY in status_doc["metadata"]
 
 
+def test_reset_metadata_keeps_temporal_versioning_fields():
+    """A FAILED/interrupted document re-queued to PENDING must keep the
+    version it was enqueued with. Dropping ``sequence_index`` on the reset
+    left a retried amendment PROCESSED with no version, invisible to the
+    sequence/date mapping that agentic queries and dataset tooling use."""
+    result = doc_status_reset_metadata(
+        {
+            "metadata": {
+                **_FULL_ATTEMPT_METADATA,
+                "sequence_index": 2,
+                "effective_date": "2024-10-01",
+                "doc_type": "amendment",
+            }
+        }
+    )
+
+    assert result["sequence_index"] == 2
+    assert result["effective_date"] == "2024-10-01"
+    assert result["doc_type"] == "amendment"
+
+
 def test_reset_metadata_drops_degraded_recovery_warnings():
     """A full reprocess is the repair boundary for prior degraded rollback."""
     assert (

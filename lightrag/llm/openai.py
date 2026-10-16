@@ -30,7 +30,6 @@ from tenacity import (
     retry,
     retry_if_exception,
     retry_if_exception_type,
-    stop_after_attempt,
     wait_exponential,
 )
 
@@ -130,6 +129,20 @@ def _is_retryable_rate_limit_error(error: BaseException) -> bool:
     )
 
 
+def _stop_after_env_attempts(env_name: str, default: int = 3):
+    """tenacity stop: attempt budget read from ``env_name`` at call time, so a
+    deployment can ride out gateway outages longer than three quick tries."""
+
+    def stop(retry_state) -> bool:
+        try:
+            budget = max(1, int(os.getenv(env_name, str(default))))
+        except ValueError:
+            budget = default
+        return retry_state.attempt_number >= budget
+
+    return stop
+
+
 def _validate_openai_response_format(response_format: Any | None) -> None:
     """Reject typed structured-output helpers; only wire-format dicts are supported."""
     if response_format is None or isinstance(response_format, dict):
@@ -139,6 +152,45 @@ def _validate_openai_response_format(response_format: Any | None) -> None:
         "openai_complete_if_cache only supports dict response_format payloads; "
         "typed/Pydantic response_format values are not supported."
     )
+
+
+def _block_field(block: Any, name: str) -> Any:
+    if isinstance(block, dict):
+        return block.get(name)
+    return getattr(block, name, None)
+
+
+def _split_content_blocks(content: Any) -> tuple[Any, str]:
+    """Flatten list-of-blocks message content into ``(text, reasoning_text)``.
+
+    Some OpenAI-compatible gateways in front of Claude models return
+    ``content`` as content blocks when the model thinks, e.g.
+    ``[{"type": "thinking_block", ...}, {"type": "text", "text": "..."}]``.
+    The SDK does not validate response models, so the list arrives as-is.
+    String and ``None`` content pass through unchanged.
+    """
+    if not isinstance(content, list):
+        return content, ""
+
+    texts: list[str] = []
+    reasoning: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            texts.append(block)
+            continue
+        block_type = _block_field(block, "type")
+        if block_type == "text":
+            texts.append(_block_field(block, "text") or "")
+        elif block_type == "thinking":
+            reasoning.append(_block_field(block, "thinking") or "")
+        elif block_type == "thinking_block":
+            reasoning_text = (
+                (_block_field(block, "thinking_block") or {})
+                .get("reasoningContent", {})
+                .get("reasoningText", {})
+            )
+            reasoning.append(reasoning_text.get("text") or "")
+    return "".join(texts), "".join(reasoning)
 
 
 # Module-level cache for tiktoken encodings
@@ -195,7 +247,9 @@ def create_openai_async_client(
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url). Pass ``max_retries`` here to
-            re-enable the SDK's own retry loop (see below).
+            re-enable the SDK's own retry loop (see below). ``http_client`` may be
+            a zero-argument factory returning an ``httpx.AsyncClient``; it is
+            called once per client so retries never reuse a closed client.
 
     Returns:
         An AsyncOpenAI or AsyncAzureOpenAI client instance.
@@ -215,6 +269,15 @@ def create_openai_async_client(
     connection errors, timeouts, 429 and >=500 already had predicates, and
     ``_is_transient_status_error`` adds the 408 / 409 the SDK also retried.
     """
+    if client_configs and callable(client_configs.get("http_client")):
+        # A factory gives every attempt its own httpx client: the SDK client
+        # closes the one it was handed, and tenacity retries reuse the
+        # caller's kwargs, so a shared instance is dead by the second attempt.
+        client_configs = {
+            **client_configs,
+            "http_client": client_configs["http_client"](),
+        }
+
     if use_azure:
         from openai import AsyncAzureOpenAI
 
@@ -286,7 +349,7 @@ def create_openai_async_client(
 # wrapped in TruncatedResponse so the cache layer skips persisting incomplete
 # output. See the "Note on truncated structured output" in the docstring below.
 @retry(
-    stop=stop_after_attempt(3),
+    stop=_stop_after_env_attempts("OPENAI_LLM_MAX_ATTEMPTS"),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=(
         retry_if_exception(_is_retryable_rate_limit_error)
@@ -607,8 +670,12 @@ async def openai_complete_if_cache(
                         continue
 
                     delta = chunk.choices[0].delta
-                    content = getattr(delta, "content", None)
-                    reasoning_content = getattr(delta, "reasoning_content", "")
+                    content, block_reasoning = _split_content_blocks(
+                        getattr(delta, "content", None)
+                    )
+                    reasoning_content = (
+                        getattr(delta, "reasoning_content", "") or block_reasoning
+                    )
 
                     # Handle COT logic for streaming (only if enabled)
                     if enable_cot:
@@ -810,8 +877,12 @@ async def openai_complete_if_cache(
                 logger.debug("Using parsed structured response from API")
             else:
                 # Handle regular content responses
-                content = getattr(message, "content", None)
-                reasoning_content = getattr(message, "reasoning_content", "")
+                content, block_reasoning = _split_content_blocks(
+                    getattr(message, "content", None)
+                )
+                reasoning_content = (
+                    getattr(message, "reasoning_content", "") or block_reasoning
+                )
 
                 # Handle COT logic for non-streaming responses (only if enabled)
                 final_content = ""
@@ -1039,7 +1110,7 @@ async def nvidia_openai_complete(
     supports_asymmetric=True,
 )
 @retry(
-    stop=stop_after_attempt(3),
+    stop=_stop_after_env_attempts("OPENAI_EMBEDDING_MAX_ATTEMPTS"),
     wait=wait_exponential(multiplier=1, min=4, max=60),
     retry=(
         retry_if_exception(_is_retryable_rate_limit_error)

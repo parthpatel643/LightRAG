@@ -125,3 +125,40 @@ def test_create_makes_directories_under_the_roots(env):
     response = env.client.post("/workspace/create", json=_body(env), headers=HEADERS)
     assert response.status_code == 200
     assert (env.inputs / "sea_cabin").is_dir()
+
+
+@pytest.fixture
+def workspace_specific_input_dir(env, monkeypatch):
+    """INPUT_DIR=inputs/${WORKSPACE}, the convention in this fork's .env."""
+    monkeypatch.setenv("WORKSPACE", "w0")
+    monkeypatch.setattr(workspace_routes, "_root_input_dir", str(env.inputs / "w0"))
+    for name in ("w0", "las_cabin"):
+        (env.working / name).mkdir()
+        (env.inputs / name).mkdir()
+    return env
+
+
+def test_listed_workspaces_can_be_switched_to_with_workspace_specific_input_dir(
+    workspace_specific_input_dir,
+):
+    env = workspace_specific_input_dir
+    listed = env.client.get("/workspace/list", headers=HEADERS).json()
+    target = next(w for w in listed if w["name"] == "las_cabin")
+
+    response = env.client.post("/workspace/switch", json=target, headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert env.reloads == [(target["working_dir"], "las_cabin")]
+
+
+def test_workspace_specific_input_dir_still_refuses_dirs_outside_inputs(
+    workspace_specific_input_dir, tmp_path
+):
+    env = workspace_specific_input_dir
+    response = env.client.post(
+        "/workspace/switch",
+        json=_body(env, name="las_cabin", inputs=tmp_path / "elsewhere" / "las_cabin"),
+        headers=HEADERS,
+    )
+    assert response.status_code == 400
+    assert env.reloads == []

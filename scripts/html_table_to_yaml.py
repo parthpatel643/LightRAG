@@ -118,14 +118,25 @@ def _extract_headers(table_tag) -> Tuple[List[str], Optional[int]]:
     return [], None
 
 
+def _span(cell) -> int:
+    colspan = cell.get("colspan")
+    return int(colspan) if colspan and str(colspan).isdigit() else 1
+
+
 def _row_cells(
-    tr, expected_cols: int, carry_first_value: Optional[str] = None
+    tr,
+    expected_cols: int,
+    carry_first_value: Optional[str] = None,
+    carry_span: int = 1,
 ) -> List[str]:
     # Include th with scope="row" (or any th) as first value if present;
     # otherwise, use carry_first_value when provided (for rowspan propagation).
+    # A row header spanning several columns (e.g. a "Total" label) fills all of
+    # them, like a spanning td, so the following values keep their columns.
     cells: List[str] = []
     row_ths = tr.find_all("th", recursive=False)
     first_value: Optional[str] = None
+    first_span = 1
     if row_ths:
         row_scoped = None
         for th in row_ths:
@@ -135,17 +146,17 @@ def _row_cells(
         if row_scoped is None:
             row_scoped = row_ths[0]
         first_value = _cell_text(row_scoped)
+        first_span = _span(row_scoped)
     elif carry_first_value is not None:
         first_value = carry_first_value
+        first_span = carry_span
 
     if first_value is not None:
-        cells.append(first_value)
+        cells.extend([first_value] * first_span)
 
     for td in tr.find_all("td", recursive=False):
-        colspan = td.get("colspan")
-        span = int(colspan) if colspan and str(colspan).isdigit() else 1
         value = _cell_text(td)
-        for _ in range(span):
+        for _ in range(_span(td)):
             cells.append(value)
     if expected_cols is not None:
         if len(cells) < expected_cols:
@@ -172,6 +183,7 @@ def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]
     rows: List[List[str]] = []
     tbody = table.find("tbody")
     current_row_value: Optional[str] = None
+    current_row_span: int = 1
     remaining_rowspan: int = 0
     if tbody:
         trs = tbody.find_all("tr")
@@ -184,6 +196,7 @@ def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]
                     break
             if row_th is not None:
                 current_row_value = _cell_text(row_th)
+                current_row_span = _span(row_th)
                 rs_attr = row_th.get("rowspan")
                 remaining_rowspan = (
                     (int(rs_attr) - 1) if rs_attr and str(rs_attr).isdigit() else 0
@@ -191,7 +204,14 @@ def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]
                 rows.append(_row_cells(tr, expected_cols, carry_first_value=None))
             else:
                 carry = current_row_value if remaining_rowspan > 0 else None
-                rows.append(_row_cells(tr, expected_cols, carry_first_value=carry))
+                rows.append(
+                    _row_cells(
+                        tr,
+                        expected_cols,
+                        carry_first_value=carry,
+                        carry_span=current_row_span,
+                    )
+                )
                 if remaining_rowspan > 0:
                     remaining_rowspan -= 1
     else:
@@ -207,6 +227,7 @@ def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]
                     break
             if row_th is not None:
                 current_row_value = _cell_text(row_th)
+                current_row_span = _span(row_th)
                 rs_attr = row_th.get("rowspan")
                 remaining_rowspan = (
                     (int(rs_attr) - 1) if rs_attr and str(rs_attr).isdigit() else 0
@@ -214,7 +235,14 @@ def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]
                 rows.append(_row_cells(tr, expected_cols, carry_first_value=None))
             else:
                 carry = current_row_value if remaining_rowspan > 0 else None
-                rows.append(_row_cells(tr, expected_cols, carry_first_value=carry))
+                rows.append(
+                    _row_cells(
+                        tr,
+                        expected_cols,
+                        carry_first_value=carry,
+                        carry_span=current_row_span,
+                    )
+                )
                 if remaining_rowspan > 0:
                     remaining_rowspan -= 1
 

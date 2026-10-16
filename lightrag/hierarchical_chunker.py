@@ -3,7 +3,8 @@ HierarchicalMarkdownYAMLChunker - A specialized chunker for legal contracts.
 
 This module provides robust chunking for Markdown documents containing
 embedded YAML streams (data tables). It maintains hierarchical context
-from headers and creates atomic chunks for each YAML record.
+from headers, keeps each YAML table whole (or packs whole records when it is
+larger than the chunk size) and captions it with the prose that introduces it.
 
 Key Features:
 - Header stack management for hierarchical context
@@ -21,6 +22,14 @@ from typing import Any, Callable, Dict, List, Optional
 import yaml
 
 from lightrag.utils import logger
+
+_MAX_CAPTION_PARAGRAPHS = 3
+_MAX_CAPTION_CHARS = 600
+_MIN_CAPTION_LETTERS = 60
+# Comments, image descriptions and leftover HTML tables never describe a table.
+_CAPTION_NOISE = re.compile(
+    r"<!--.*?-->|<img_summary>.*?</img_summary>|<table\b.*?</table>", re.S | re.I
+)
 
 
 @dataclass
@@ -44,7 +53,7 @@ class HierarchicalMarkdownYAMLChunker:
     This chunker:
     1. Maintains a hierarchical header stack
     2. Extracts global metadata from document headers
-    3. Parses YAML blocks as individual records (atomic rows)
+    3. Keeps YAML tables whole, packing whole records when a table is too large
     4. Chunks prose text with context injection
     5. Respects CHUNK_SIZE and CHUNK_OVERLAP_SIZE from environment
     """
@@ -189,6 +198,60 @@ class HierarchicalMarkdownYAMLChunker:
         )
         hierarchy_path = " > ".join(header_stack) if header_stack else "Root"
         return f"Context: {contract_id} > {hierarchy_path}"
+
+    @staticmethod
+    def _table_caption(prose_text: str) -> str:
+        """Return the prose immediately introducing a table.
+
+        Walks back over trailing paragraphs, skipping bare clause markers such
+        as ``**1.2.2.6**`` and short labels such as ``Prices for Turnarounds:``,
+        until enough real text is collected. Contracts often number clauses in
+        bold instead of using Markdown headers, so this caption is the only
+        thing telling a table chunk what its rows describe.
+        """
+        paragraphs = [
+            p.strip()
+            for p in _CAPTION_NOISE.sub("", prose_text).split("\n\n")
+            if p.strip()
+        ]
+        picked: List[str] = []
+        letters = 0
+        for para in reversed(paragraphs[-_MAX_CAPTION_PARAGRAPHS:]):
+            picked.insert(0, para)
+            words = re.sub(r"[*_#`>|\-]|\d+(\.\d+)*", " ", para)
+            letters += len(re.findall(r"[A-Za-z]", words))
+            if letters >= _MIN_CAPTION_LETTERS:
+                break
+        caption = " ".join(" ".join(picked).split())
+        if not re.search(r"[A-Za-z]", caption):
+            return ""
+        if len(caption) > _MAX_CAPTION_CHARS:
+            caption = "…" + caption[-(_MAX_CAPTION_CHARS - 1) :]
+        return caption
+
+    def _pack_records(self, records: List[tuple], context: str) -> List[tuple]:
+        """Group consecutive records into (first_row, yaml_text) units that fit
+        the chunk size with the context header; a record too large on its own
+        stays alone."""
+        packed: List[tuple] = []
+        group: List[tuple] = []
+        for record in records:
+            candidate = group + [record]
+            text = "\n---\n".join(original for _, original in candidate)
+            if (
+                group
+                and self._count_tokens(f"{context}\n---\n{text}\n") > self.chunk_size
+            ):
+                packed.append(
+                    (group[0][0], "\n---\n".join(original for _, original in group))
+                )
+                candidate = [record]
+            group = candidate
+        if group:
+            packed.append(
+                (group[0][0], "\n---\n".join(original for _, original in group))
+            )
+        return packed
 
     def _create_yaml_chunk(
         self,
@@ -355,15 +418,18 @@ class HierarchicalMarkdownYAMLChunker:
         prose_buffer = []
         in_yaml_block = False
         yaml_buffer = []
+        table_caption = ""
         source = os.path.basename(file_path)
 
         for line in lines:
             # Check for YAML code fence
             if line.strip().startswith("```yaml"):
+                previous_caption, table_caption = table_caption, ""
                 # Save any accumulated prose before YAML block
                 if prose_buffer:
                     prose_text = "".join(prose_buffer).strip()
                     if prose_text:
+                        table_caption = self._table_caption(prose_text)
                         context = self._format_context(global_metadata, header_stack)
                         prose_chunks = self._create_prose_chunks(
                             prose_text, context, header_stack, source, chunk_index
@@ -372,6 +438,9 @@ class HierarchicalMarkdownYAMLChunker:
                         chunk_index += len(prose_chunks)
                     prose_buffer = []
 
+                # A table with no introduction of its own continues the
+                # previous one (e.g. split across a page break).
+                table_caption = table_caption or previous_caption
                 in_yaml_block = True
                 yaml_buffer = []
                 continue
@@ -382,6 +451,8 @@ class HierarchicalMarkdownYAMLChunker:
                     in_yaml_block = False
                     yaml_content = "".join(yaml_buffer)
                     context = self._format_context(global_metadata, header_stack)
+                    if table_caption:
+                        context = f"{context}\nTable caption: {table_caption}"
 
                     # Check if entire YAML block fits within token limit
                     full_yaml_content = f"{context}\n---\n{yaml_content.strip()}\n"
@@ -400,9 +471,9 @@ class HierarchicalMarkdownYAMLChunker:
                         chunks.append(chunk)
                         chunk_index += 1
                     else:
-                        # Split into individual records
+                        # Pack whole records into as few chunks as fit
                         records = self._parse_yaml_block(yaml_content)
-                        for row_data in records:
+                        for row_data in self._pack_records(records, context):
                             chunk = self._create_yaml_chunk(
                                 row_data, context, header_stack, source, chunk_index
                             )
@@ -431,6 +502,7 @@ class HierarchicalMarkdownYAMLChunker:
 
                 # Update header stack
                 header_stack = self._update_header_stack(header_match, header_stack)
+                table_caption = ""
                 continue
 
             # Accumulate prose

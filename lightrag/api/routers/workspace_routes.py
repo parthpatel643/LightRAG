@@ -116,11 +116,22 @@ def set_rag_instance_and_reload_func(rag, reload_func: Callable):
     logger.debug("RAG instance and reload function registered for workspace management")
 
 
+def _input_root() -> Path:
+    """Directory holding every workspace's input folder. A workspace-specific
+    INPUT_DIR (``inputs/<WORKSPACE>``) contributes its parent, which is where
+    /workspace/list places the other workspaces' input directories."""
+    root = Path(_root_input_dir or os.getenv("INPUT_DIR", "./inputs"))
+    workspace = os.getenv("WORKSPACE") or os.getenv("WORKSPACE_NAME", "")
+    if workspace and root.name == workspace:
+        return root.parent
+    return root
+
+
 def _validated_dirs(config: WorkspaceConfig) -> tuple[Path, Path]:
     """Return the requested directories after checking they sit under the
     configured root directories; anything else is refused instead of created."""
     root_working = Path(_root_working_dir or os.getenv("WORKING_DIR", "./rag_storage"))
-    root_input = Path(_root_input_dir or os.getenv("INPUT_DIR", "./inputs"))
+    root_input = _input_root()
     working_path = Path(config.working_dir)
     input_path = Path(config.input_dir)
     if not _within(working_path, root_working) or not _within(input_path, root_input):

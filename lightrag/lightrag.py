@@ -1784,6 +1784,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     def _init_rerank_function(self) -> None:
         """Wrap rerank_model_func with rate limiting if configured."""
+        self._unwrapped_rerank_model_func = self.rerank_model_func
         if self.rerank_model_func is not None:
             self.rerank_model_func = priority_limit_async_func_call(
                 self.rerank_model_max_async,
@@ -1797,6 +1798,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # Init Embedding
         # Step 1: Capture embedding_func and max_token_size before applying rate_limit decorator
         original_embedding_func = self.embedding_func
+        self._unwrapped_embedding_func = original_embedding_func
         embedding_max_token_size = None
         if self.embedding_func and hasattr(self.embedding_func, "max_token_size"):
             embedding_max_token_size = self.embedding_func.max_token_size
@@ -1826,6 +1828,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )(self.embedding_func.func)
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)
+
+    def _reset_for_workspace(self) -> None:
+        """Make a finalized instance usable again for ``self.workspace``.
+
+        ``finalize_storages()`` shuts every model queue down permanently, so
+        callers that re-initialize the same instance (the API server's
+        workspace switch) need fresh embedding/rerank queues before the
+        storages are rebuilt, and fresh role LLM wrappers after, since those
+        bind ``hashing_kv`` to the current ``llm_response_cache``. Call
+        ``initialize_storages()`` afterwards.
+        """
+        self.embedding_func = self._unwrapped_embedding_func
+        self._init_embedding_function()
+        self.rerank_model_func = self._unwrapped_rerank_model_func
+        self._init_rerank_function()
+        # Storage classes carry a global_config snapshot (query-time rerank
+        # reads it), so rebind them to the new wrappers before rebuilding.
+        self._init_storage_classes()
+        self._init_storage_instances()
+        self._rebuild_role_llm_funcs()
+        self._storages_status = StoragesStatus.CREATED
 
     def _init_storage_classes(self) -> None:
         """Initialize storage class references with global_config partial application."""

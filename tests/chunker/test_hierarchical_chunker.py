@@ -573,3 +573,239 @@ def test_source_field(mock_tokenizer, sample_markdown_with_yaml):
 
     finally:
         os.unlink(temp_path)
+
+
+def _chunk_text(mock_tokenizer, content: str, **kwargs) -> List[dict]:
+    func = create_hierarchical_chunking_func(**kwargs)
+    return func(mock_tokenizer, content)
+
+
+@pytest.mark.offline
+def test_yaml_block_carries_preceding_clause_as_caption(mock_tokenizer):
+    """A table introduced by a bold-numbered clause keeps that clause as caption.
+
+    Contracts often use bold clause numbers instead of Markdown headers, so the
+    header path is empty and the table chunk would otherwise lose any hint of
+    what its rows describe.
+    """
+    content = """**1.2.2.5** In the event that the aircraft arrives ahead of schedule the Carrier shall be charged as shown below:
+
+**1.2.2.6**
+
+```yaml
+---
+Minutes: 0 -40
+Percent of Turn Rate: 0%
+---
+Minutes: 41-120
+Percent of Turn Rate: 25%
+```
+
+**1.2.2.7** In the event that the departure is delayed the Carrier shall be charged as follows:
+
+```yaml
+---
+Minutes: 0 -45
+Percent of Turn Rate: 0%
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content)
+    tables = [c for c in chunks if c.get("type") == "yaml_block"]
+    assert len(tables) == 2
+
+    early, delayed = tables
+    assert (
+        "Table caption: **1.2.2.5** In the event that the aircraft arrives ahead"
+        in early["content"]
+    )
+    assert "**1.2.2.6**" in early["content"]
+    assert "delayed" not in early["content"]
+    assert "Minutes: 41-120" in early["content"]
+
+    assert (
+        "Table caption: **1.2.2.7** In the event that the departure is delayed"
+        in delayed["content"]
+    )
+    assert "arrives ahead" not in delayed["content"]
+
+    for chunk in tables:
+        assert chunk["content"].startswith("Context: ")
+        assert chunk["tokens"] == len(chunk["content"])
+
+
+@pytest.mark.offline
+def test_yaml_rows_carry_caption_when_split(mock_tokenizer):
+    content = """Rates for additional services are listed below:
+
+```yaml
+Service: GPU
+Charge: '70.00'
+---
+Service: Air Start Unit
+Charge: '100.00'
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content, chunk_size=80, chunk_overlap=10)
+    rows = [c for c in chunks if c.get("type") == "structured_row"]
+    assert len(rows) == 2
+    for row in rows:
+        assert (
+            "Table caption: Rates for additional services are listed below:"
+            in row["content"]
+        )
+
+
+@pytest.mark.offline
+def test_yaml_block_without_preceding_prose_has_no_caption(mock_tokenizer):
+    content = """# Rates
+
+```yaml
+Item: A
+Price: 1
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content)
+    table = next(c for c in chunks if c.get("type") == "yaml_block")
+    assert "Table caption" not in table["content"]
+    assert table["content"].startswith("Context: Unknown > Rates\n---\n")
+
+
+@pytest.mark.offline
+def test_long_caption_is_trimmed_to_text_nearest_table(mock_tokenizer):
+    long_para = "Intro " + "filler words " * 200 + "charged as shown below:"
+    content = f"{long_para}\n\n```yaml\nItem: A\nPrice: 1\n```\n"
+    chunks = _chunk_text(mock_tokenizer, content)
+    table = next(c for c in chunks if c.get("type") == "yaml_block")
+    caption_line = next(
+        line
+        for line in table["content"].splitlines()
+        if line.startswith("Table caption: ")
+    )
+    assert caption_line.endswith("charged as shown below:")
+    assert len(caption_line) <= len("Table caption: ") + 600
+
+
+@pytest.mark.offline
+def test_continued_table_inherits_previous_caption(mock_tokenizer):
+    """Page-split tables keep the caption of the table they continue."""
+    content = """**Pricing** - Per plane event bid for all services listed below:
+
+```yaml
+Aircraft Type: Narrowbody
+Price/event: $ 10.00
+```
+
+---
+
+<!-- Table continues from previous section -->
+```yaml
+Aircraft Type: Hourly Bill Rate
+Service Description: Security Search Agent
+Price/event: $ 20.50
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content)
+    tables = [c for c in chunks if c.get("type") == "yaml_block"]
+    assert len(tables) == 2
+    for table in tables:
+        assert (
+            "Table caption: **Pricing** - Per plane event bid for all services listed below:"
+            in table["content"]
+        )
+    assert "Table continues" not in tables[1]["content"]
+
+
+@pytest.mark.offline
+def test_caption_is_not_inherited_across_headers(mock_tokenizer):
+    content = """Turnaround rates are listed below:
+
+```yaml
+Item: A
+Price: 1
+```
+
+# Other Section
+
+```yaml
+Item: B
+Price: 2
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content)
+    tables = [c for c in chunks if c.get("type") == "yaml_block"]
+    assert "Table caption: Turnaround rates" in tables[0]["content"]
+    assert "Table caption" not in tables[1]["content"]
+
+
+@pytest.mark.offline
+def test_short_table_label_pulls_in_the_introducing_sentence(mock_tokenizer):
+    """A bare label like "Prices for Turnarounds:" keeps the dated sentence above it."""
+    content = """Unrelated earlier paragraph about invoicing that must not be included at all here.
+
+Please find below the current handling charges and those that will apply as of January 01, 2019:
+
+Prices for Turnarounds:
+
+```yaml
+Type/Version: B772
+current handling charges in EUR: 2,408.85
+new handling charges in EUR effective January 01, 2019: 2,432.94
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content)
+    table = next(c for c in chunks if c.get("type") == "yaml_block")
+    assert (
+        "Table caption: Please find below the current handling charges and those "
+        "that will apply as of January 01, 2019: Prices for Turnarounds:"
+    ) in table["content"]
+    assert "invoicing" not in table["content"]
+
+
+@pytest.mark.offline
+def test_caption_ignores_image_summaries_and_html_tables(mock_tokenizer):
+    content = """**2.1** All services not included in article 1 will be charged at the following rates:
+
+<img_summary>
+img_num: 2
+description: A stylized letter logo with a maroon diagonal stroke.
+</img_summary>
+
+<table><thead><tr><th>Aircraft type</th></tr></thead><tbody></tbody></table>
+
+```yaml
+Service: GPU
+Charge: '70.00'
+```
+"""
+    chunks = _chunk_text(mock_tokenizer, content)
+    table = next(c for c in chunks if c.get("type") == "yaml_block")
+    assert (
+        "Table caption: **2.1** All services not included in article 1 will be "
+        "charged at the following rates:\n"
+    ) in table["content"]
+
+
+@pytest.mark.offline
+def test_oversized_table_packs_rows_up_to_chunk_size(mock_tokenizer):
+    """Rows of an oversized table are packed, not emitted one chunk per row.
+
+    One-row chunks that repeat the same caption flood vector retrieval: MUC's
+    57-row invoice-credit table crowded the actual turnaround price table out
+    of the top results.
+    """
+    rows = "\n---\n".join(
+        f"Station: S{i}\nAmount turnarounds: '{i}'\nRate: {i}.00" for i in range(6)
+    )
+    content = f"Single payout of the handling charges per turnaround:\n\n```yaml\n{rows}\n```\n"
+    chunks = _chunk_text(mock_tokenizer, content, chunk_size=260, chunk_overlap=10)
+    tables = [c for c in chunks if c.get("type") == "structured_row"]
+
+    assert 1 < len(tables) < 6
+    joined = "".join(c["content"] for c in tables)
+    for i in range(6):
+        assert joined.count(f"Station: S{i}\n") == 1
+    for table in tables:
+        assert table["tokens"] <= 260
+        assert table["content"].count("Table caption:") == 1
+        assert table["content"].startswith("Context: Unknown > Root\nTable caption: ")
+    assert [c["chunk_order_index"] for c in chunks] == list(range(len(chunks)))

@@ -6625,6 +6625,20 @@ async def _merge_all_chunks(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
 
+    # Vector-store metadata carries no sequence_index, so similarity-search
+    # chunks would reach the context as version 0 and be listed apart from
+    # (and below) their own document's versioned reference. Restore it from
+    # the chunk store, along with the document's effective date.
+    if merged_chunks and text_chunks_db is not None:
+        stored = await text_chunks_db.get_by_ids([c["chunk_id"] for c in merged_chunks])
+        for chunk, data in zip(merged_chunks, stored):
+            if not data:
+                continue
+            if not chunk.get("sequence_index") and data.get("sequence_index"):
+                chunk["sequence_index"] = data["sequence_index"]
+            if data.get("effective_date"):
+                chunk["effective_date"] = data["effective_date"]
+
     # Apply reranking to merged chunks if enabled
     if query_param.enable_rerank and query and merged_chunks and text_chunks_db:
         logger.debug(f"Applying reranking to {len(merged_chunks)} merged chunks")
@@ -6754,6 +6768,16 @@ async def _apply_temporal_merged_chunk_filter(
                 stats["entity_relation_path_kept"] += 1
 
     return filtered_merged_chunks, stats
+
+
+def _format_reference_path(
+    file_path: str, sequence_index: int, effective_date: str | None
+) -> str:
+    """Reference-list label: file, version tag, and effective date when known."""
+    label = f"{file_path} [v{sequence_index}]" if sequence_index > 0 else file_path
+    if effective_date and effective_date != "unknown":
+        label = f"{label} (effective {effective_date})"
+    return label
 
 
 async def _build_context_str(
@@ -6943,9 +6967,17 @@ async def _build_context_str(
         {"reference_id": chunk["reference_id"], "content": chunk["content"]}
         for chunk in truncated_chunks
     ]
+    source_dates = {
+        (c.get("file_path", ""), c.get("sequence_index", 0)): c.get("effective_date")
+        for c in merged_chunks
+        if c.get("effective_date")
+    }
     reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
+        f"[{ref['reference_id']}] "
+        + _format_reference_path(
+            file_path, sequence_index, source_dates.get((file_path, sequence_index))
+        )
+        for ref, (file_path, sequence_index) in zip(reference_list, sorted_sources)
         if ref["reference_id"]
     )
 

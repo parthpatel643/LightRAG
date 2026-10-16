@@ -4,10 +4,11 @@ from uuid import uuid4
 import httpx
 import numpy as np
 
+from lightrag.llm._error_utils import is_content_filter_error
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.rerank import cohere_rerank
 from lightrag.tools.kong_api_client.kong_client import KongClient
-from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.utils import logger, wrap_embedding_func_with_attrs
 
 kong_client = KongClient(
     region_name="us-east-1",
@@ -24,30 +25,45 @@ def _verify_ssl(env_name: str) -> bool:
 
 
 def new_httpx_client():
-    # One client per call on purpose: the OpenAI wrapper closes the client it
-    # was given when the call finishes, so a shared instance would be closed
-    # after its first use.
+    # Passed as a factory (not an instance): the OpenAI wrapper closes the
+    # client it was given when each attempt finishes, so a shared instance
+    # would already be closed when tenacity retries the call.
     return httpx.AsyncClient(http2=True, verify=_verify_ssl("PROXY_VERIFY_SSL"))
 
 
 # Define LLM model function
-def llm_model_func(
+async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ):
+    # Optional per-call model override (e.g. an evaluation judge fallback).
+    model = kwargs.pop("llm_model", None) or os.getenv("LLM_MODEL")
     kwargs["extra_headers"] = {
         "Authorization": f"Bearer {kong_client.generate_token()}"
     }
     kwargs["extra_body"] = extra_body
-    kwargs["openai_client_configs"] = {"http_client": new_httpx_client()}
-    return openai_complete_if_cache(
-        os.getenv("LLM_MODEL"),
-        prompt,
-        system_prompt=system_prompt,
-        history_messages=history_messages,
-        api_key=os.getenv("LLM_BINDING_API_KEY"),
-        base_url=os.getenv("LLM_BINDING_HOST"),
-        **kwargs,
-    )
+    kwargs["openai_client_configs"] = {"http_client": new_httpx_client}
+
+    async def call(target_model):
+        return await openai_complete_if_cache(
+            target_model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=os.getenv("LLM_BINDING_API_KEY"),
+            base_url=os.getenv("LLM_BINDING_HOST"),
+            **kwargs,
+        )
+
+    try:
+        return await call(model)
+    except Exception as error:
+        # Only a provider content-policy refusal is rerouted, and only when a
+        # fallback model is configured; every other failure propagates.
+        fallback = os.getenv("LLM_CONTENT_FILTER_FALLBACK_MODEL", "").strip()
+        if not fallback or fallback == model or not is_content_filter_error(error):
+            raise
+        logger.warning(f"{model} refused the prompt (content policy); using {fallback}")
+        return await call(fallback)
 
 
 @wrap_embedding_func_with_attrs(
@@ -56,12 +72,16 @@ def llm_model_func(
     model_name=os.getenv("EMBEDDING_MODEL"),
 )
 async def embedding_func(texts: list[str]) -> np.ndarray:
+    # Each request gets half of EMBEDDING_TIMEOUT: the SDK default (600s) would
+    # let one dropped connection outlast the queue worker (2 x EMBEDDING_TIMEOUT),
+    # which then kills the call before openai_embed's retries can run.
+    request_timeout = float(os.getenv("EMBEDDING_TIMEOUT", "30")) / 2
     return await openai_embed.func(
         texts,
         model=os.getenv("EMBEDDING_MODEL"),
         api_key=os.getenv("EMBEDDING_API_KEY"),
         base_url=os.getenv("EMBEDDING_BINDING_HOST"),
-        client_configs={"http_client": new_httpx_client()},
+        client_configs={"http_client": new_httpx_client, "timeout": request_timeout},
         extra_configs={
             "extra_headers": {
                 "Authorization": f"Bearer {kong_client.generate_token()}"

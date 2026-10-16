@@ -56,3 +56,21 @@ def is_permanent_rate_limit_error(error: BaseException) -> bool:
             return True
     rendered = str(error).lower()
     return any(slug in rendered for slug in PERMANENT_RATE_LIMIT_ERROR_TYPES)
+
+
+def is_content_filter_error(error: BaseException) -> bool:
+    """True when the provider refused the prompt under its content policy
+    (e.g. Azure OpenAI flagging "escort" in a wheelchair-escort rate question).
+
+    Walks tenacity ``RetryError.last_attempt`` and ``__cause__`` chains, since
+    the refusal usually arrives wrapped.
+    """
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        text = str(error).lower()
+        if "content management policy" in text or "content_filter" in text:
+            return True
+        last = getattr(error, "last_attempt", None)
+        error = last.exception() if last is not None else error.__cause__
+    return False
