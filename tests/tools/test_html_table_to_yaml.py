@@ -56,3 +56,50 @@ def test_rowspan_row_header_is_carried_to_following_rows():
         {"Aircraft": "Airbus", "Service": "Turn", "Price": "$ 27.92"},
         {"Aircraft": "Airbus", "Service": "Ron", "Price": "$ 132.37"},
     ]
+
+
+TWO_ROW_HEADER_TABLE = """
+<table>
+  <thead>
+    <tr><th scope="col" colspan="2">Bid</th><th scope="col">Minutes</th>
+        <th scope="col">Price/event</th></tr>
+  </thead>
+  <tbody>
+    <tr><th scope="row" rowspan="2">Airbus</th><th scope="row">Turn</th>
+        <td>20</td><td>$ 42.82</td></tr>
+    <tr><th scope="row">Ron</th><td>25</td><td>$ 62.61</td></tr>
+    <tr><th scope="row">757</th><th scope="row">Turn</th><td>30</td><td>$ 50.00</td></tr>
+  </tbody>
+</table>
+"""
+
+TD_ROWSPAN_TABLE = """
+<table>
+  <thead>
+    <tr><th scope="col">Station</th><th scope="col">Service</th><th scope="col">Rate</th></tr>
+  </thead>
+  <tbody>
+    <tr><td rowspan="2">MCO</td><td>Turn</td><td>$ 1.00</td></tr>
+    <tr><td>Ron</td><td>$ 2.00</td></tr>
+  </tbody>
+</table>
+"""
+
+
+def test_every_row_header_cell_keeps_its_column():
+    """Rows with an aircraft-group header (rowspan) and a service header each
+    lost the service, shifting every value one column left."""
+    headers, rows = converter.parse_html_table_to_rows(TWO_ROW_HEADER_TABLE)
+    assert [dict(zip(headers, r)) for r in rows] == [
+        {"Bid": "Airbus", "Bid (1)": "Turn", "Minutes": "20", "Price/event": "$ 42.82"},
+        {"Bid": "Airbus", "Bid (1)": "Ron", "Minutes": "25", "Price/event": "$ 62.61"},
+        {"Bid": "757", "Bid (1)": "Turn", "Minutes": "30", "Price/event": "$ 50.00"},
+    ]
+
+
+def test_data_cell_rowspan_is_carried_to_following_rows():
+    headers, rows = converter.parse_html_table_to_rows(TD_ROWSPAN_TABLE)
+    assert [dict(zip(headers, r)) for r in rows] == [
+        {"Station": "MCO", "Service": "Turn", "Rate": "$ 1.00"},
+        {"Station": "MCO", "Service": "Ron", "Rate": "$ 2.00"},
+    ]

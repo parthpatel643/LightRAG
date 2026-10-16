@@ -85,20 +85,20 @@ def _extract_headers(table_tag) -> Tuple[List[str], Optional[int]]:
                             seen[h] = 0
                 return headers, None
             else:
-                # Single-row header
+                # Single-row header; a spanning header names every column it covers
                 tr = trs[0]
                 headers = []
                 for th in tr.find_all(["th", "td"], recursive=False):
-                    headers.append(_cell_text(th))
-                # Fallback names for empty headers
-                headers = [
-                    (
-                        ("Row" if i == 0 else f"Column {i + 1}")
-                        if (h.strip() == "")
-                        else h
-                    )
-                    for i, h in enumerate(headers)
-                ]
+                    headers.extend([_cell_text(th)] * _span(th))
+                seen: dict = {}
+                for i, h in enumerate(headers):
+                    if h.strip() == "":
+                        headers[i] = "Row" if i == 0 else f"Column {i + 1}"
+                    elif h in seen:
+                        seen[h] += 1
+                        headers[i] = f"{h} ({seen[h]})"
+                    else:
+                        seen[h] = 0
                 return headers, None
 
     # Fallback: first row in table
@@ -123,49 +123,6 @@ def _span(cell) -> int:
     return int(colspan) if colspan and str(colspan).isdigit() else 1
 
 
-def _row_cells(
-    tr,
-    expected_cols: int,
-    carry_first_value: Optional[str] = None,
-    carry_span: int = 1,
-) -> List[str]:
-    # Include th with scope="row" (or any th) as first value if present;
-    # otherwise, use carry_first_value when provided (for rowspan propagation).
-    # A row header spanning several columns (e.g. a "Total" label) fills all of
-    # them, like a spanning td, so the following values keep their columns.
-    cells: List[str] = []
-    row_ths = tr.find_all("th", recursive=False)
-    first_value: Optional[str] = None
-    first_span = 1
-    if row_ths:
-        row_scoped = None
-        for th in row_ths:
-            if th.get("scope", "").lower() == "row":
-                row_scoped = th
-                break
-        if row_scoped is None:
-            row_scoped = row_ths[0]
-        first_value = _cell_text(row_scoped)
-        first_span = _span(row_scoped)
-    elif carry_first_value is not None:
-        first_value = carry_first_value
-        first_span = carry_span
-
-    if first_value is not None:
-        cells.extend([first_value] * first_span)
-
-    for td in tr.find_all("td", recursive=False):
-        value = _cell_text(td)
-        for _ in range(_span(td)):
-            cells.append(value)
-    if expected_cols is not None:
-        if len(cells) < expected_cols:
-            cells += [""] * (expected_cols - len(cells))
-        elif len(cells) > expected_cols:
-            cells = cells[:expected_cols]
-    return cells
-
-
 def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]]]:
     soup = BeautifulSoup(table_html, "html.parser")
     table = soup.find("table")
@@ -180,73 +137,65 @@ def parse_html_table_to_rows(table_html: str) -> Tuple[List[str], List[List[str]
     headers, header_index = _extract_headers(table)
     expected_cols = len(headers) if headers else None
 
-    rows: List[List[str]] = []
     tbody = table.find("tbody")
-    current_row_value: Optional[str] = None
-    current_row_span: int = 1
-    remaining_rowspan: int = 0
     if tbody:
         trs = tbody.find_all("tr")
-        for tr in trs:
-            # Check for a row header in this row
-            row_th = None
-            for th in tr.find_all("th", recursive=False):
-                if th.get("scope", "").lower() == "row":
-                    row_th = th
-                    break
-            if row_th is not None:
-                current_row_value = _cell_text(row_th)
-                current_row_span = _span(row_th)
-                rs_attr = row_th.get("rowspan")
-                remaining_rowspan = (
-                    (int(rs_attr) - 1) if rs_attr and str(rs_attr).isdigit() else 0
-                )
-                rows.append(_row_cells(tr, expected_cols, carry_first_value=None))
-            else:
-                carry = current_row_value if remaining_rowspan > 0 else None
-                rows.append(
-                    _row_cells(
-                        tr,
-                        expected_cols,
-                        carry_first_value=carry,
-                        carry_span=current_row_span,
-                    )
-                )
-                if remaining_rowspan > 0:
-                    remaining_rowspan -= 1
     else:
-        all_trs = table.find_all("tr")
-        for i, tr in enumerate(all_trs):
-            if header_index is not None and i == header_index:
-                continue
-            # Check for a row header
-            row_th = None
-            for th in tr.find_all("th", recursive=False):
-                if th.get("scope", "").lower() == "row":
-                    row_th = th
-                    break
-            if row_th is not None:
-                current_row_value = _cell_text(row_th)
-                current_row_span = _span(row_th)
-                rs_attr = row_th.get("rowspan")
-                remaining_rowspan = (
-                    (int(rs_attr) - 1) if rs_attr and str(rs_attr).isdigit() else 0
-                )
-                rows.append(_row_cells(tr, expected_cols, carry_first_value=None))
-            else:
-                carry = current_row_value if remaining_rowspan > 0 else None
-                rows.append(
-                    _row_cells(
-                        tr,
-                        expected_cols,
-                        carry_first_value=carry,
-                        carry_span=current_row_span,
-                    )
-                )
-                if remaining_rowspan > 0:
-                    remaining_rowspan -= 1
+        trs = [
+            tr
+            for i, tr in enumerate(table.find_all("tr"))
+            if header_index is None or i != header_index
+        ]
+    return headers, _layout_rows(trs, expected_cols)
 
-    return headers, rows
+
+def _rowspan(cell) -> int:
+    rowspan = cell.get("rowspan")
+    return int(rowspan) if rowspan and str(rowspan).isdigit() else 1
+
+
+def _layout_rows(trs, expected_cols: Optional[int]) -> List[List[str]]:
+    """Lay rows out on a grid the way browsers do.
+
+    Every ``th`` and ``td`` takes the next free column in document order,
+    fills ``colspan`` columns, and fills the same columns of the next
+    ``rowspan - 1`` rows, so a row with several row headers (e.g. aircraft
+    group and service type) keeps each value under its own column.
+    """
+    rows: List[List[str]] = []
+    carried: dict = {}  # column -> (value, rows remaining)
+    for tr in trs:
+        cells: List[str] = []
+        col = 0
+
+        def fill_carried() -> None:
+            nonlocal col
+            while col in carried:
+                value, left = carried[col]
+                cells.append(value)
+                if left <= 1:
+                    del carried[col]
+                else:
+                    carried[col] = (value, left - 1)
+                col += 1
+
+        for cell in tr.find_all(["th", "td"], recursive=False):
+            fill_carried()
+            value = _cell_text(cell)
+            down = _rowspan(cell)
+            for _ in range(_span(cell)):
+                cells.append(value)
+                if down > 1:
+                    carried[col] = (value, down - 1)
+                col += 1
+        fill_carried()
+        if expected_cols is not None:
+            if len(cells) < expected_cols:
+                cells += [""] * (expected_cols - len(cells))
+            elif len(cells) > expected_cols:
+                cells = cells[:expected_cols]
+        rows.append(cells)
+    return rows
 
 
 def table_to_yaml_stream(headers: List[str], rows: List[List[str]]) -> str:
