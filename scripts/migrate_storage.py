@@ -779,20 +779,28 @@ class OpenSearchHelper:
         batch_size: int = 500,
         *,
         dry_run: bool = False,
-    ):
-        """Bulk-index nodes into the OpenSearch nodes index."""
+    ) -> int:
+        """Bulk-index nodes into the OpenSearch nodes index.
+
+        Returns the number of nodes indexed. Raises RuntimeError after all
+        batches are attempted if any document was rejected or a batch failed;
+        the graph stores are already written by then, so rerunning the
+        migration re-seeds the index.
+        """
         if not self._client or not nodes:
-            return
+            return 0
 
         from opensearchpy import helpers as os_helpers
 
-        total = 0
+        indexed = 0
+        failed = 0
+        first_error = ""
         items = list(nodes.items())
 
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
             if dry_run:
-                total += len(batch)
+                indexed += len(batch)
                 continue
 
             actions = []
@@ -808,15 +816,38 @@ class OpenSearchHelper:
                 )
 
             try:
-                os_helpers.bulk(self._client, actions, raise_on_error=False)
+                ok, errors = os_helpers.bulk(
+                    self._client, actions, raise_on_error=False
+                )
             except Exception as e:
-                logger.warning(
+                ok, errors = 0, []
+                failed += len(batch)
+                first_error = first_error or str(e)
+                logger.error(
                     "[OpenSearch] Bulk index error at batch %d: %s", i // batch_size, e
                 )
-            total += len(batch)
+            else:
+                indexed += ok
+                if errors:
+                    failed += len(errors)
+                    first_error = first_error or str(errors[0])
+                    logger.error(
+                        "[OpenSearch] %d documents rejected in batch %d, e.g. %s",
+                        len(errors),
+                        i // batch_size,
+                        errors[0],
+                    )
 
         action = "Would index" if dry_run else "Indexed"
-        logger.info("[OpenSearch] %s %d nodes into %s", action, total, self._index_name)
+        logger.info(
+            "[OpenSearch] %s %d nodes into %s", action, indexed, self._index_name
+        )
+        if failed:
+            raise RuntimeError(
+                f"OpenSearch seeding failed for {failed} of {len(items)} nodes "
+                f"in {self._index_name}: {first_error}"
+            )
+        return indexed
 
     def delete_nodes(
         self, node_ids: list[str], *, dry_run: bool = False
