@@ -62,7 +62,7 @@ DEFAULT_MAX_CHARS = 120_000
 WORKSPACE_INPUT_DIR_OVERRIDES = {
     "rdu_cabin_cleaning_5911": "rdu_passenger_cleaning_5911",
     # Amendment 14 is ingested as one document per dated exhibit.
-    "tpa_cabin_cleaning_cawl19069": "tpa_cabin_cleaning_cawl19069/split",
+    "tpa_cabin_cleaning_calw19069": "tpa_cabin_cleaning_calw19069/split",
 }
 
 # ---------------------------------------------------------------------------
