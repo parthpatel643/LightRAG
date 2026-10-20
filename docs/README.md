@@ -6,7 +6,7 @@ Latest: April 2026 | Status: Production-Ready | [GitHub](https://github.com/HKUD
 
 ---
 
-## Core Documentation (7 Guides)
+## Core Documentation (8 Guides)
 
 ### 1. **[Getting Started](./GETTING_STARTED.md)**
 Start here for first-time users. Covers installation, setup, and your first queries.
@@ -77,6 +77,9 @@ Production deployment, infrastructure setup, and operational procedures.
 - Pre-deployment checklist & rollback
 - Performance profiling
 - Monitoring & disaster recovery
+
+### 8. **[Line-Station Operations](./LINE_STATIONS_OPERATIONS.md)**
+Publishing line-station workspaces to the AWS stores, and open infrastructure and data follow-ups.
 
 ---
 
